@@ -1,0 +1,11 @@
+pub mod add_tags;
+pub mod create_directory;
+pub mod create_note;
+pub mod delete_note;
+pub mod edit_note;
+pub mod list_vaults;
+pub mod move_note;
+pub mod read_note;
+pub mod remove_tags;
+pub mod rename_tag;
+pub mod search_vault;

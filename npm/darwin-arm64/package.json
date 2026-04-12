@@ -1,0 +1,13 @@
+{
+  "name": "@obsidian-mcp-rs/darwin-arm64",
+  "version": "0.1.0",
+  "description": "macOS ARM64 (Apple Silicon) binary for obsidian-mcp-rs",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mrrefactoring/obsidian-mcp-rs.git"
+  },
+  "license": "MIT",
+  "os": ["darwin"],
+  "cpu": ["arm64"],
+  "files": ["obsidian-mcp-rs"]
+}

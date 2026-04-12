@@ -1,0 +1,14 @@
+{
+  "name": "@obsidian-mcp-rs/linux-arm64",
+  "version": "0.1.0",
+  "description": "Linux ARM64 binary for obsidian-mcp-rs",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MrRefactoring/obsidian-mcp-rs.git"
+  },
+  "license": "MIT",
+  "os": ["linux"],
+  "cpu": ["arm64"],
+  "libc": ["glibc"],
+  "files": ["obsidian-mcp-rs"]
+}

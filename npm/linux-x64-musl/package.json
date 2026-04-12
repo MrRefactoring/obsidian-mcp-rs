@@ -1,0 +1,14 @@
+{
+  "name": "@obsidian-mcp-rs/linux-x64-musl",
+  "version": "0.1.0",
+  "description": "Linux x64 musl (Alpine) binary for obsidian-mcp-rs",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MrRefactoring/obsidian-mcp-rs.git"
+  },
+  "license": "MIT",
+  "os": ["linux"],
+  "cpu": ["x64"],
+  "libc": ["musl"],
+  "files": ["obsidian-mcp-rs"]
+}

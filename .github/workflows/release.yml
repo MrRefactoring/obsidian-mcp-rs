@@ -1,0 +1,178 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  id-token: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            binary: obsidian-mcp-rs
+            npm_dir: darwin-arm64
+            use_cross: false
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            binary: obsidian-mcp-rs
+            npm_dir: darwin-x64
+            use_cross: false
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            binary: obsidian-mcp-rs
+            npm_dir: linux-x64
+            use_cross: false
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            binary: obsidian-mcp-rs
+            npm_dir: linux-arm64
+            use_cross: true
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            binary: obsidian-mcp-rs
+            npm_dir: linux-x64-musl
+            use_cross: true
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            binary: obsidian-mcp-rs.exe
+            npm_dir: win32-x64
+            use_cross: false
+          - target: aarch64-pc-windows-msvc
+            os: windows-latest
+            binary: obsidian-mcp-rs.exe
+            npm_dir: win32-arm64
+            use_cross: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install cross
+        if: matrix.use_cross
+        uses: taiki-e/install-action@cross
+
+      - name: Build (native)
+        if: "!matrix.use_cross"
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Build (cross)
+        if: matrix.use_cross
+        run: cross build --release --target ${{ matrix.target }}
+
+      - name: Prepare artifact
+        shell: bash
+        run: |
+          mkdir -p artifacts/${{ matrix.npm_dir }}
+          cp target/${{ matrix.target }}/release/${{ matrix.binary }} artifacts/${{ matrix.npm_dir }}/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.npm_dir }}
+          path: artifacts/${{ matrix.npm_dir }}/${{ matrix.binary }}
+          retention-days: 1
+
+  github-release:
+    name: GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create checksums and release assets
+        run: |
+          mkdir -p release-assets
+          for dir in artifacts/*/; do
+            platform=$(basename "$dir")
+            for file in "$dir"*; do
+              fname=$(basename "$file")
+              asset="obsidian-mcp-rs-${platform}-${fname}"
+              cp "$file" "release-assets/${asset}"
+              sha256sum "release-assets/${asset}" >> "release-assets/checksums.txt"
+            done
+          done
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: release-assets/*
+
+  npm-publish:
+    name: Publish npm packages
+    needs: github-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Copy binaries into platform packages
+        shell: bash
+        run: |
+          platforms=(darwin-arm64 darwin-x64 linux-arm64 linux-x64 linux-x64-musl win32-arm64 win32-x64)
+          for platform in "${platforms[@]}"; do
+            src="artifacts/binary-${platform}"
+            dest="npm/${platform}"
+            if [ -d "$src" ]; then
+              cp "$src"/* "$dest/"
+              chmod +x "$dest"/obsidian-mcp-rs 2>/dev/null || true
+            fi
+          done
+
+      - name: Build TypeScript wrapper
+        run: |
+          cd npm/obsidian-mcp-rs
+          npm install
+          npm run build
+
+      - name: Publish platform packages
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          platforms=(darwin-arm64 darwin-x64 linux-arm64 linux-x64 linux-x64-musl win32-arm64 win32-x64)
+          for platform in "${platforms[@]}"; do
+            cd npm/$platform
+            npm publish --access public --provenance || true
+            cd ../..
+          done
+
+      - name: Publish main package
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          cd npm/obsidian-mcp-rs
+          npm publish --access public --provenance

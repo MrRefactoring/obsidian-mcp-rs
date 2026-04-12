@@ -1,0 +1,8 @@
+/.idea
+/target
+/npm/obsidian-mcp-rs/node_modules
+/npm/obsidian-mcp-rs/bin
+/npm/*/obsidian-mcp-rs
+/npm/*/obsidian-mcp-rs.exe
+*.log
+.DS_Store

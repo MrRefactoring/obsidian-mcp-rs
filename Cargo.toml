@@ -1,0 +1,35 @@
+[package]
+name = "obsidian-mcp-rs"
+version = "0.1.0"
+edition = "2021"
+authors = ["Vladislav Tupikin"]
+description = "A fast, Rust-based MCP server for Obsidian vaults"
+license = "MIT"
+repository = "https://github.com/MrRefactoring/obsidian-mcp-rs"
+homepage = "https://github.com/MrRefactoring/obsidian-mcp-rs"
+readme = "README.md"
+keywords = ["obsidian", "mcp", "notes", "vault", "ai"]
+categories = ["command-line-utilities", "filesystem"]
+
+[dependencies]
+rmcp = { version = "1.4", features = ["server", "transport-io", "macros"] }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+schemars = "1.2"
+walkdir = "2.5"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+clap = { version = "4.6", features = ["derive"] }
+regex = "1.12"
+similar = "2"
+thiserror = "2.0"
+anyhow = "1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
