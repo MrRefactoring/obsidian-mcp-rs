@@ -1,6 +1,6 @@
 {
   "name": "@obsidian-mcp-rs/win32-arm64",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Windows ARM64 binary for obsidian-mcp-rs",
   "repository": {
     "type": "git",

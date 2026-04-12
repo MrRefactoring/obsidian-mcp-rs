@@ -1,10 +1,29 @@
 # Changelog
 
+## [0.1.2] - 2026-04-13
+
+### Added
+
+- Project logo (`assets/logo.svg`) — Obsidian crystal with MCP connection nodes
+- Write-access warning in README — users are informed the server has full read/write access to vaults
+
+### Changed
+
+- Rust edition updated from `2021` to `2024`
+- `similar` dependency updated to v3.1.0
+- README header redesigned: centered layout, logo, promo badges (Claude Ready, Cursor Ready, MCP Native, Rust Powered, npx Compatible), flat-square style throughout
+- Development prerequisites updated to Node.js 22+
+
+### Fixed
+
+- README was not included in the published npm package — added `cp README.md npm/obsidian-mcp-rs/README.md` step to release workflow
+- Logo and badge URLs use absolute `raw.githubusercontent.com` paths so they render correctly on npmjs.com
+
 ## [0.1.1] - 2026-04-13
 
 ### Changed
 
-- TypeScript dev dependency updated to v6; added explicit `types: ["node"]` to `tsconfig.json` (required by TypeScript v6)
+- TypeScript dev dependency Lupdated to v6; added explicit `types: ["node"]` to `tsconfig.json` (required by TypeScript v6)
 - GitHub Actions updated: `actions/checkout` → v6, `actions/setup-node` → v6, `actions/upload-artifact` → v7, `actions/download-artifact` → v8, `softprops/action-gh-release` → v3
 
 ### Fixed

@@ -153,6 +153,9 @@ jobs:
             fi
           done
 
+      - name: Copy README to npm package
+        run: cp README.md npm/obsidian-mcp-rs/README.md
+
       - name: Build TypeScript wrapper
         run: |
           cd npm/obsidian-mcp-rs

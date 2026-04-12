@@ -1,13 +1,34 @@
-# obsidian-mcp-rs — Rust MCP Server for Obsidian Vaults
+<div align="center">
+  <img alt="obsidian-mcp-rs logo" src="https://raw.githubusercontent.com/MrRefactoring/obsidian-mcp-rs/master/assets/logo.svg" width="120"/>
 
-[![CI](https://github.com/MrRefactoring/obsidian-mcp-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/MrRefactoring/obsidian-mcp-rs/actions/workflows/ci.yml)
-[![npm](https://img.shields.io/npm/v/obsidian-mcp-rs)](https://www.npmjs.com/package/obsidian-mcp-rs)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows-blue)](#platform-support)
+  <h1>obsidian-mcp-rs</h1>
 
-A fast, production-ready **MCP (Model Context Protocol) server** for [Obsidian](https://obsidian.md) vaults — built in **Rust** for reliability, speed, and low memory footprint. Connect your Obsidian knowledge base to **Claude**, **Cursor**, or any MCP-compatible AI client.
+  <a href="https://claude.ai" target="_blank" rel="noopener noreferrer"><img alt="Claude Ready" src="https://img.shields.io/badge/Claude-Ready-CC785C?style=flat-square&logo=anthropic&logoColor=white"/></a>
+  <a href="https://cursor.com" target="_blank" rel="noopener noreferrer"><img alt="Cursor Ready" src="https://img.shields.io/badge/Cursor-Ready-000000?style=flat-square&logoColor=white"/></a>
+  <img alt="MCP Native" src="https://img.shields.io/badge/MCP-Native-6366f1?style=flat-square"/>
+  <img alt="Rust Powered" src="https://img.shields.io/badge/Rust-Powered-CE412B?style=flat-square&logo=rust&logoColor=white"/>
+  <a href="https://www.npmjs.com/package/obsidian-mcp-rs" target="_blank" rel="noopener noreferrer"><img alt="npx Compatible" src="https://img.shields.io/badge/npx-Compatible-CB3837?style=flat-square&logo=npm&logoColor=white"/></a>
 
-Works as a drop-in replacement for `obsidian-mcp` with identical tool names and parameters.
+  <br/>
+  <br/>
+
+  <a href="https://github.com/MrRefactoring/obsidian-mcp-rs/actions/workflows/ci.yml" target="_blank" rel="noopener noreferrer"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/MrRefactoring/obsidian-mcp-rs/.github/workflows/ci.yml?branch=master&style=flat-square"/></a>
+  <a href="https://www.npmjs.com/package/obsidian-mcp-rs" target="_blank" rel="noopener noreferrer"><img alt="npm version" src="https://img.shields.io/npm/v/obsidian-mcp-rs.svg?style=flat-square"/></a>
+  <a href="https://www.npmjs.com/package/obsidian-mcp-rs" target="_blank" rel="noopener noreferrer"><img alt="npm downloads" src="https://img.shields.io/npm/dm/obsidian-mcp-rs.svg?style=flat-square"/></a>
+  <a href="LICENSE" target="_blank" rel="noopener noreferrer"><img alt="License: MIT" src="https://img.shields.io/github/license/MrRefactoring/obsidian-mcp-rs?color=green&style=flat-square"/></a>
+  <img alt="Platforms" src="https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows-blue?style=flat-square"/>
+
+  <br/>
+  <br/>
+
+  <span>Rust-based MCP server that connects your Obsidian vault to Claude, Cursor, and any AI client — single binary, zero runtime dependencies.</span>
+</div>
+
+<br/>
+
+> [!WARNING]
+> This MCP server has **full read and write access** to your Obsidian vault. It can create, edit, move, and delete notes without confirmation. Use at your own risk. Always keep backups of your vault before connecting it to an AI client.
+
 
 ## Features
 
@@ -93,7 +114,7 @@ Add the server to Cursor's MCP settings via **Settings → MCP → Add Server**,
 }
 ```
 
-Once added, Cursor's AI will have access to all 11 vault tools. You can verify with the MCP panel in Settings.
+Once added, Cursor's AI will have access to all 12 vault tools. You can verify with the MCP panel in Settings.
 
 ### OpenClaw (`~/.openclaw/openclaw.json`)
 
@@ -151,9 +172,10 @@ Edit an existing note.
 |-----------|------|----------|-------------|
 | `vault` | string | ✓ | Vault name |
 | `filename` | string | ✓ | Note filename |
-| `operation` | string | ✓ | `append`, `prepend`, or `replace` |
+| `operation` | string | ✓ | `append`, `prepend`, `replace`, `find_and_replace` |
 | `content` | string | ✓ | Content to apply |
 | `folder` | string | | Subfolder path |
+| `search` | string | | Search text (required for `find_and_replace`) |
 
 ### `delete-note`
 Delete a note from the vault.
@@ -233,7 +255,7 @@ List all vaults configured for this server. Takes no parameters.
 ### Prerequisites
 
 - [Rust](https://rustup.rs/) (stable, 1.75+)
-- [Node.js](https://nodejs.org/) 18+ (for npm wrapper)
+- [Node.js](https://nodejs.org/) 22+ (for npm wrapper)
 
 ### Build from source
 

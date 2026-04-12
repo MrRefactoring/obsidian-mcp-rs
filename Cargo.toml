@@ -1,7 +1,7 @@
 [package]
 name = "obsidian-mcp-rs"
-version = "0.1.1"
-edition = "2021"
+version = "0.1.2"
+edition = "2024"
 authors = ["Vladislav Tupikin"]
 description = "A fast, Rust-based MCP server for Obsidian vaults"
 license = "MIT"
@@ -21,7 +21,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 clap = { version = "4.6", features = ["derive"] }
 regex = "1.12"
-similar = "2"
+similar = "3"
 thiserror = "2.0"
 anyhow = "1"
 
