@@ -1,15 +1,36 @@
 {
   "name": "obsidian-mcp-rs",
-  "version": "0.1.0",
-  "description": "A fast, Rust-based MCP server for Obsidian vaults",
-  "keywords": ["obsidian", "mcp", "notes", "vault", "ai", "model-context-protocol"],
-  "homepage": "https://github.com/mrrefactoring/obsidian-mcp-rs",
+  "version": "0.1.1",
+  "description": "Rust MCP server for Obsidian vaults — read, write, search notes via Model Context Protocol. Works with Claude, Cursor, and any MCP client.",
+  "keywords": [
+    "obsidian",
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "notes",
+    "vault",
+    "obsidian-vault",
+    "ai",
+    "ai-assistant",
+    "claude",
+    "cursor",
+    "llm",
+    "rust",
+    "markdown",
+    "knowledge-base",
+    "note-taking",
+    "cross-platform",
+    "stdio",
+    "npx",
+    "obsidian-plugin"
+  ],
+  "homepage": "https://github.com/MrRefactoring/obsidian-mcp-rs",
   "bugs": {
-    "url": "https://github.com/mrrefactoring/obsidian-mcp-rs/issues"
+    "url": "https://github.com/MrRefactoring/obsidian-mcp-rs/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/mrrefactoring/obsidian-mcp-rs.git"
+    "url": "git+https://github.com/MrRefactoring/obsidian-mcp-rs.git"
   },
   "license": "MIT",
   "author": "Vladislav Tupikin",
@@ -24,19 +45,19 @@
     "prepublishOnly": "npm run build"
   },
   "optionalDependencies": {
-    "@obsidian-mcp-rs/darwin-arm64": "0.1.0",
-    "@obsidian-mcp-rs/darwin-x64": "0.1.0",
-    "@obsidian-mcp-rs/linux-arm64": "0.1.0",
-    "@obsidian-mcp-rs/linux-x64": "0.1.0",
-    "@obsidian-mcp-rs/linux-x64-musl": "0.1.0",
-    "@obsidian-mcp-rs/win32-arm64": "0.1.0",
-    "@obsidian-mcp-rs/win32-x64": "0.1.0"
+    "@obsidian-mcp-rs/darwin-arm64": "0.1.1",
+    "@obsidian-mcp-rs/darwin-x64": "0.1.1",
+    "@obsidian-mcp-rs/linux-arm64": "0.1.1",
+    "@obsidian-mcp-rs/linux-x64": "0.1.1",
+    "@obsidian-mcp-rs/linux-x64-musl": "0.1.1",
+    "@obsidian-mcp-rs/win32-arm64": "0.1.1",
+    "@obsidian-mcp-rs/win32-x64": "0.1.1"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "typescript": "^5.7.0"
+    "typescript": "^6.0.0"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   }
 }

@@ -1,11 +1,11 @@
-# obsidian-mcp-rs
+# obsidian-mcp-rs — Rust MCP Server for Obsidian Vaults
 
 [![CI](https://github.com/MrRefactoring/obsidian-mcp-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/MrRefactoring/obsidian-mcp-rs/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/obsidian-mcp-rs)](https://www.npmjs.com/package/obsidian-mcp-rs)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows-blue)](#platform-support)
 
-A fast, production-ready MCP (Model Context Protocol) server for [Obsidian](https://obsidian.md) vaults — built in Rust for reliability, speed, and low memory footprint.
+A fast, production-ready **MCP (Model Context Protocol) server** for [Obsidian](https://obsidian.md) vaults — built in **Rust** for reliability, speed, and low memory footprint. Connect your Obsidian knowledge base to **Claude**, **Cursor**, or any MCP-compatible AI client.
 
 Works as a drop-in replacement for `obsidian-mcp` with identical tool names and parameters.
 

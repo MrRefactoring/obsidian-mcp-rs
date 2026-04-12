@@ -1,6 +1,6 @@
 [package]
 name = "obsidian-mcp-rs"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 authors = ["Vladislav Tupikin"]
 description = "A fast, Rust-based MCP server for Obsidian vaults"
