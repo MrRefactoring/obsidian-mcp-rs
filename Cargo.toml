@@ -1,6 +1,6 @@
 [package]
 name = "obsidian-mcp-rs"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 authors = ["Vladislav Tupikin"]
 description = "A fast, Rust-based MCP server for Obsidian vaults"
@@ -24,6 +24,10 @@ regex = "1.12"
 similar = "3"
 thiserror = "2.0"
 anyhow = "1"
+serde_json = "1"
+dirs = "5"
+dialoguer = "0.11"
+console = "0.15"
 
 [dev-dependencies]
 tempfile = "3"

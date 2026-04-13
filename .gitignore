@@ -6,3 +6,5 @@
 /npm/*/obsidian-mcp-rs.exe
 *.log
 .DS_Store
+/npm/obsidian-mcp-rs/coverage
+lcov-*.info

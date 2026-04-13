@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [master]
   pull_request:
-    branches: [main]
+    branches: [master]
 
 env:
   CARGO_TERM_COLOR: always
@@ -15,7 +15,7 @@ jobs:
     name: Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -27,10 +27,54 @@ jobs:
     name: Test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test
+
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Rust coverage ──────────────────────────────────────────────────────
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Rust – collect lcov
+        run: cargo llvm-cov --lcov --output-path lcov-rust.info
+
+      # ── TypeScript coverage ────────────────────────────────────────────────
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: npm install
+        run: npm install
+        working-directory: npm/obsidian-mcp-rs
+      - name: TS – collect lcov
+        run: npx vitest run --coverage
+        working-directory: npm/obsidian-mcp-rs
+
+      # ── Upload both reports to Codecov ─────────────────────────────────────
+      - name: Upload Rust coverage
+        uses: codecov/codecov-action@v4
+        with:
+          files: lcov-rust.info
+          flags: rust
+          token: ${{ secrets.CODECOV_TOKEN }}
+          comment: false
+
+      - name: Upload TypeScript coverage
+        uses: codecov/codecov-action@v4
+        with:
+          files: npm/obsidian-mcp-rs/coverage/lcov.info
+          flags: typescript
+          token: ${{ secrets.CODECOV_TOKEN }}
+          comment: true
 
   check-targets:
     name: Check (${{ matrix.target }})
@@ -50,7 +94,7 @@ jobs:
           - target: x86_64-pc-windows-msvc
             os: windows-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -60,14 +104,16 @@ jobs:
       - run: cargo check --target ${{ matrix.target }}
 
   npm-build:
-    name: npm wrapper build
+    name: npm wrapper build + test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: "22"
       - run: npm install
         working-directory: npm/obsidian-mcp-rs
       - run: npm run build
+        working-directory: npm/obsidian-mcp-rs
+      - run: npm test
         working-directory: npm/obsidian-mcp-rs

@@ -814,4 +814,497 @@ mod tests {
             "line1\nline2"
         );
     }
+
+    // ── VaultManager basics ───────────────────────────────────────────────────
+
+    #[test]
+    fn list_vaults_returns_sorted() {
+        let dir1 = TempDir::new().unwrap();
+        let dir2 = TempDir::new().unwrap();
+        let manager = VaultManager::new(vec![dir2.path().to_path_buf(), dir1.path().to_path_buf()]);
+        let vaults = manager.list_vaults();
+        assert!(!vaults.is_empty());
+        // sorted
+        let names: Vec<_> = vaults.iter().map(|(n, _)| n.clone()).collect();
+        let mut sorted = names.clone();
+        sorted.sort();
+        assert_eq!(names, sorted);
+    }
+
+    #[test]
+    fn resolve_vault_not_found_error() {
+        let (_, vault) = make_vault();
+        let err = vault.resolve_vault("nonexistent").unwrap_err();
+        assert!(err.to_string().contains("nonexistent"));
+    }
+
+    #[test]
+    fn note_path_adds_md_extension() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        let p = vault.note_path(&name, "note", None).unwrap();
+        assert!(p.to_str().unwrap().ends_with("note.md"));
+    }
+
+    #[test]
+    fn note_path_keeps_md_extension() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        let p = vault.note_path(&name, "note.md", None).unwrap();
+        assert!(p.to_str().unwrap().ends_with("note.md"));
+    }
+
+    #[test]
+    fn note_path_with_folder() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        let p = vault.note_path(&name, "note", Some("sub")).unwrap();
+        assert!(p.to_str().unwrap().contains("sub"));
+        assert!(p.to_str().unwrap().ends_with("note.md"));
+    }
+
+    #[test]
+    fn note_path_empty_folder_ignores_folder() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        let with_empty = vault.note_path(&name, "note", Some("")).unwrap();
+        let without = vault.note_path(&name, "note", None).unwrap();
+        assert_eq!(with_empty, without);
+    }
+
+    // ── create_note ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn create_note_writes_content() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        vault.create_note(&name, "new", "hello world", None).unwrap();
+        assert_eq!(fs::read_to_string(dir.path().join("new.md")).unwrap(), "hello world");
+    }
+
+    #[test]
+    fn create_note_returns_path() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        let p = vault.create_note(&name, "new", "", None).unwrap();
+        assert!(p.exists());
+    }
+
+    #[test]
+    fn create_note_creates_parent_directories() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        vault.create_note(&name, "deep", "content", Some("a/b/c")).unwrap();
+        assert!(dir.path().join("a/b/c/deep.md").exists());
+    }
+
+    #[test]
+    fn create_note_errors_if_already_exists() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(&dir, "exists.md", "");
+        let err = vault.create_note(&name, "exists", "content", None).unwrap_err();
+        assert!(err.to_string().contains("already exists"));
+    }
+
+    // ── read_note ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn read_note_returns_content() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(&dir, "note.md", "hello");
+        assert_eq!(vault.read_note(&name, "note", None).unwrap(), "hello");
+    }
+
+    #[test]
+    fn read_note_accepts_md_extension() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(&dir, "note.md", "content");
+        assert_eq!(vault.read_note(&name, "note.md", None).unwrap(), "content");
+    }
+
+    #[test]
+    fn read_note_error_if_not_found() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        assert!(vault.read_note(&name, "ghost", None).is_err());
+    }
+
+    #[test]
+    fn read_note_in_subfolder() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        fs::create_dir_all(dir.path().join("sub")).unwrap();
+        fs::write(dir.path().join("sub/note.md"), "deep").unwrap();
+        assert_eq!(vault.read_note(&name, "note", Some("sub")).unwrap(), "deep");
+    }
+
+    // ── delete_note ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn delete_note_removes_file() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(&dir, "del.md", "bye");
+        vault.delete_note(&name, "del", None).unwrap();
+        assert!(!dir.path().join("del.md").exists());
+    }
+
+    #[test]
+    fn delete_note_error_if_not_found() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        assert!(vault.delete_note(&name, "ghost", None).is_err());
+    }
+
+    // ── move_note ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn move_note_renames_file() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(&dir, "original.md", "body");
+        let dest = vault.move_note(&name, "original", None, None, Some("renamed")).unwrap();
+        assert!(dest.exists());
+        assert!(!dir.path().join("original.md").exists());
+    }
+
+    #[test]
+    fn move_note_to_subfolder() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(&dir, "note.md", "body");
+        vault.move_note(&name, "note", None, Some("sub"), None).unwrap();
+        assert!(dir.path().join("sub/note.md").exists());
+    }
+
+    #[test]
+    fn move_note_error_if_not_found() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        assert!(vault.move_note(&name, "ghost", None, None, None).is_err());
+    }
+
+    // ── create_directory ──────────────────────────────────────────────────────
+
+    #[test]
+    fn create_directory_recursive() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        vault.create_directory(&name, "a/b/c", true).unwrap();
+        assert!(dir.path().join("a/b/c").is_dir());
+    }
+
+    #[test]
+    fn create_directory_non_recursive() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        vault.create_directory(&name, "flat", false).unwrap();
+        assert!(dir.path().join("flat").is_dir());
+    }
+
+    #[test]
+    fn create_directory_error_if_already_exists() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        fs::create_dir_all(dir.path().join("existing")).unwrap();
+        assert!(vault.create_directory(&name, "existing", true).is_err());
+    }
+
+    // ── search_vault ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn search_content_finds_matching_lines() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(&dir, "a.md", "the quick brown fox");
+        write_note(&dir, "b.md", "no match here");
+        let results = vault.search_vault(&name, "quick", None, false, &SearchType::Content).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].filename, "a");
+    }
+
+    #[test]
+    fn search_filename_finds_by_name() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(&dir, "journal_2024.md", "");
+        write_note(&dir, "other.md", "");
+        let results = vault.search_vault(&name, "journal", None, false, &SearchType::Filename).unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn search_both_finds_in_filename_and_content() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(&dir, "target.md", "nothing special");
+        write_note(&dir, "other.md", "has target word inside");
+        let results = vault.search_vault(&name, "target", None, false, &SearchType::Both).unwrap();
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn search_tag_finds_frontmatter_tag() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(&dir, "tagged.md", "---\ntags:\n  - work\n---\ncontent");
+        write_note(&dir, "other.md", "no tags");
+        let results = vault.search_vault(&name, "tag:work", None, false, &SearchType::Content).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].filename, "tagged");
+    }
+
+    #[test]
+    fn search_tag_finds_inline_tag() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(&dir, "inline.md", "some text #urgent here");
+        let results = vault.search_vault(&name, "tag:urgent", None, false, &SearchType::Content).unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn search_case_sensitive() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(&dir, "note.md", "Hello World");
+        let insensitive = vault.search_vault(&name, "hello", None, false, &SearchType::Content).unwrap();
+        let sensitive = vault.search_vault(&name, "hello", None, true, &SearchType::Content).unwrap();
+        assert_eq!(insensitive.len(), 1);
+        assert_eq!(sensitive.len(), 0);
+    }
+
+    #[test]
+    fn search_with_path_limit() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        fs::create_dir_all(dir.path().join("sub")).unwrap();
+        fs::write(dir.path().join("sub/inner.md"), "needle").unwrap();
+        write_note(&dir, "root.md", "needle");
+        let results = vault.search_vault(&name, "needle", Some("sub"), false, &SearchType::Content).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].filename, "inner");
+    }
+
+    #[test]
+    fn search_no_results() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(&dir, "note.md", "content");
+        let results = vault.search_vault(&name, "zzz_not_here", None, false, &SearchType::Content).unwrap();
+        assert!(results.is_empty());
+    }
+
+    // ── add_tags ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn add_tags_to_frontmatter_block_list() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(&dir, "note.md", "---\ntags:\n  - existing\n---\nbody");
+        vault.add_tags(&name, &["note.md".into()], &["new-tag".into()], "frontmatter", false, "end").unwrap();
+        let content = fs::read_to_string(dir.path().join("note.md")).unwrap();
+        assert!(content.contains("new-tag"));
+        assert!(content.contains("existing"));
+    }
+
+    #[test]
+    fn add_tags_creates_frontmatter_if_absent() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(&dir, "plain.md", "just content");
+        vault.add_tags(&name, &["plain.md".into()], &["fresh".into()], "frontmatter", false, "end").unwrap();
+        let content = fs::read_to_string(dir.path().join("plain.md")).unwrap();
+        assert!(content.starts_with("---"));
+        assert!(content.contains("fresh"));
+    }
+
+    #[test]
+    fn add_tags_to_content_end() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(&dir, "note.md", "body text");
+        vault.add_tags(&name, &["note.md".into()], &["inline".into()], "content", false, "end").unwrap();
+        let content = fs::read_to_string(dir.path().join("note.md")).unwrap();
+        assert!(content.ends_with("#inline"));
+    }
+
+    #[test]
+    fn add_tags_to_content_start() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(&dir, "note.md", "body");
+        vault.add_tags(&name, &["note.md".into()], &["first".into()], "content", false, "start").unwrap();
+        let content = fs::read_to_string(dir.path().join("note.md")).unwrap();
+        assert!(content.contains("#first"));
+    }
+
+    #[test]
+    fn add_tags_both_location() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(&dir, "note.md", "body");
+        vault.add_tags(&name, &["note.md".into()], &["mytag".into()], "both", false, "end").unwrap();
+        let content = fs::read_to_string(dir.path().join("note.md")).unwrap();
+        assert!(content.contains("mytag")); // in frontmatter
+        assert!(content.contains("#mytag")); // inline
+    }
+
+    #[test]
+    fn add_tags_skips_missing_files() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        let modified = vault.add_tags(
+            &name, &["ghost.md".into()], &["tag".into()], "frontmatter", false, "end"
+        ).unwrap();
+        assert!(modified.is_empty());
+    }
+
+    #[test]
+    fn add_tags_normalizes() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(&dir, "note.md", "content");
+        vault.add_tags(&name, &["note.md".into()], &["My Tag".into()], "frontmatter", true, "end").unwrap();
+        let content = fs::read_to_string(dir.path().join("note.md")).unwrap();
+        assert!(content.contains("my-tag"));
+    }
+
+    #[test]
+    fn add_tags_deduplicates() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(&dir, "note.md", "---\ntags:\n  - existing\n---\n");
+        vault.add_tags(&name, &["note.md".into()], &["existing".into()], "frontmatter", false, "end").unwrap();
+        let content = fs::read_to_string(dir.path().join("note.md")).unwrap();
+        // should still only appear once
+        assert_eq!(content.matches("existing").count(), 1);
+    }
+
+    #[test]
+    fn add_tags_to_frontmatter_inline_tag_line() {
+        // covers the inline (non-block) tags: branch in add_tags_to_frontmatter
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(&dir, "note.md", "---\ntags: [existing]\n---\nbody");
+        vault.add_tags(&name, &["note.md".into()], &["added".into()], "frontmatter", false, "end").unwrap();
+        let content = fs::read_to_string(dir.path().join("note.md")).unwrap();
+        assert!(content.contains("added"));
+    }
+
+    #[test]
+    fn add_tags_to_content_start_with_frontmatter() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(&dir, "note.md", "---\ntitle: test\n---\nbody text");
+        vault.add_tags(&name, &["note.md".into()], &["top".into()], "content", false, "start").unwrap();
+        let content = fs::read_to_string(dir.path().join("note.md")).unwrap();
+        assert!(content.contains("#top"));
+    }
+
+    // ── remove_tags ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn remove_tags_from_frontmatter() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(&dir, "note.md", "---\ntags:\n  - keep\n  - remove\n---\nbody");
+        vault.remove_tags(&name, &["note.md".into()], &["remove".into()]).unwrap();
+        let content = fs::read_to_string(dir.path().join("note.md")).unwrap();
+        assert!(!content.contains("  - remove"));
+        assert!(content.contains("keep"));
+    }
+
+    #[test]
+    fn remove_tags_from_content() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(&dir, "note.md", "text #remove more");
+        vault.remove_tags(&name, &["note.md".into()], &["remove".into()]).unwrap();
+        let content = fs::read_to_string(dir.path().join("note.md")).unwrap();
+        assert!(!content.contains("#remove"));
+    }
+
+    #[test]
+    fn remove_tags_skips_missing_files() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        let modified = vault.remove_tags(&name, &["ghost.md".into()], &["t".into()]).unwrap();
+        assert!(modified.is_empty());
+    }
+
+    // ── rename_tag ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn rename_tag_in_frontmatter() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(&dir, "note.md", "---\ntags:\n  - old\n---\n");
+        let modified = vault.rename_tag(&name, "old", "new").unwrap();
+        assert_eq!(modified.len(), 1);
+        let content = fs::read_to_string(dir.path().join("note.md")).unwrap();
+        assert!(content.contains("- new"));
+        assert!(!content.contains("- old"));
+    }
+
+    #[test]
+    fn rename_tag_inline() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(&dir, "note.md", "text #old-tag more");
+        vault.rename_tag(&name, "old-tag", "new-tag").unwrap();
+        let content = fs::read_to_string(dir.path().join("note.md")).unwrap();
+        assert!(content.contains("#new-tag"));
+        assert!(!content.contains("#old-tag"));
+    }
+
+    #[test]
+    fn rename_tag_no_matches() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(&dir, "note.md", "no tags here");
+        let modified = vault.rename_tag(&name, "absent", "new").unwrap();
+        assert!(modified.is_empty());
+    }
+
+    // ── private helpers ───────────────────────────────────────────────────────
+
+    #[test]
+    fn extract_frontmatter_returns_none_without_dashes() {
+        assert!(extract_frontmatter("no frontmatter").is_none());
+    }
+
+    #[test]
+    fn extract_frontmatter_parses_block_list() {
+        let fm = extract_frontmatter("---\ntags:\n  - a\n  - b\n---\nbody").unwrap();
+        assert_eq!(fm.tags, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn extract_frontmatter_parses_inline_list() {
+        let fm = extract_frontmatter("---\ntags: [x, y]\n---\n").unwrap();
+        assert_eq!(fm.tags, vec!["x", "y"]);
+    }
+
+    #[test]
+    fn extract_frontmatter_parses_single_value() {
+        let fm = extract_frontmatter("---\ntags: solo\n---\n").unwrap();
+        assert_eq!(fm.tags, vec!["solo"]);
+    }
+
+    #[test]
+    fn normalize_tag_lowercases_and_hyphenates() {
+        assert_eq!(normalize_tag("My Tag"), "my-tag");
+        assert_eq!(normalize_tag("Hello World"), "hello-world");
+        assert_eq!(normalize_tag("simple"), "simple");
+    }
+
+    #[test]
+    fn ensure_md_adds_extension() {
+        assert_eq!(ensure_md_extension("note"), "note.md");
+        assert_eq!(ensure_md_extension("note.md"), "note.md");
+    }
 }

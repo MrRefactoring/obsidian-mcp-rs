@@ -17,6 +17,7 @@
   <a href="https://www.npmjs.com/package/obsidian-mcp-rs" target="_blank" rel="noopener noreferrer"><img alt="npm downloads" src="https://img.shields.io/npm/dm/obsidian-mcp-rs.svg?style=flat-square"/></a>
   <a href="LICENSE" target="_blank" rel="noopener noreferrer"><img alt="License: MIT" src="https://img.shields.io/github/license/MrRefactoring/obsidian-mcp-rs?color=green&style=flat-square"/></a>
   <img alt="Platforms" src="https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows-blue?style=flat-square"/>
+  <a href="https://codecov.io/gh/MrRefactoring/obsidian-mcp-rs" target="_blank" rel="noopener noreferrer"><img alt="Coverage" src="https://codecov.io/gh/MrRefactoring/obsidian-mcp-rs/branch/master/graph/badge.svg"/></a>
 
   <br/>
   <br/>
@@ -24,16 +25,65 @@
   <span>Rust-based MCP server that connects your Obsidian vault to Claude, Cursor, and any AI client — single binary, zero runtime dependencies.</span>
 </div>
 
+<div align="center">
+
+**English** | [Русский](README.ru.md)
+
+</div>
+
 <br/>
 
 > [!WARNING]
 > This MCP server has **full read and write access** to your Obsidian vault. It can create, edit, move, and delete notes without confirmation. Use at your own risk. Always keep backups of your vault before connecting it to an AI client.
+>
+> To restrict the server to read-only access, pass `--no-edit` — see [Read-only mode](#read-only-mode-no-edit).
 
+## Quick setup
+
+Connect your vault to any AI client in seconds with the interactive wizard:
+
+```bash
+npx obsidian-mcp-rs install
+```
+
+The wizard scans for installed AI clients, lets you pick where to install, and writes the config automatically. Or install directly without interaction:
+
+```bash
+# Claude Desktop
+npx obsidian-mcp-rs install claude ~/Documents/Obsidian/MyVault
+
+# Claude Code – project-local (.mcp.json in current directory)
+npx obsidian-mcp-rs install claude-code ~/vault
+
+# Claude Code – global (~/.claude.json)
+npx obsidian-mcp-rs install claude-code --global ~/vault
+
+# Cursor – project-local (.cursor/mcp.json in current directory)
+npx obsidian-mcp-rs install cursor ~/vault
+
+# Cursor – global (~/.cursor/mcp.json)
+npx obsidian-mcp-rs install cursor --global ~/vault
+
+# OpenClaw
+npx obsidian-mcp-rs install openclaw ~/vault
+
+# Multiple vaults
+npx obsidian-mcp-rs install claude ~/vault1 ~/vault2
+```
+
+Other management commands:
+
+```bash
+npx obsidian-mcp-rs list       # show installation status across all clients
+npx obsidian-mcp-rs uninstall  # interactive removal wizard
+npx obsidian-mcp-rs uninstall claude --dry-run  # preview changes without writing
+```
 
 ## Features
 
 - **12 tools** covering note CRUD, search, directory management, and tag operations
 - **Multi-vault** support — pass multiple vault paths as arguments
+- **Read-only mode** — `--no-edit` flag disables all write tools at the server level
 - **Zero runtime dependencies** — single static binary, no Node.js required for execution
 - **Cross-platform** — macOS (ARM64 + x64), Linux (x64 + ARM64 + musl), Windows (x64 + ARM64)
 - **Tag search** via `tag:` prefix in queries
@@ -43,17 +93,18 @@
 ## Installation
 
 ```bash
-npx obsidian-mcp-rs /path/to/your/vault
+npm install -g obsidian-mcp-rs
 ```
 
-Or install globally:
+Or use directly without installing (recommended):
 
 ```bash
-npm install -g obsidian-mcp-rs
-obsidian-mcp-rs /path/to/your/vault
+npx obsidian-mcp-rs install   # wizard writes the config for you
 ```
 
 ## Configuration
+
+> **Tip:** `npx obsidian-mcp-rs install` writes these configs automatically. The sections below are for manual setup or reference.
 
 ### Claude Desktop (`claude_desktop_config.json`)
 
@@ -130,6 +181,35 @@ Once added, Cursor's AI will have access to all 12 vault tools. You can verify w
     }
   }
 }
+```
+
+## Read-only mode (`--no-edit`)
+
+Pass `--no-edit` to start the server in read-only mode. All write tools return an error immediately — no vault files are modified.
+
+**Read-only tools (always available):**
+- `read-note`, `search-vault`, `list-available-vaults`
+
+**Blocked tools when `--no-edit` is set:**
+- `create-note`, `edit-note`, `delete-note`, `move-note`, `create-directory`, `add-tags`, `remove-tags`, `rename-tag`
+
+### Manual config with `--no-edit`
+
+```json
+{
+  "mcpServers": {
+    "obsidian": {
+      "command": "npx",
+      "args": ["-y", "obsidian-mcp-rs", "--no-edit", "/path/to/your/vault"]
+    }
+  }
+}
+```
+
+### Via `install` wizard
+
+```bash
+npx obsidian-mcp-rs install claude --no-edit ~/Documents/Obsidian/MyVault
 ```
 
 ## Platform Support
@@ -299,6 +379,52 @@ cross build --release --target x86_64-unknown-linux-musl
 | `RUST_LOG` | Log level: `error`, `warn` (default), `info`, `debug`, `trace` |
 
 Logs are written to **stderr** — stdout is reserved for MCP JSON-RPC.
+
+## Troubleshooting
+
+When the server runs as a background MCP process, stderr is captured by the client and may not be visible. obsidian-mcp-rs therefore writes **DEBUG logs to a file automatically** whenever it starts.
+
+### Log file location
+
+| Platform | Default path |
+|----------|--------------|
+| macOS | `~/Library/Logs/obsidian-mcp-rs/obsidian-mcp-rs.log` |
+| Linux | `~/.local/share/obsidian-mcp-rs/obsidian-mcp-rs.log` |
+| Windows | `%LOCALAPPDATA%\obsidian-mcp-rs\obsidian-mcp-rs.log` |
+
+### View logs and get a bug-report link
+
+```bash
+npx obsidian-mcp-rs logs
+```
+
+Prints the log file path, the last 100 lines, and a link to open a GitHub issue.
+
+### Verbose output to stderr
+
+Useful when running the server manually in a terminal:
+
+```bash
+obsidian-mcp-rs --verbose /path/to/vault
+# equivalent:
+RUST_LOG=debug obsidian-mcp-rs /path/to/vault
+```
+
+### Custom log file
+
+```bash
+# Write to a specific path:
+obsidian-mcp-rs --log-file /tmp/mcp-debug.log /path/to/vault
+
+# Disable file logging entirely:
+obsidian-mcp-rs --log-file - /path/to/vault
+```
+
+### Reporting a bug
+
+1. Run `npx obsidian-mcp-rs logs`
+2. Copy the output (or attach the log file)
+3. Open an issue: <https://github.com/MrRefactoring/obsidian-mcp-rs/issues/new>
 
 ## Architecture
 
