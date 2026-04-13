@@ -63,11 +63,9 @@ for dir in "${PLATFORM_DIRS[@]}"; do
   pkg="$dir/package.json"
   if [[ -f "$pkg" ]]; then
     sed -i '' "s/\"version\": \"$CURRENT_VERSION\"/\"version\": \"$NEW_VERSION\"/" "$pkg"
-    # Update optionalDependencies versions in the main wrapper
-    sed -i '' "s/\"@obsidian-mcp-rs\\/[^\"]*\": \"$CURRENT_VERSION\"/$(
-      grep -o '"@obsidian-mcp-rs/[^"]*": "'"$CURRENT_VERSION"'"' "$pkg" | \
-      sed "s/$CURRENT_VERSION/$NEW_VERSION/g"
-    )/g" "$pkg" 2>/dev/null || true
+    # Update optionalDependencies — match any existing version, not just CURRENT_VERSION,
+    # because platform package versions may lag behind the wrapper version.
+    sed -i '' "s/\"@obsidian-mcp-rs\/\([^\"]*\)\": \"[^\"]*\"/\"@obsidian-mcp-rs\/\1\": \"$NEW_VERSION\"/g" "$pkg"
     echo "  Updated $pkg"
   fi
 done

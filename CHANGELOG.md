@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.5] - 2026-04-14
+
+### Fixed
+
+- `install`, `uninstall`, `list`, and `logs` subcommands not recognized by the published binary — the platform packages (`@obsidian-mcp-rs/*`) were pinned to `0.1.2` in `optionalDependencies` instead of the current version, so npx resolved an old binary without these subcommands
+- `prepare-release.sh` now updates `optionalDependencies` unconditionally (previously only matched entries at `CURRENT_VERSION`, silently skipping them when platform packages lagged behind)
+
+
 ## [0.1.4] - 2026-04-13
 
 ### Changed
@@ -103,6 +111,7 @@
 - GitHub Actions CI: lint, test, cross-target `cargo check`
 - GitHub Actions release pipeline: builds all 7 targets, creates GitHub Release with SHA256 checksums, publishes npm packages with provenance
 
+[0.1.5]: https://github.com/MrRefactoring/obsidian-mcp-rs/releases/tag/v0.1.5
 [0.1.4]: https://github.com/MrRefactoring/obsidian-mcp-rs/releases/tag/v0.1.4
 [0.1.3]: https://github.com/MrRefactoring/obsidian-mcp-rs/releases/tag/v0.1.3
 [0.1.2]: https://github.com/MrRefactoring/obsidian-mcp-rs/releases/tag/v0.1.2
