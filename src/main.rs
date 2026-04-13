@@ -76,8 +76,7 @@ enum Commands {
 /// Platform-specific default log file path.
 fn default_log_path() -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
-    let base = dirs::home_dir()
-        .map(|h| h.join("Library").join("Logs").join("obsidian-mcp-rs"));
+    let base = dirs::home_dir().map(|h| h.join("Library").join("Logs").join("obsidian-mcp-rs"));
 
     #[cfg(not(target_os = "macos"))]
     let base = dirs::data_local_dir().map(|d| d.join("obsidian-mcp-rs"));
@@ -113,7 +112,9 @@ impl Write for FileWriterGuard<'_> {
 /// - **stderr**: WARN by default (DEBUG when `verbose = true`), overridden by `RUST_LOG`
 /// - **file**: DEBUG always — captures everything for bug reports
 fn setup_logging(verbose: bool, log_path: Option<PathBuf>) {
-    use tracing_subscriber::{EnvFilter, Layer, fmt, layer::SubscriberExt, util::SubscriberInitExt};
+    use tracing_subscriber::{
+        EnvFilter, Layer, fmt, layer::SubscriberExt, util::SubscriberInitExt,
+    };
 
     let stderr_filter = if verbose {
         EnvFilter::new("debug")

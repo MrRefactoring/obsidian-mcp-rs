@@ -1,26 +1,19 @@
 use std::sync::Arc;
 
-use similar::TextDiff;
 use rmcp::{
-    ErrorData as McpError,
-    ServerHandler,
+    ErrorData as McpError, ServerHandler,
     handler::server::router::tool::ToolRouter,
     model::{CallToolResult, Content, ServerCapabilities, ServerInfo},
     tool, tool_handler, tool_router,
 };
+use similar::TextDiff;
 
 use crate::{
     tools::{
-        add_tags::AddTagsParams,
-        create_directory::CreateDirectoryParams,
-        create_note::CreateNoteParams,
-        delete_note::DeleteNoteParams,
-        edit_note::EditNoteParams,
-        list_vaults::ListVaultsParams,
-        move_note::MoveNoteParams,
-        read_note::ReadNoteParams,
-        remove_tags::RemoveTagsParams,
-        rename_tag::RenameTagParams,
+        add_tags::AddTagsParams, create_directory::CreateDirectoryParams,
+        create_note::CreateNoteParams, delete_note::DeleteNoteParams, edit_note::EditNoteParams,
+        list_vaults::ListVaultsParams, move_note::MoveNoteParams, read_note::ReadNoteParams,
+        remove_tags::RemoveTagsParams, rename_tag::RenameTagParams,
         search_vault::SearchVaultParams,
     },
     vault::{SearchType, VaultManager},
@@ -123,7 +116,14 @@ impl ObsidianHandler {
         self.check_write()?;
         let (old, new) = self
             .vault
-            .edit_note(&vault, &filename, &operation, &content, folder.as_deref(), search.as_deref())
+            .edit_note(
+                &vault,
+                &filename,
+                &operation,
+                &content,
+                folder.as_deref(),
+                search.as_deref(),
+            )
             .map_err(err)?;
         let diff = TextDiff::from_lines(&old, &new);
         let unified = diff
@@ -131,7 +131,10 @@ impl ObsidianHandler {
             .context_radius(3)
             .header(&filename, &filename)
             .to_string();
-        ok(format!("Note '{}' updated with operation '{}'\n\n```diff\n{}```", filename, operation, unified))
+        ok(format!(
+            "Note '{}' updated with operation '{}'\n\n```diff\n{}```",
+            filename, operation, unified
+        ))
     }
 
     /// Delete a note from the vault.
@@ -286,10 +289,7 @@ impl ObsidianHandler {
     ) -> Result<CallToolResult, McpError> {
         tracing::debug!(tool = "remove-tags", %vault, ?tags);
         self.check_write()?;
-        let modified = self
-            .vault
-            .remove_tags(&vault, &files, &tags)
-            .map_err(err)?;
+        let modified = self.vault.remove_tags(&vault, &files, &tags).map_err(err)?;
         ok(format!(
             "Removed tags {:?} from {} file(s): {}",
             tags,
@@ -346,9 +346,7 @@ impl ObsidianHandler {
 #[tool_handler]
 impl ServerHandler for ObsidianHandler {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(
-            ServerCapabilities::builder().enable_tools().build(),
-        )
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
     }
 }
 
@@ -361,16 +359,21 @@ mod tests {
 
     use crate::tools::{
         add_tags::AddTagsParams, create_directory::CreateDirectoryParams,
-        create_note::CreateNoteParams, delete_note::DeleteNoteParams,
-        edit_note::EditNoteParams, list_vaults::ListVaultsParams,
-        move_note::MoveNoteParams, read_note::ReadNoteParams,
+        create_note::CreateNoteParams, delete_note::DeleteNoteParams, edit_note::EditNoteParams,
+        list_vaults::ListVaultsParams, move_note::MoveNoteParams, read_note::ReadNoteParams,
         remove_tags::RemoveTagsParams, rename_tag::RenameTagParams,
         search_vault::SearchVaultParams,
     };
 
     fn setup() -> (TempDir, ObsidianHandler, String) {
         let dir = TempDir::new().unwrap();
-        let vault_name = dir.path().file_name().unwrap().to_str().unwrap().to_string();
+        let vault_name = dir
+            .path()
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
         let manager = VaultManager::new(vec![dir.path().to_path_buf()]);
         let handler = ObsidianHandler::new(manager);
         (dir, handler, vault_name)
@@ -386,14 +389,22 @@ mod tests {
     fn read_note_ok() {
         let (dir, h, vault) = setup();
         write(&dir, "n.md", "body");
-        let r = h.read_note(Parameters(ReadNoteParams { vault, filename: "n.md".into(), folder: None }));
+        let r = h.read_note(Parameters(ReadNoteParams {
+            vault,
+            filename: "n.md".into(),
+            folder: None,
+        }));
         assert!(r.is_ok());
     }
 
     #[test]
     fn read_note_not_found_is_err() {
         let (_, h, vault) = setup();
-        let r = h.read_note(Parameters(ReadNoteParams { vault, filename: "ghost".into(), folder: None }));
+        let r = h.read_note(Parameters(ReadNoteParams {
+            vault,
+            filename: "ghost".into(),
+            folder: None,
+        }));
         assert!(r.is_err());
     }
 
@@ -403,7 +414,10 @@ mod tests {
     fn create_note_ok() {
         let (dir, h, vault) = setup();
         let r = h.create_note(Parameters(CreateNoteParams {
-            vault, filename: "new.md".into(), content: "hi".into(), folder: None,
+            vault,
+            filename: "new.md".into(),
+            content: "hi".into(),
+            folder: None,
         }));
         assert!(r.is_ok());
         assert!(dir.path().join("new.md").exists());
@@ -414,7 +428,10 @@ mod tests {
         let (dir, h, vault) = setup();
         write(&dir, "dup.md", "");
         let r = h.create_note(Parameters(CreateNoteParams {
-            vault, filename: "dup".into(), content: "".into(), folder: None,
+            vault,
+            filename: "dup".into(),
+            content: "".into(),
+            folder: None,
         }));
         assert!(r.is_err());
     }
@@ -426,8 +443,12 @@ mod tests {
         let (dir, h, vault) = setup();
         write(&dir, "e.md", "a");
         let r = h.edit_note(Parameters(EditNoteParams {
-            vault, filename: "e.md".into(), operation: "append".into(),
-            content: "b".into(), folder: None, search: None,
+            vault,
+            filename: "e.md".into(),
+            operation: "append".into(),
+            content: "b".into(),
+            folder: None,
+            search: None,
         }));
         assert!(r.is_ok());
     }
@@ -436,8 +457,12 @@ mod tests {
     fn edit_note_error_on_missing() {
         let (_, h, vault) = setup();
         let r = h.edit_note(Parameters(EditNoteParams {
-            vault, filename: "ghost".into(), operation: "append".into(),
-            content: "x".into(), folder: None, search: None,
+            vault,
+            filename: "ghost".into(),
+            operation: "append".into(),
+            content: "x".into(),
+            folder: None,
+            search: None,
         }));
         assert!(r.is_err());
     }
@@ -449,7 +474,9 @@ mod tests {
         let (dir, h, vault) = setup();
         write(&dir, "del.md", "");
         let r = h.delete_note(Parameters(DeleteNoteParams {
-            vault, filename: "del".into(), folder: None,
+            vault,
+            filename: "del".into(),
+            folder: None,
         }));
         assert!(r.is_ok());
     }
@@ -458,7 +485,9 @@ mod tests {
     fn delete_note_missing_is_err() {
         let (_, h, vault) = setup();
         let r = h.delete_note(Parameters(DeleteNoteParams {
-            vault, filename: "ghost".into(), folder: None,
+            vault,
+            filename: "ghost".into(),
+            folder: None,
         }));
         assert!(r.is_err());
     }
@@ -470,8 +499,11 @@ mod tests {
         let (dir, h, vault) = setup();
         write(&dir, "src.md", "");
         let r = h.move_note(Parameters(MoveNoteParams {
-            vault, filename: "src".into(), folder: None,
-            new_folder: None, new_filename: Some("dst".into()),
+            vault,
+            filename: "src".into(),
+            folder: None,
+            new_folder: None,
+            new_filename: Some("dst".into()),
         }));
         assert!(r.is_ok());
     }
@@ -480,8 +512,11 @@ mod tests {
     fn move_note_missing_is_err() {
         let (_, h, vault) = setup();
         let r = h.move_note(Parameters(MoveNoteParams {
-            vault, filename: "ghost".into(), folder: None,
-            new_folder: None, new_filename: None,
+            vault,
+            filename: "ghost".into(),
+            folder: None,
+            new_folder: None,
+            new_filename: None,
         }));
         assert!(r.is_err());
     }
@@ -492,7 +527,9 @@ mod tests {
     fn create_directory_ok() {
         let (dir, h, vault) = setup();
         let r = h.create_directory(Parameters(CreateDirectoryParams {
-            vault, path: "newdir".into(), recursive: Some(true),
+            vault,
+            path: "newdir".into(),
+            recursive: Some(true),
         }));
         assert!(r.is_ok());
         assert!(dir.path().join("newdir").is_dir());
@@ -502,7 +539,9 @@ mod tests {
     fn create_directory_default_recursive() {
         let (dir, h, vault) = setup();
         let r = h.create_directory(Parameters(CreateDirectoryParams {
-            vault, path: "a/b".into(), recursive: None,
+            vault,
+            path: "a/b".into(),
+            recursive: None,
         }));
         assert!(r.is_ok());
         assert!(dir.path().join("a/b").is_dir());
@@ -515,8 +554,11 @@ mod tests {
         let (dir, h, vault) = setup();
         write(&dir, "s.md", "needle content");
         let r = h.search_vault(Parameters(SearchVaultParams {
-            vault, query: "needle".into(), path: None,
-            case_sensitive: None, search_type: None,
+            vault,
+            query: "needle".into(),
+            path: None,
+            case_sensitive: None,
+            search_type: None,
         }));
         assert!(r.is_ok());
         let text = r.unwrap().content[0].as_text().unwrap().text.clone();
@@ -528,8 +570,11 @@ mod tests {
         let (dir, h, vault) = setup();
         write(&dir, "s.md", "no match");
         let r = h.search_vault(Parameters(SearchVaultParams {
-            vault, query: "zzz".into(), path: None,
-            case_sensitive: None, search_type: None,
+            vault,
+            query: "zzz".into(),
+            path: None,
+            case_sensitive: None,
+            search_type: None,
         }));
         assert!(r.is_ok());
         let text = r.unwrap().content[0].as_text().unwrap().text.clone();
@@ -541,8 +586,11 @@ mod tests {
         let (dir, h, vault) = setup();
         write(&dir, "matchme.md", "");
         let r = h.search_vault(Parameters(SearchVaultParams {
-            vault, query: "matchme".into(), path: None,
-            case_sensitive: None, search_type: Some("filename".into()),
+            vault,
+            query: "matchme".into(),
+            path: None,
+            case_sensitive: None,
+            search_type: Some("filename".into()),
         }));
         assert!(r.is_ok());
     }
@@ -552,8 +600,11 @@ mod tests {
         let (dir, h, vault) = setup();
         write(&dir, "note.md", "content");
         let r = h.search_vault(Parameters(SearchVaultParams {
-            vault, query: "note".into(), path: None,
-            case_sensitive: None, search_type: Some("both".into()),
+            vault,
+            query: "note".into(),
+            path: None,
+            case_sensitive: None,
+            search_type: Some("both".into()),
         }));
         assert!(r.is_ok());
     }
@@ -565,8 +616,12 @@ mod tests {
         let (dir, h, vault) = setup();
         write(&dir, "t.md", "content");
         let r = h.add_tags(Parameters(AddTagsParams {
-            vault, files: vec!["t.md".into()], tags: vec!["mytag".into()],
-            location: None, normalize: None, position: None,
+            vault,
+            files: vec!["t.md".into()],
+            tags: vec!["mytag".into()],
+            location: None,
+            normalize: None,
+            position: None,
         }));
         assert!(r.is_ok());
     }
@@ -578,7 +633,9 @@ mod tests {
         let (dir, h, vault) = setup();
         write(&dir, "t.md", "text #old");
         let r = h.remove_tags(Parameters(RemoveTagsParams {
-            vault, files: vec!["t.md".into()], tags: vec!["old".into()],
+            vault,
+            files: vec!["t.md".into()],
+            tags: vec!["old".into()],
         }));
         assert!(r.is_ok());
     }
@@ -590,7 +647,9 @@ mod tests {
         let (dir, h, vault) = setup();
         write(&dir, "t.md", "---\ntags:\n  - alpha\n---\n");
         let r = h.rename_tag(Parameters(RenameTagParams {
-            vault, old_tag: "alpha".into(), new_tag: "beta".into(),
+            vault,
+            old_tag: "alpha".into(),
+            new_tag: "beta".into(),
         }));
         assert!(r.is_ok());
     }
@@ -620,7 +679,13 @@ mod tests {
 
     fn setup_readonly() -> (TempDir, ObsidianHandler, String) {
         let dir = TempDir::new().unwrap();
-        let vault_name = dir.path().file_name().unwrap().to_str().unwrap().to_string();
+        let vault_name = dir
+            .path()
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
         let manager = VaultManager::new(vec![dir.path().to_path_buf()]);
         let handler = ObsidianHandler::with_options(manager, true);
         (dir, handler, vault_name)
@@ -630,7 +695,10 @@ mod tests {
     fn no_edit_blocks_create_note() {
         let (_, h, vault) = setup_readonly();
         let r = h.create_note(Parameters(CreateNoteParams {
-            vault, filename: "x.md".into(), content: "".into(), folder: None,
+            vault,
+            filename: "x.md".into(),
+            content: "".into(),
+            folder: None,
         }));
         assert!(r.is_err());
         assert!(r.unwrap_err().message.contains("--no-edit"));
@@ -641,8 +709,12 @@ mod tests {
         let (dir, h, vault) = setup_readonly();
         write(&dir, "e.md", "a");
         let r = h.edit_note(Parameters(EditNoteParams {
-            vault, filename: "e.md".into(), operation: "append".into(),
-            content: "b".into(), folder: None, search: None,
+            vault,
+            filename: "e.md".into(),
+            operation: "append".into(),
+            content: "b".into(),
+            folder: None,
+            search: None,
         }));
         assert!(r.is_err());
         assert!(r.unwrap_err().message.contains("--no-edit"));
@@ -653,7 +725,9 @@ mod tests {
         let (dir, h, vault) = setup_readonly();
         write(&dir, "del.md", "");
         let r = h.delete_note(Parameters(DeleteNoteParams {
-            vault, filename: "del.md".into(), folder: None,
+            vault,
+            filename: "del.md".into(),
+            folder: None,
         }));
         assert!(r.is_err());
         assert!(r.unwrap_err().message.contains("--no-edit"));
@@ -664,8 +738,11 @@ mod tests {
         let (dir, h, vault) = setup_readonly();
         write(&dir, "src.md", "");
         let r = h.move_note(Parameters(MoveNoteParams {
-            vault, filename: "src.md".into(), folder: None,
-            new_folder: None, new_filename: Some("dst.md".into()),
+            vault,
+            filename: "src.md".into(),
+            folder: None,
+            new_folder: None,
+            new_filename: Some("dst.md".into()),
         }));
         assert!(r.is_err());
         assert!(r.unwrap_err().message.contains("--no-edit"));
@@ -675,7 +752,9 @@ mod tests {
     fn no_edit_blocks_create_directory() {
         let (_, h, vault) = setup_readonly();
         let r = h.create_directory(Parameters(CreateDirectoryParams {
-            vault, path: "newdir".into(), recursive: None,
+            vault,
+            path: "newdir".into(),
+            recursive: None,
         }));
         assert!(r.is_err());
         assert!(r.unwrap_err().message.contains("--no-edit"));
@@ -686,8 +765,12 @@ mod tests {
         let (dir, h, vault) = setup_readonly();
         write(&dir, "t.md", "content");
         let r = h.add_tags(Parameters(AddTagsParams {
-            vault, files: vec!["t.md".into()], tags: vec!["tag".into()],
-            location: None, normalize: None, position: None,
+            vault,
+            files: vec!["t.md".into()],
+            tags: vec!["tag".into()],
+            location: None,
+            normalize: None,
+            position: None,
         }));
         assert!(r.is_err());
         assert!(r.unwrap_err().message.contains("--no-edit"));
@@ -698,7 +781,9 @@ mod tests {
         let (dir, h, vault) = setup_readonly();
         write(&dir, "t.md", "#old");
         let r = h.remove_tags(Parameters(RemoveTagsParams {
-            vault, files: vec!["t.md".into()], tags: vec!["old".into()],
+            vault,
+            files: vec!["t.md".into()],
+            tags: vec!["old".into()],
         }));
         assert!(r.is_err());
         assert!(r.unwrap_err().message.contains("--no-edit"));
@@ -709,7 +794,9 @@ mod tests {
         let (dir, h, vault) = setup_readonly();
         write(&dir, "t.md", "---\ntags:\n  - alpha\n---\n");
         let r = h.rename_tag(Parameters(RenameTagParams {
-            vault, old_tag: "alpha".into(), new_tag: "beta".into(),
+            vault,
+            old_tag: "alpha".into(),
+            new_tag: "beta".into(),
         }));
         assert!(r.is_err());
         assert!(r.unwrap_err().message.contains("--no-edit"));
@@ -720,7 +807,9 @@ mod tests {
         let (dir, h, vault) = setup_readonly();
         write(&dir, "n.md", "body");
         let r = h.read_note(Parameters(ReadNoteParams {
-            vault, filename: "n.md".into(), folder: None,
+            vault,
+            filename: "n.md".into(),
+            folder: None,
         }));
         assert!(r.is_ok());
     }
@@ -730,8 +819,11 @@ mod tests {
         let (dir, h, vault) = setup_readonly();
         write(&dir, "s.md", "needle");
         let r = h.search_vault(Parameters(SearchVaultParams {
-            vault, query: "needle".into(), path: None,
-            case_sensitive: None, search_type: None,
+            vault,
+            query: "needle".into(),
+            path: None,
+            case_sensitive: None,
+            search_type: None,
         }));
         assert!(r.is_ok());
     }

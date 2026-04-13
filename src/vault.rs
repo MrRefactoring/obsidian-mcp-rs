@@ -61,12 +61,7 @@ impl VaultManager {
 
     pub fn resolve_vault(&self, name: &str) -> Result<&Path, VaultError> {
         self.vaults.get(name).map(|p| p.as_path()).ok_or_else(|| {
-            let available = self
-                .vaults
-                .keys()
-                .cloned()
-                .collect::<Vec<_>>()
-                .join(", ");
+            let available = self.vaults.keys().cloned().collect::<Vec<_>>().join(", ");
             VaultError::VaultNotFound(name.to_string(), available)
         })
     }
@@ -139,7 +134,8 @@ impl VaultManager {
                 vault.to_string(),
             ));
         }
-        let old = fs::read_to_string(&path).map_err(|e| VaultError::io(path.display().to_string(), e))?;
+        let old =
+            fs::read_to_string(&path).map_err(|e| VaultError::io(path.display().to_string(), e))?;
         let new = match operation {
             "append" => format!("{}\n{}", old.trim_end(), content),
             "prepend" => format!("{}\n{}", content, old.trim_start()),
@@ -219,7 +215,9 @@ impl VaultManager {
         let root = self.resolve_vault(vault)?;
         let dir = root.join(path);
         if dir.exists() {
-            return Err(VaultError::DirectoryAlreadyExists(dir.display().to_string()));
+            return Err(VaultError::DirectoryAlreadyExists(
+                dir.display().to_string(),
+            ));
         }
         if recursive {
             fs::create_dir_all(&dir).map_err(|e| VaultError::io(dir.display().to_string(), e))?;
@@ -286,12 +284,11 @@ impl VaultManager {
             let mut match_lines = Vec::new();
 
             if tag_search {
-                if let Some(tag) = tag_value {
-                    if let Ok(content) = fs::read_to_string(path) {
-                        if content_has_tag(&content, tag) {
-                            match_lines.push(format!("tag: {}", tag));
-                        }
-                    }
+                if let Some(tag) = tag_value
+                    && let Ok(content) = fs::read_to_string(path)
+                    && content_has_tag(&content, tag)
+                {
+                    match_lines.push(format!("tag: {}", tag));
                 }
             } else {
                 let filename_match = matches!(search_type, SearchType::Filename | SearchType::Both)
@@ -308,17 +305,17 @@ impl VaultManager {
                     match_lines.push(format!("filename: {}", filename));
                 }
 
-                if matches!(search_type, SearchType::Content | SearchType::Both) {
-                    if let Ok(content) = fs::read_to_string(path) {
-                        for (i, line) in content.lines().enumerate() {
-                            let line_cmp = if case_sensitive {
-                                line.to_string()
-                            } else {
-                                line.to_lowercase()
-                            };
-                            if line_cmp.contains(&query_lower) {
-                                match_lines.push(format!("line {}: {}", i + 1, line.trim()));
-                            }
+                if matches!(search_type, SearchType::Content | SearchType::Both)
+                    && let Ok(content) = fs::read_to_string(path)
+                {
+                    for (i, line) in content.lines().enumerate() {
+                        let line_cmp = if case_sensitive {
+                            line.to_string()
+                        } else {
+                            line.to_lowercase()
+                        };
+                        if line_cmp.contains(&query_lower) {
+                            match_lines.push(format!("line {}: {}", i + 1, line.trim()));
                         }
                     }
                 }
@@ -351,21 +348,23 @@ impl VaultManager {
         let mut modified = Vec::new();
 
         for file in files {
-            let path = if file.contains('/') || file.contains('\\') {
-                root.join(file)
-            } else {
-                root.join(file)
-            };
+            let path = root.join(file);
             if !path.exists() {
                 continue;
             }
 
-            let content =
-                fs::read_to_string(&path).map_err(|e| VaultError::io(path.display().to_string(), e))?;
+            let content = fs::read_to_string(&path)
+                .map_err(|e| VaultError::io(path.display().to_string(), e))?;
 
             let processed_tags: Vec<String> = tags
                 .iter()
-                .map(|t| if normalize { normalize_tag(t) } else { t.clone() })
+                .map(|t| {
+                    if normalize {
+                        normalize_tag(t)
+                    } else {
+                        t.clone()
+                    }
+                })
                 .collect();
 
             let new_content = match location {
@@ -400,8 +399,8 @@ impl VaultManager {
                 continue;
             }
 
-            let content =
-                fs::read_to_string(&path).map_err(|e| VaultError::io(path.display().to_string(), e))?;
+            let content = fs::read_to_string(&path)
+                .map_err(|e| VaultError::io(path.display().to_string(), e))?;
 
             let new_content = remove_tags_from_note(&content, tags);
             fs::write(&path, new_content)
@@ -435,8 +434,8 @@ impl VaultManager {
             })
         {
             let path = entry.path();
-            let content =
-                fs::read_to_string(path).map_err(|e| VaultError::io(path.display().to_string(), e))?;
+            let content = fs::read_to_string(path)
+                .map_err(|e| VaultError::io(path.display().to_string(), e))?;
 
             if content_has_tag(&content, old_tag) {
                 let new_content = rename_tag_in_note(&content, old_tag, new_tag);
@@ -476,10 +475,10 @@ fn normalize_tag(tag: &str) -> String {
 
 fn content_has_tag(content: &str, tag: &str) -> bool {
     let tag_lower = tag.to_lowercase();
-    if let Some(fm) = extract_frontmatter(content) {
-        if fm.tags.iter().any(|t| t.to_lowercase() == tag_lower) {
-            return true;
-        }
+    if let Some(fm) = extract_frontmatter(content)
+        && fm.tags.iter().any(|t| t.to_lowercase() == tag_lower)
+    {
+        return true;
     }
     let inline_pattern = format!("#{}", tag_lower);
     content.to_lowercase().contains(&inline_pattern)
@@ -533,15 +532,18 @@ fn parse_yaml_tags(yaml: &str) -> Vec<String> {
 }
 
 fn add_tags_to_frontmatter(content: &str, tags: &[String]) -> String {
-    if content.starts_with("---") {
-        let after = &content[3..];
+    if let Some(after) = content.strip_prefix("---") {
         if let Some(end) = after.find("\n---") {
             let fm_content = &after[..end];
             let rest = &after[end + 4..];
             let existing_tags = parse_yaml_tags(fm_content);
             let new_tags: Vec<&String> = tags
                 .iter()
-                .filter(|t| !existing_tags.iter().any(|e| e.to_lowercase() == t.to_lowercase()))
+                .filter(|t| {
+                    !existing_tags
+                        .iter()
+                        .any(|e| e.to_lowercase() == t.to_lowercase())
+                })
                 .collect();
 
             if new_tags.is_empty() {
@@ -599,12 +601,12 @@ fn add_tags_to_content(content: &str, tags: &[String], position: &str) -> String
     let tag_str = tag_str.trim_end();
 
     if position == "start" {
-        if content.starts_with("---") {
-            if let Some(end) = content[3..].find("\n---") {
-                let fm_end = 3 + end + 4;
-                let after_fm = &content[fm_end..].trim_start();
-                return format!("{}\n{}\n{}", &content[..fm_end], tag_str, after_fm);
-            }
+        if let Some(stripped) = content.strip_prefix("---")
+            && let Some(end) = stripped.find("\n---")
+        {
+            let fm_end = 3 + end + 4;
+            let after_fm = &content[fm_end..].trim_start();
+            return format!("{}\n{}\n{}", &content[..fm_end], tag_str, after_fm);
         }
         format!("{}\n{}", tag_str, content)
     } else {
@@ -616,28 +618,30 @@ fn remove_tags_from_note(content: &str, tags: &[String]) -> String {
     let tags_lower: Vec<String> = tags.iter().map(|t| t.to_lowercase()).collect();
     let mut result = content.to_string();
 
-    if result.starts_with("---") {
-        if let Some(end_pos) = result[3..].find("\n---") {
-            let fm_end = 3 + end_pos;
-            let fm_content = &result[3..fm_end].to_string();
-            let rest = result[fm_end + 4..].to_string();
+    if result.starts_with("---")
+        && let Some(end_pos) = result[3..].find("\n---")
+    {
+        let fm_end = 3 + end_pos;
+        let fm_content = result[3..fm_end].to_string();
+        let rest = result[fm_end + 4..].to_string();
 
-            let new_fm_lines: Vec<String> = fm_content
-                .lines()
-                .filter(|line| {
-                    let t = line.trim().trim_start_matches("- ").trim().to_lowercase();
-                    !tags_lower.contains(&t)
-                })
-                .map(String::from)
-                .collect();
+        let new_fm_lines: Vec<String> = fm_content
+            .lines()
+            .filter(|line| {
+                let t = line.trim().trim_start_matches("- ").trim().to_lowercase();
+                !tags_lower.contains(&t)
+            })
+            .map(String::from)
+            .collect();
 
-            result = format!("---{}{}---{}", "\n", new_fm_lines.join("\n"), rest);
-        }
+        result = format!("---{}{}---{}", "\n", new_fm_lines.join("\n"), rest);
     }
 
     for tag in &tags_lower {
         let inline = format!("#{}", tag);
-        result = result.replace(&inline, "").replace(&format!("#{} ", tag), "");
+        result = result
+            .replace(&inline, "")
+            .replace(&format!("#{} ", tag), "");
     }
     result
 }
@@ -646,31 +650,31 @@ fn rename_tag_in_note(content: &str, old_tag: &str, new_tag: &str) -> String {
     let old_lower = old_tag.to_lowercase();
     let mut result = content.to_string();
 
-    if result.starts_with("---") {
-        if let Some(end_pos) = result[3..].find("\n---") {
-            let fm_end = 3 + end_pos;
-            let fm_content = result[3..fm_end].to_string();
-            let rest = result[fm_end + 4..].to_string();
+    if result.starts_with("---")
+        && let Some(end_pos) = result[3..].find("\n---")
+    {
+        let fm_end = 3 + end_pos;
+        let fm_content = result[3..fm_end].to_string();
+        let rest = result[fm_end + 4..].to_string();
 
-            let new_fm: String = fm_content
-                .lines()
-                .map(|line| {
-                    let trimmed = line.trim();
-                    if trimmed.starts_with("- ") {
-                        let tag_val = trimmed.trim_start_matches("- ").trim();
-                        if tag_val.to_lowercase() == old_lower {
-                            let indent: String =
-                                line.chars().take_while(|c| c.is_whitespace()).collect();
-                            return format!("{}- {}", indent, new_tag);
-                        }
+        let new_fm: String = fm_content
+            .lines()
+            .map(|line| {
+                let trimmed = line.trim();
+                if trimmed.starts_with("- ") {
+                    let tag_val = trimmed.trim_start_matches("- ").trim();
+                    if tag_val.to_lowercase() == old_lower {
+                        let indent: String =
+                            line.chars().take_while(|c| c.is_whitespace()).collect();
+                        return format!("{}- {}", indent, new_tag);
                     }
-                    line.to_string()
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
+                }
+                line.to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
 
-            result = format!("---{}{}---{}", "\n", new_fm, rest);
-        }
+        result = format!("---{}{}---{}", "\n", new_fm, rest);
     }
 
     let inline_old = format!("#{}", old_tag);
@@ -709,7 +713,9 @@ mod tests {
         let name = vault_name(&dir);
         write_note(&dir, "note.md", "hello");
 
-        let (old, new) = vault.edit_note(&name, "note", "append", " world", None, None).unwrap();
+        let (old, new) = vault
+            .edit_note(&name, "note", "append", " world", None, None)
+            .unwrap();
 
         assert_eq!(old, "hello");
         assert_eq!(new, "hello\n world");
@@ -721,7 +727,9 @@ mod tests {
         let name = vault_name(&dir);
         write_note(&dir, "note.md", "world");
 
-        let (old, new) = vault.edit_note(&name, "note", "prepend", "hello\n", None, None).unwrap();
+        let (old, new) = vault
+            .edit_note(&name, "note", "prepend", "hello\n", None, None)
+            .unwrap();
 
         assert_eq!(old, "world");
         assert_eq!(new, "hello\n\nworld");
@@ -733,11 +741,16 @@ mod tests {
         let name = vault_name(&dir);
         write_note(&dir, "note.md", "old content");
 
-        let (old, new) = vault.edit_note(&name, "note", "replace", "new content", None, None).unwrap();
+        let (old, new) = vault
+            .edit_note(&name, "note", "replace", "new content", None, None)
+            .unwrap();
 
         assert_eq!(old, "old content");
         assert_eq!(new, "new content");
-        assert_eq!(fs::read_to_string(dir.path().join("note.md")).unwrap(), "new content");
+        assert_eq!(
+            fs::read_to_string(dir.path().join("note.md")).unwrap(),
+            "new content"
+        );
     }
 
     #[test]
@@ -752,7 +765,10 @@ mod tests {
 
         assert_eq!(old, "foo bar foo");
         assert_eq!(new, "baz bar foo");
-        assert_eq!(fs::read_to_string(dir.path().join("note.md")).unwrap(), "baz bar foo");
+        assert_eq!(
+            fs::read_to_string(dir.path().join("note.md")).unwrap(),
+            "baz bar foo"
+        );
     }
 
     #[test]
@@ -761,10 +777,22 @@ mod tests {
         let name = vault_name(&dir);
         write_note(&dir, "note.md", "hello world");
 
-        let result = vault.edit_note(&name, "note", "find_and_replace", "replacement", None, Some("missing"));
+        let result = vault.edit_note(
+            &name,
+            "note",
+            "find_and_replace",
+            "replacement",
+            None,
+            Some("missing"),
+        );
 
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Search text not found"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Search text not found")
+        );
     }
 
     #[test]
@@ -788,7 +816,12 @@ mod tests {
         let result = vault.edit_note(&name, "note", "invalid_op", "content", None, None);
 
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Unknown operation"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Unknown operation")
+        );
     }
 
     #[test]
@@ -807,7 +840,9 @@ mod tests {
         let name = vault_name(&dir);
         write_note(&dir, "note.md", "line1");
 
-        vault.edit_note(&name, "note", "append", "line2", None, None).unwrap();
+        vault
+            .edit_note(&name, "note", "append", "line2", None, None)
+            .unwrap();
 
         assert_eq!(
             fs::read_to_string(dir.path().join("note.md")).unwrap(),
@@ -878,8 +913,13 @@ mod tests {
     fn create_note_writes_content() {
         let (dir, vault) = make_vault();
         let name = vault_name(&dir);
-        vault.create_note(&name, "new", "hello world", None).unwrap();
-        assert_eq!(fs::read_to_string(dir.path().join("new.md")).unwrap(), "hello world");
+        vault
+            .create_note(&name, "new", "hello world", None)
+            .unwrap();
+        assert_eq!(
+            fs::read_to_string(dir.path().join("new.md")).unwrap(),
+            "hello world"
+        );
     }
 
     #[test]
@@ -894,7 +934,9 @@ mod tests {
     fn create_note_creates_parent_directories() {
         let (dir, vault) = make_vault();
         let name = vault_name(&dir);
-        vault.create_note(&name, "deep", "content", Some("a/b/c")).unwrap();
+        vault
+            .create_note(&name, "deep", "content", Some("a/b/c"))
+            .unwrap();
         assert!(dir.path().join("a/b/c/deep.md").exists());
     }
 
@@ -903,7 +945,9 @@ mod tests {
         let (dir, vault) = make_vault();
         let name = vault_name(&dir);
         write_note(&dir, "exists.md", "");
-        let err = vault.create_note(&name, "exists", "content", None).unwrap_err();
+        let err = vault
+            .create_note(&name, "exists", "content", None)
+            .unwrap_err();
         assert!(err.to_string().contains("already exists"));
     }
 
@@ -966,7 +1010,9 @@ mod tests {
         let (dir, vault) = make_vault();
         let name = vault_name(&dir);
         write_note(&dir, "original.md", "body");
-        let dest = vault.move_note(&name, "original", None, None, Some("renamed")).unwrap();
+        let dest = vault
+            .move_note(&name, "original", None, None, Some("renamed"))
+            .unwrap();
         assert!(dest.exists());
         assert!(!dir.path().join("original.md").exists());
     }
@@ -976,7 +1022,9 @@ mod tests {
         let (dir, vault) = make_vault();
         let name = vault_name(&dir);
         write_note(&dir, "note.md", "body");
-        vault.move_note(&name, "note", None, Some("sub"), None).unwrap();
+        vault
+            .move_note(&name, "note", None, Some("sub"), None)
+            .unwrap();
         assert!(dir.path().join("sub/note.md").exists());
     }
 
@@ -1021,7 +1069,9 @@ mod tests {
         let name = vault_name(&dir);
         write_note(&dir, "a.md", "the quick brown fox");
         write_note(&dir, "b.md", "no match here");
-        let results = vault.search_vault(&name, "quick", None, false, &SearchType::Content).unwrap();
+        let results = vault
+            .search_vault(&name, "quick", None, false, &SearchType::Content)
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].filename, "a");
     }
@@ -1032,7 +1082,9 @@ mod tests {
         let name = vault_name(&dir);
         write_note(&dir, "journal_2024.md", "");
         write_note(&dir, "other.md", "");
-        let results = vault.search_vault(&name, "journal", None, false, &SearchType::Filename).unwrap();
+        let results = vault
+            .search_vault(&name, "journal", None, false, &SearchType::Filename)
+            .unwrap();
         assert_eq!(results.len(), 1);
     }
 
@@ -1042,7 +1094,9 @@ mod tests {
         let name = vault_name(&dir);
         write_note(&dir, "target.md", "nothing special");
         write_note(&dir, "other.md", "has target word inside");
-        let results = vault.search_vault(&name, "target", None, false, &SearchType::Both).unwrap();
+        let results = vault
+            .search_vault(&name, "target", None, false, &SearchType::Both)
+            .unwrap();
         assert_eq!(results.len(), 2);
     }
 
@@ -1052,7 +1106,9 @@ mod tests {
         let name = vault_name(&dir);
         write_note(&dir, "tagged.md", "---\ntags:\n  - work\n---\ncontent");
         write_note(&dir, "other.md", "no tags");
-        let results = vault.search_vault(&name, "tag:work", None, false, &SearchType::Content).unwrap();
+        let results = vault
+            .search_vault(&name, "tag:work", None, false, &SearchType::Content)
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].filename, "tagged");
     }
@@ -1062,7 +1118,9 @@ mod tests {
         let (dir, vault) = make_vault();
         let name = vault_name(&dir);
         write_note(&dir, "inline.md", "some text #urgent here");
-        let results = vault.search_vault(&name, "tag:urgent", None, false, &SearchType::Content).unwrap();
+        let results = vault
+            .search_vault(&name, "tag:urgent", None, false, &SearchType::Content)
+            .unwrap();
         assert_eq!(results.len(), 1);
     }
 
@@ -1071,8 +1129,12 @@ mod tests {
         let (dir, vault) = make_vault();
         let name = vault_name(&dir);
         write_note(&dir, "note.md", "Hello World");
-        let insensitive = vault.search_vault(&name, "hello", None, false, &SearchType::Content).unwrap();
-        let sensitive = vault.search_vault(&name, "hello", None, true, &SearchType::Content).unwrap();
+        let insensitive = vault
+            .search_vault(&name, "hello", None, false, &SearchType::Content)
+            .unwrap();
+        let sensitive = vault
+            .search_vault(&name, "hello", None, true, &SearchType::Content)
+            .unwrap();
         assert_eq!(insensitive.len(), 1);
         assert_eq!(sensitive.len(), 0);
     }
@@ -1084,7 +1146,9 @@ mod tests {
         fs::create_dir_all(dir.path().join("sub")).unwrap();
         fs::write(dir.path().join("sub/inner.md"), "needle").unwrap();
         write_note(&dir, "root.md", "needle");
-        let results = vault.search_vault(&name, "needle", Some("sub"), false, &SearchType::Content).unwrap();
+        let results = vault
+            .search_vault(&name, "needle", Some("sub"), false, &SearchType::Content)
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].filename, "inner");
     }
@@ -1094,7 +1158,9 @@ mod tests {
         let (dir, vault) = make_vault();
         let name = vault_name(&dir);
         write_note(&dir, "note.md", "content");
-        let results = vault.search_vault(&name, "zzz_not_here", None, false, &SearchType::Content).unwrap();
+        let results = vault
+            .search_vault(&name, "zzz_not_here", None, false, &SearchType::Content)
+            .unwrap();
         assert!(results.is_empty());
     }
 
@@ -1105,7 +1171,16 @@ mod tests {
         let (dir, vault) = make_vault();
         let name = vault_name(&dir);
         write_note(&dir, "note.md", "---\ntags:\n  - existing\n---\nbody");
-        vault.add_tags(&name, &["note.md".into()], &["new-tag".into()], "frontmatter", false, "end").unwrap();
+        vault
+            .add_tags(
+                &name,
+                &["note.md".into()],
+                &["new-tag".into()],
+                "frontmatter",
+                false,
+                "end",
+            )
+            .unwrap();
         let content = fs::read_to_string(dir.path().join("note.md")).unwrap();
         assert!(content.contains("new-tag"));
         assert!(content.contains("existing"));
@@ -1116,7 +1191,16 @@ mod tests {
         let (dir, vault) = make_vault();
         let name = vault_name(&dir);
         write_note(&dir, "plain.md", "just content");
-        vault.add_tags(&name, &["plain.md".into()], &["fresh".into()], "frontmatter", false, "end").unwrap();
+        vault
+            .add_tags(
+                &name,
+                &["plain.md".into()],
+                &["fresh".into()],
+                "frontmatter",
+                false,
+                "end",
+            )
+            .unwrap();
         let content = fs::read_to_string(dir.path().join("plain.md")).unwrap();
         assert!(content.starts_with("---"));
         assert!(content.contains("fresh"));
@@ -1127,7 +1211,16 @@ mod tests {
         let (dir, vault) = make_vault();
         let name = vault_name(&dir);
         write_note(&dir, "note.md", "body text");
-        vault.add_tags(&name, &["note.md".into()], &["inline".into()], "content", false, "end").unwrap();
+        vault
+            .add_tags(
+                &name,
+                &["note.md".into()],
+                &["inline".into()],
+                "content",
+                false,
+                "end",
+            )
+            .unwrap();
         let content = fs::read_to_string(dir.path().join("note.md")).unwrap();
         assert!(content.ends_with("#inline"));
     }
@@ -1137,7 +1230,16 @@ mod tests {
         let (dir, vault) = make_vault();
         let name = vault_name(&dir);
         write_note(&dir, "note.md", "body");
-        vault.add_tags(&name, &["note.md".into()], &["first".into()], "content", false, "start").unwrap();
+        vault
+            .add_tags(
+                &name,
+                &["note.md".into()],
+                &["first".into()],
+                "content",
+                false,
+                "start",
+            )
+            .unwrap();
         let content = fs::read_to_string(dir.path().join("note.md")).unwrap();
         assert!(content.contains("#first"));
     }
@@ -1147,7 +1249,16 @@ mod tests {
         let (dir, vault) = make_vault();
         let name = vault_name(&dir);
         write_note(&dir, "note.md", "body");
-        vault.add_tags(&name, &["note.md".into()], &["mytag".into()], "both", false, "end").unwrap();
+        vault
+            .add_tags(
+                &name,
+                &["note.md".into()],
+                &["mytag".into()],
+                "both",
+                false,
+                "end",
+            )
+            .unwrap();
         let content = fs::read_to_string(dir.path().join("note.md")).unwrap();
         assert!(content.contains("mytag")); // in frontmatter
         assert!(content.contains("#mytag")); // inline
@@ -1157,9 +1268,16 @@ mod tests {
     fn add_tags_skips_missing_files() {
         let (dir, vault) = make_vault();
         let name = vault_name(&dir);
-        let modified = vault.add_tags(
-            &name, &["ghost.md".into()], &["tag".into()], "frontmatter", false, "end"
-        ).unwrap();
+        let modified = vault
+            .add_tags(
+                &name,
+                &["ghost.md".into()],
+                &["tag".into()],
+                "frontmatter",
+                false,
+                "end",
+            )
+            .unwrap();
         assert!(modified.is_empty());
     }
 
@@ -1168,7 +1286,16 @@ mod tests {
         let (dir, vault) = make_vault();
         let name = vault_name(&dir);
         write_note(&dir, "note.md", "content");
-        vault.add_tags(&name, &["note.md".into()], &["My Tag".into()], "frontmatter", true, "end").unwrap();
+        vault
+            .add_tags(
+                &name,
+                &["note.md".into()],
+                &["My Tag".into()],
+                "frontmatter",
+                true,
+                "end",
+            )
+            .unwrap();
         let content = fs::read_to_string(dir.path().join("note.md")).unwrap();
         assert!(content.contains("my-tag"));
     }
@@ -1178,7 +1305,16 @@ mod tests {
         let (dir, vault) = make_vault();
         let name = vault_name(&dir);
         write_note(&dir, "note.md", "---\ntags:\n  - existing\n---\n");
-        vault.add_tags(&name, &["note.md".into()], &["existing".into()], "frontmatter", false, "end").unwrap();
+        vault
+            .add_tags(
+                &name,
+                &["note.md".into()],
+                &["existing".into()],
+                "frontmatter",
+                false,
+                "end",
+            )
+            .unwrap();
         let content = fs::read_to_string(dir.path().join("note.md")).unwrap();
         // should still only appear once
         assert_eq!(content.matches("existing").count(), 1);
@@ -1190,7 +1326,16 @@ mod tests {
         let (dir, vault) = make_vault();
         let name = vault_name(&dir);
         write_note(&dir, "note.md", "---\ntags: [existing]\n---\nbody");
-        vault.add_tags(&name, &["note.md".into()], &["added".into()], "frontmatter", false, "end").unwrap();
+        vault
+            .add_tags(
+                &name,
+                &["note.md".into()],
+                &["added".into()],
+                "frontmatter",
+                false,
+                "end",
+            )
+            .unwrap();
         let content = fs::read_to_string(dir.path().join("note.md")).unwrap();
         assert!(content.contains("added"));
     }
@@ -1200,7 +1345,16 @@ mod tests {
         let (dir, vault) = make_vault();
         let name = vault_name(&dir);
         write_note(&dir, "note.md", "---\ntitle: test\n---\nbody text");
-        vault.add_tags(&name, &["note.md".into()], &["top".into()], "content", false, "start").unwrap();
+        vault
+            .add_tags(
+                &name,
+                &["note.md".into()],
+                &["top".into()],
+                "content",
+                false,
+                "start",
+            )
+            .unwrap();
         let content = fs::read_to_string(dir.path().join("note.md")).unwrap();
         assert!(content.contains("#top"));
     }
@@ -1211,8 +1365,14 @@ mod tests {
     fn remove_tags_from_frontmatter() {
         let (dir, vault) = make_vault();
         let name = vault_name(&dir);
-        write_note(&dir, "note.md", "---\ntags:\n  - keep\n  - remove\n---\nbody");
-        vault.remove_tags(&name, &["note.md".into()], &["remove".into()]).unwrap();
+        write_note(
+            &dir,
+            "note.md",
+            "---\ntags:\n  - keep\n  - remove\n---\nbody",
+        );
+        vault
+            .remove_tags(&name, &["note.md".into()], &["remove".into()])
+            .unwrap();
         let content = fs::read_to_string(dir.path().join("note.md")).unwrap();
         assert!(!content.contains("  - remove"));
         assert!(content.contains("keep"));
@@ -1223,7 +1383,9 @@ mod tests {
         let (dir, vault) = make_vault();
         let name = vault_name(&dir);
         write_note(&dir, "note.md", "text #remove more");
-        vault.remove_tags(&name, &["note.md".into()], &["remove".into()]).unwrap();
+        vault
+            .remove_tags(&name, &["note.md".into()], &["remove".into()])
+            .unwrap();
         let content = fs::read_to_string(dir.path().join("note.md")).unwrap();
         assert!(!content.contains("#remove"));
     }
@@ -1232,7 +1394,9 @@ mod tests {
     fn remove_tags_skips_missing_files() {
         let (dir, vault) = make_vault();
         let name = vault_name(&dir);
-        let modified = vault.remove_tags(&name, &["ghost.md".into()], &["t".into()]).unwrap();
+        let modified = vault
+            .remove_tags(&name, &["ghost.md".into()], &["t".into()])
+            .unwrap();
         assert!(modified.is_empty());
     }
 

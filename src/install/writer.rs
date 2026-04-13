@@ -35,7 +35,11 @@ pub fn check_status(path: &Path, format: &ConfigFormat) -> InstallStatus {
         }
         ConfigFormat::OpenClaw => cfg["mcp"]["servers"]["obsidian"].is_object(),
     };
-    if has_entry { InstallStatus::Installed } else { InstallStatus::NotInstalled }
+    if has_entry {
+        InstallStatus::Installed
+    } else {
+        InstallStatus::NotInstalled
+    }
 }
 
 /// Add (or overwrite) the obsidian-mcp-rs entry in the config file.
@@ -77,15 +81,17 @@ pub fn write_entry(
     insert_entry(&mut cfg, format, entry);
 
     if dry_run {
-        return Ok(WriteOutcome::DryRun { would_create: !file_exists });
+        return Ok(WriteOutcome::DryRun {
+            would_create: !file_exists,
+        });
     }
 
     // Create parent directories if needed
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("Cannot create directory {}", parent.display()))?;
-        }
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("Cannot create directory {}", parent.display()))?;
     }
 
     // Backup existing file
@@ -99,7 +105,9 @@ pub fn write_entry(
     std::fs::write(path, content + "\n")
         .with_context(|| format!("Cannot write {}", path.display()))?;
 
-    Ok(WriteOutcome::Written { created: !file_exists })
+    Ok(WriteOutcome::Written {
+        created: !file_exists,
+    })
 }
 
 /// Remove the obsidian-mcp-rs entry from the config file.
@@ -119,12 +127,11 @@ pub fn remove_entry(path: &Path, format: &ConfigFormat, dry_run: bool) -> Result
         ConfigFormat::OpenClaw => {
             // Nested mutable access without triggering borrow checker issues
             let mut found = false;
-            if let Some(mcp) = cfg.get_mut("mcp") {
-                if let Some(servers) = mcp.get_mut("servers") {
-                    if let Some(obj) = servers.as_object_mut() {
-                        found = obj.remove("obsidian").is_some();
-                    }
-                }
+            if let Some(mcp) = cfg.get_mut("mcp")
+                && let Some(servers) = mcp.get_mut("servers")
+                && let Some(obj) = servers.as_object_mut()
+            {
+                found = obj.remove("obsidian").is_some();
             }
             found
         }
@@ -145,10 +152,9 @@ pub fn remove_entry(path: &Path, format: &ConfigFormat, dry_run: bool) -> Result
 // ── Private helpers ───────────────────────────────────────────────────────────
 
 fn read_config(path: &Path) -> Result<Value> {
-    let content = std::fs::read_to_string(path)
-        .with_context(|| format!("Cannot read {}", path.display()))?;
-    serde_json::from_str(&content)
-        .with_context(|| format!("Invalid JSON in {}", path.display()))
+    let content =
+        std::fs::read_to_string(path).with_context(|| format!("Cannot read {}", path.display()))?;
+    serde_json::from_str(&content).with_context(|| format!("Invalid JSON in {}", path.display()))
 }
 
 fn build_entry(format: &ConfigFormat, vault_strings: &[String], no_edit: bool) -> Value {
@@ -220,25 +226,37 @@ mod tests {
     fn check_status_file_not_found() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("missing.json");
-        assert_eq!(check_status(&path, &ConfigFormat::Standard), InstallStatus::FileNotFound);
+        assert_eq!(
+            check_status(&path, &ConfigFormat::Standard),
+            InstallStatus::FileNotFound
+        );
     }
 
     #[test]
     fn check_status_not_installed_empty_object() {
         let (_dir, path) = temp_cfg("{}");
-        assert_eq!(check_status(&path, &ConfigFormat::Standard), InstallStatus::NotInstalled);
+        assert_eq!(
+            check_status(&path, &ConfigFormat::Standard),
+            InstallStatus::NotInstalled
+        );
     }
 
     #[test]
     fn check_status_installed_standard() {
         let (_dir, path) = temp_cfg(r#"{"mcpServers":{"obsidian":{}}}"#);
-        assert_eq!(check_status(&path, &ConfigFormat::Standard), InstallStatus::Installed);
+        assert_eq!(
+            check_status(&path, &ConfigFormat::Standard),
+            InstallStatus::Installed
+        );
     }
 
     #[test]
     fn check_status_installed_openclaw() {
         let (_dir, path) = temp_cfg(r#"{"mcp":{"servers":{"obsidian":{}}}}"#);
-        assert_eq!(check_status(&path, &ConfigFormat::OpenClaw), InstallStatus::Installed);
+        assert_eq!(
+            check_status(&path, &ConfigFormat::OpenClaw),
+            InstallStatus::Installed
+        );
     }
 
     // ── write_entry ───────────────────────────────────────────────────────────
@@ -248,10 +266,12 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("new.json");
         let vaults = vec![std::path::PathBuf::from("/vault")];
-        let outcome = write_entry(&path, &ConfigFormat::Standard, &vaults, false, false, false).unwrap();
+        let outcome =
+            write_entry(&path, &ConfigFormat::Standard, &vaults, false, false, false).unwrap();
         assert!(matches!(outcome, WriteOutcome::Written { created: true }));
         assert!(path.exists());
-        let content: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let content: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert!(content["mcpServers"]["obsidian"].is_object());
     }
 
@@ -259,7 +279,8 @@ mod tests {
     fn write_entry_already_installed_no_force() {
         let (_dir, path) = temp_cfg(r#"{"mcpServers":{"obsidian":{"command":"npx"}}}"#);
         let vaults = vec![std::path::PathBuf::from("/vault")];
-        let outcome = write_entry(&path, &ConfigFormat::Standard, &vaults, false, false, false).unwrap();
+        let outcome =
+            write_entry(&path, &ConfigFormat::Standard, &vaults, false, false, false).unwrap();
         assert!(matches!(outcome, WriteOutcome::AlreadyInstalled));
     }
 
@@ -267,7 +288,8 @@ mod tests {
     fn write_entry_force_overwrites() {
         let (_dir, path) = temp_cfg(r#"{"mcpServers":{"obsidian":{"command":"old"}}}"#);
         let vaults = vec![std::path::PathBuf::from("/vault")];
-        let outcome = write_entry(&path, &ConfigFormat::Standard, &vaults, false, true, false).unwrap();
+        let outcome =
+            write_entry(&path, &ConfigFormat::Standard, &vaults, false, true, false).unwrap();
         assert!(matches!(outcome, WriteOutcome::Written { created: false }));
     }
 
@@ -276,8 +298,12 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("dry.json");
         let vaults = vec![std::path::PathBuf::from("/vault")];
-        let outcome = write_entry(&path, &ConfigFormat::Standard, &vaults, true, false, false).unwrap();
-        assert!(matches!(outcome, WriteOutcome::DryRun { would_create: true }));
+        let outcome =
+            write_entry(&path, &ConfigFormat::Standard, &vaults, true, false, false).unwrap();
+        assert!(matches!(
+            outcome,
+            WriteOutcome::DryRun { would_create: true }
+        ));
         assert!(!path.exists());
     }
 
@@ -289,7 +315,9 @@ mod tests {
         write_entry(&path, &ConfigFormat::Standard, &vaults, false, false, true).unwrap();
         let content: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        let args = content["mcpServers"]["obsidian"]["args"].as_array().unwrap();
+        let args = content["mcpServers"]["obsidian"]["args"]
+            .as_array()
+            .unwrap();
         let has_no_edit = args.iter().any(|v| v.as_str() == Some("--no-edit"));
         assert!(has_no_edit, "expected --no-edit in args: {args:?}");
     }
@@ -302,9 +330,14 @@ mod tests {
         write_entry(&path, &ConfigFormat::Standard, &vaults, false, false, false).unwrap();
         let content: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        let args = content["mcpServers"]["obsidian"]["args"].as_array().unwrap();
+        let args = content["mcpServers"]["obsidian"]["args"]
+            .as_array()
+            .unwrap();
         let has_no_edit = args.iter().any(|v| v.as_str() == Some("--no-edit"));
-        assert!(!has_no_edit, "--no-edit should not appear when no_edit=false");
+        assert!(
+            !has_no_edit,
+            "--no-edit should not appear when no_edit=false"
+        );
     }
 
     #[test]

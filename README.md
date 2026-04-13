@@ -17,7 +17,7 @@
   <a href="https://www.npmjs.com/package/obsidian-mcp-rs" target="_blank" rel="noopener noreferrer"><img alt="npm downloads" src="https://img.shields.io/npm/dm/obsidian-mcp-rs.svg?style=flat-square"/></a>
   <a href="LICENSE" target="_blank" rel="noopener noreferrer"><img alt="License: MIT" src="https://img.shields.io/github/license/MrRefactoring/obsidian-mcp-rs?color=green&style=flat-square"/></a>
   <img alt="Platforms" src="https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows-blue?style=flat-square"/>
-  <a href="https://codecov.io/gh/MrRefactoring/obsidian-mcp-rs" target="_blank" rel="noopener noreferrer"><img alt="Coverage" src="https://codecov.io/gh/MrRefactoring/obsidian-mcp-rs/branch/master/graph/badge.svg"/></a>
+  <a href="https://codecov.io/gh/MrRefactoring/obsidian-mcp-rs" target="_blank" rel="noopener noreferrer"><img alt="Coverage" src="https://img.shields.io/codecov/c/github/mrrefactoring/obsidian-mcp-rs?style=flat-square"/></a>
 
   <br/>
   <br/>
@@ -334,7 +334,7 @@ List all vaults configured for this server. Takes no parameters.
 
 ### Prerequisites
 
-- [Rust](https://rustup.rs/) (stable, 1.75+)
+- [Rust](https://rustup.rs/) (stable, 1.94+)
 - [Node.js](https://nodejs.org/) 22+ (for npm wrapper)
 
 ### Build from source

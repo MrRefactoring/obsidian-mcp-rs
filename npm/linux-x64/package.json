@@ -1,6 +1,6 @@
 {
   "name": "@obsidian-mcp-rs/linux-x64",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Linux x64 (glibc) binary for obsidian-mcp-rs",
   "repository": {
     "type": "git",

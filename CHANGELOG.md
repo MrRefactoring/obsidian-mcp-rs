@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.4] - 2026-04-13
+
+### Changed
+
+- Dependencies updated to latest versions: `dirs` 5 → 6, `dialoguer` 0.11 → 0.12, `console` 0.15 → 0.16
+- `rust-version` set to `1.94` in `Cargo.toml`; MSRV in `clippy.toml` updated to match
+- Code modernised for Rust 1.94: nested `if let` chains collapsed using stabilised `let_chains`; `manual_strip` and `if_same_then_else` lints resolved in `vault.rs`
+
+
 ## [0.1.3] - 2026-04-13
 
 ### Added
@@ -94,6 +103,7 @@
 - GitHub Actions CI: lint, test, cross-target `cargo check`
 - GitHub Actions release pipeline: builds all 7 targets, creates GitHub Release with SHA256 checksums, publishes npm packages with provenance
 
+[0.1.4]: https://github.com/MrRefactoring/obsidian-mcp-rs/releases/tag/v0.1.4
 [0.1.3]: https://github.com/MrRefactoring/obsidian-mcp-rs/releases/tag/v0.1.3
 [0.1.2]: https://github.com/MrRefactoring/obsidian-mcp-rs/releases/tag/v0.1.2
 [0.1.1]: https://github.com/MrRefactoring/obsidian-mcp-rs/releases/tag/v0.1.1

@@ -3,7 +3,7 @@ mod writer;
 
 use std::path::PathBuf;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use console::style;
 use dialoguer::{Confirm, Input, MultiSelect, theme::ColorfulTheme};
 
@@ -170,7 +170,10 @@ fn interactive_install(dry_run: bool, force: bool, no_edit: bool) -> Result<()> 
     println!();
     for t in targets.iter().filter(|t| !t.is_local) {
         let (icon, note) = if t.detected {
-            (style("✓").green().bold().to_string(), display_path(&t.config_path))
+            (
+                style("✓").green().bold().to_string(),
+                display_path(&t.config_path),
+            )
         } else {
             (style("✗").dim().to_string(), "not found".to_string())
         };
@@ -215,7 +218,10 @@ fn interactive_install(dry_run: bool, force: bool, no_edit: bool) -> Result<()> 
         let s = input.trim();
         if s.is_empty() {
             if raw.is_empty() {
-                println!("{} At least one vault path is required.", style("Error:").red());
+                println!(
+                    "{} At least one vault path is required.",
+                    style("Error:").red()
+                );
                 continue;
             }
             break;
@@ -239,7 +245,10 @@ fn interactive_install(dry_run: bool, force: bool, no_edit: bool) -> Result<()> 
     // 4. Install
     println!();
     if dry_run {
-        println!("{}", style("Dry run — no files will be written.").yellow().bold());
+        println!(
+            "{}",
+            style("Dry run — no files will be written.").yellow().bold()
+        );
         println!();
     }
 
@@ -318,18 +327,32 @@ fn install_one(
     no_edit: bool,
 ) -> Result<bool> {
     let pd = display_path(&target.config_path);
-    match write_entry(&target.config_path, &target.format, vaults, dry_run, force, no_edit)? {
+    match write_entry(
+        &target.config_path,
+        &target.format,
+        vaults,
+        dry_run,
+        force,
+        no_edit,
+    )? {
         WriteOutcome::AlreadyInstalled => {
             println!(
                 "  {} {}  {}",
                 style("○").dim(),
                 target.name,
-                style(format!("already installed in {pd} — use --force to overwrite")).dim()
+                style(format!(
+                    "already installed in {pd} — use --force to overwrite"
+                ))
+                .dim()
             );
             Ok(false)
         }
         WriteOutcome::DryRun { would_create } => {
-            let verb = if would_create { "would create" } else { "would update" };
+            let verb = if would_create {
+                "would create"
+            } else {
+                "would update"
+            };
             println!(
                 "  {} {}  {} {}",
                 style("~").yellow(),
@@ -411,7 +434,11 @@ fn resolve_targets(kind: &ClientKind, global: bool) -> Vec<InstallTarget> {
                 ClientKind::Claude | ClientKind::OpenClaw => true,
                 // local by default; --global selects the global config
                 ClientKind::ClaudeCode | ClientKind::Cursor => {
-                    if global { !t.is_local } else { t.is_local }
+                    if global {
+                        !t.is_local
+                    } else {
+                        t.is_local
+                    }
                 }
             }
         })
@@ -665,7 +692,8 @@ mod tests {
         std::fs::write(
             &config,
             r#"{"mcpServers":{"obsidian":{"command":"npx","args":[]}}}"#,
-        ).unwrap();
+        )
+        .unwrap();
         let target = clients::InstallTarget {
             kind: ClientKind::Cursor,
             name: "Test".into(),

@@ -175,20 +175,20 @@ pub fn expand_tilde(s: &str) -> PathBuf {
     if s == "~" {
         return dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
     }
-    if let Some(rest) = s.strip_prefix("~/") {
-        if let Some(home) = dirs::home_dir() {
-            return home.join(rest);
-        }
+    if let Some(rest) = s.strip_prefix("~/")
+        && let Some(home) = dirs::home_dir()
+    {
+        return home.join(rest);
     }
     PathBuf::from(s)
 }
 
 /// Shorten an absolute path to a `~/…` form for display
 pub fn display_path(path: &std::path::Path) -> String {
-    if let Some(home) = dirs::home_dir() {
-        if let Ok(rel) = path.strip_prefix(&home) {
-            return format!("~/{}", rel.display());
-        }
+    if let Some(home) = dirs::home_dir()
+        && let Ok(rel) = path.strip_prefix(&home)
+    {
+        return format!("~/{}", rel.display());
     }
     path.display().to_string()
 }
@@ -256,14 +256,18 @@ mod tests {
     #[test]
     fn all_targets_includes_claude_code_local() {
         let targets = all_targets();
-        let local = targets.iter().find(|t| t.kind == ClientKind::ClaudeCode && t.is_local);
+        let local = targets
+            .iter()
+            .find(|t| t.kind == ClientKind::ClaudeCode && t.is_local);
         assert!(local.is_some());
     }
 
     #[test]
     fn all_targets_includes_cursor_local() {
         let targets = all_targets();
-        let local = targets.iter().find(|t| t.kind == ClientKind::Cursor && t.is_local);
+        let local = targets
+            .iter()
+            .find(|t| t.kind == ClientKind::Cursor && t.is_local);
         assert!(local.is_some());
     }
 
@@ -271,7 +275,11 @@ mod tests {
     fn all_targets_local_ones_are_always_detected() {
         let targets = all_targets();
         for t in targets.iter().filter(|t| t.is_local) {
-            assert!(t.detected, "local target {} should always be detected", t.name);
+            assert!(
+                t.detected,
+                "local target {} should always be detected",
+                t.name
+            );
         }
     }
 
