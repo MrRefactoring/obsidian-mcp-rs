@@ -74,10 +74,7 @@ impl VaultManager {
     ) -> Result<PathBuf, VaultError> {
         let root = self.resolve_vault(vault)?;
         let filename = ensure_md_extension(filename);
-        Ok(match folder {
-            Some(f) if !f.is_empty() => root.join(f).join(&filename),
-            _ => root.join(&filename),
-        })
+        safe_join(root, folder, &filename)
     }
 
     pub fn read_note(
@@ -213,7 +210,7 @@ impl VaultManager {
         recursive: bool,
     ) -> Result<PathBuf, VaultError> {
         let root = self.resolve_vault(vault)?;
-        let dir = root.join(path);
+        let dir = safe_join(root, None, path)?;
         if dir.exists() {
             return Err(VaultError::DirectoryAlreadyExists(
                 dir.display().to_string(),
@@ -237,7 +234,7 @@ impl VaultManager {
     ) -> Result<Vec<SearchResult>, VaultError> {
         let root = self.resolve_vault(vault)?;
         let search_root = match search_path {
-            Some(p) if !p.is_empty() => root.join(p),
+            Some(p) if !p.is_empty() => safe_join(root, None, p)?,
             _ => root.to_path_buf(),
         };
 
@@ -452,6 +449,67 @@ impl VaultManager {
 
         Ok(modified)
     }
+}
+
+/// Reject paths that would escape the vault root.
+///
+/// Defends against:
+/// - absolute paths supplied as `folder` or `filename`
+/// - `..` traversal that climbs above the vault
+/// - symlinks inside the vault that point outside it
+///
+/// The path may refer to a not-yet-existing file. We canonicalize the deepest
+/// existing ancestor and require it to live under the canonicalized vault root.
+fn safe_join(root: &Path, folder: Option<&str>, filename: &str) -> Result<PathBuf, VaultError> {
+    if Path::new(filename).is_absolute() {
+        return Err(VaultError::InvalidPath(format!(
+            "absolute filename not allowed: '{}'",
+            filename
+        )));
+    }
+    if let Some(f) = folder
+        && Path::new(f).is_absolute()
+    {
+        return Err(VaultError::InvalidPath(format!(
+            "absolute folder not allowed: '{}'",
+            f
+        )));
+    }
+
+    let joined = match folder {
+        Some(f) if !f.is_empty() => root.join(f).join(filename),
+        _ => root.join(filename),
+    };
+
+    let canon_root =
+        fs::canonicalize(root).map_err(|e| VaultError::io(root.display().to_string(), e))?;
+
+    let mut probe: &Path = &joined;
+    let canon_anchor = loop {
+        if probe.exists() {
+            break fs::canonicalize(probe)
+                .map_err(|e| VaultError::io(probe.display().to_string(), e))?;
+        }
+        match probe.parent() {
+            Some(parent) => probe = parent,
+            None => {
+                return Err(VaultError::InvalidPath(format!(
+                    "path has no existing ancestor: '{}'",
+                    joined.display()
+                )));
+            }
+        }
+    };
+
+    if !canon_anchor.starts_with(&canon_root) {
+        return Err(VaultError::InvalidPath(format!(
+            "path '{}' escapes vault root '{}'",
+            joined.display(),
+            root.display()
+        )));
+    }
+
+    Ok(joined)
 }
 
 fn ensure_md_extension(filename: &str) -> String {
@@ -1470,5 +1528,132 @@ mod tests {
     fn ensure_md_adds_extension() {
         assert_eq!(ensure_md_extension("note"), "note.md");
         assert_eq!(ensure_md_extension("note.md"), "note.md");
+    }
+
+    // ── Path traversal / sandboxing ───────────────────────────────────────────
+
+    #[test]
+    fn rejects_parent_traversal_in_filename() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        let result = vault.note_path(&name, "../escaped", None);
+        assert!(result.is_err(), "expected error, got {:?}", result);
+        assert!(
+            result.unwrap_err().to_string().contains("escapes vault"),
+            "wrong error message"
+        );
+    }
+
+    #[test]
+    fn rejects_parent_traversal_in_folder() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        let result = vault.note_path(&name, "note", Some("../.."));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("escapes vault"));
+    }
+
+    #[test]
+    fn rejects_absolute_filename() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        let result = vault.note_path(&name, "/etc/passwd", None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("absolute"));
+    }
+
+    #[test]
+    fn rejects_absolute_folder() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        let result = vault.note_path(&name, "note", Some("/tmp"));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("absolute"));
+    }
+
+    #[test]
+    fn allows_normal_nested_path() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        let p = vault
+            .note_path(&name, "note", Some("subdir/inner"))
+            .unwrap();
+        assert!(p.starts_with(dir.path()));
+        assert!(p.ends_with("note.md"));
+    }
+
+    #[test]
+    fn create_note_blocks_traversal() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        let result = vault.create_note(&name, "../pwned", "x", None);
+        assert!(result.is_err());
+        // file must not have been created outside the vault
+        assert!(!dir.path().parent().unwrap().join("pwned.md").exists());
+    }
+
+    #[test]
+    fn delete_note_blocks_traversal() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        // create a sibling file outside the vault
+        let outside = dir.path().parent().unwrap().join("sibling.md");
+        fs::write(&outside, "private").unwrap();
+        let result = vault.delete_note(&name, "../sibling", None);
+        assert!(result.is_err());
+        assert!(outside.exists(), "outside file must not be deleted");
+        fs::remove_file(&outside).ok();
+    }
+
+    #[test]
+    fn create_directory_blocks_traversal() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        let result = vault.create_directory(&name, "../escaped", true);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn search_vault_blocks_traversal_in_path() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        let result = vault.search_vault(&name, "x", Some("../.."), false, &SearchType::Content);
+        assert!(result.is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_symlink_escape() {
+        use std::os::unix::fs::symlink;
+        let outer = TempDir::new().unwrap();
+        let secret = outer.path().join("secret.md");
+        fs::write(&secret, "top secret").unwrap();
+
+        let (vault_dir, vault) = make_vault();
+        let name = vault_name(&vault_dir);
+        // symlink inside the vault pointing to a directory outside
+        symlink(outer.path(), vault_dir.path().join("escape")).unwrap();
+
+        let result = vault.read_note(&name, "secret", Some("escape"));
+        assert!(
+            result.is_err(),
+            "symlink escape must be rejected, got {:?}",
+            result
+        );
+        assert!(result.unwrap_err().to_string().contains("escapes vault"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn allows_symlink_staying_inside_vault() {
+        use std::os::unix::fs::symlink;
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        fs::create_dir(dir.path().join("real")).unwrap();
+        fs::write(dir.path().join("real/note.md"), "hello").unwrap();
+        symlink(dir.path().join("real"), dir.path().join("link")).unwrap();
+
+        let content = vault.read_note(&name, "note", Some("link")).unwrap();
+        assert_eq!(content, "hello");
     }
 }

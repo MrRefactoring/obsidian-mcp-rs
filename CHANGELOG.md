@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.1.6] - 2026-05-21
+
+### Security
+
+- **Path traversal in vault tools** — `filename` and `folder` arguments accepted by `read-note`, `create-note`, `edit-note`, `delete-note`, `move-note`, `create-directory`, `add-tags`, `remove-tags`, `rename-tag`, and `search-vault` were not validated, so a crafted `../` (or an absolute path) could read, write, or delete files outside the configured vault root. Symlinks inside the vault that pointed outside it were also followed. All path inputs now go through a `safe_join` helper that canonicalizes the deepest existing ancestor and rejects anything that does not live under the canonicalized vault root; absolute paths in `filename`/`folder` are rejected outright. Reported by Luca; tests cover `..` traversal, absolute paths, and symlink-based escapes.
+
+### Added
+
+- `install`/`uninstall`/`list` support for 12 additional MCP clients: Windsurf, VS Code (Copilot), Gemini CLI, Antigravity, Cline, Kiro, LM Studio, Factory, Amp, opencode, Codex CLI, Goose
+- TOML and YAML config-format writers (Codex `config.toml`, Goose `config.yaml`)
+
+### Changed
+
+- `logs` subcommand output is now colorized (ERROR red, WARN yellow, DEBUG/TRACE dimmed) with styled headers and separators
+
+
 ## [0.1.5] - 2026-04-14
 
 ### Fixed
@@ -111,6 +127,7 @@
 - GitHub Actions CI: lint, test, cross-target `cargo check`
 - GitHub Actions release pipeline: builds all 7 targets, creates GitHub Release with SHA256 checksums, publishes npm packages with provenance
 
+[0.1.6]: https://github.com/MrRefactoring/obsidian-mcp-rs/releases/tag/v0.1.6
 [0.1.5]: https://github.com/MrRefactoring/obsidian-mcp-rs/releases/tag/v0.1.5
 [0.1.4]: https://github.com/MrRefactoring/obsidian-mcp-rs/releases/tag/v0.1.4
 [0.1.3]: https://github.com/MrRefactoring/obsidian-mcp-rs/releases/tag/v0.1.3
