@@ -430,10 +430,24 @@ fn resolve_targets(kind: &ClientKind, global: bool) -> Vec<InstallTarget> {
                 return false;
             }
             match kind {
-                // No local/global distinction for these clients
-                ClientKind::Claude | ClientKind::OpenClaw => true,
+                // Global-only clients — --global flag has no effect
+                ClientKind::Claude
+                | ClientKind::OpenClaw
+                | ClientKind::Windsurf
+                | ClientKind::Antigravity
+                | ClientKind::Cline
+                | ClientKind::LmStudio
+                | ClientKind::Goose => true,
                 // local by default; --global selects the global config
-                ClientKind::ClaudeCode | ClientKind::Cursor => {
+                ClientKind::ClaudeCode
+                | ClientKind::Cursor
+                | ClientKind::VSCode
+                | ClientKind::Gemini
+                | ClientKind::Kiro
+                | ClientKind::Factory
+                | ClientKind::Amp
+                | ClientKind::OpenCode
+                | ClientKind::Codex => {
                     if global {
                         !t.is_local
                     } else {

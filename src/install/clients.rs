@@ -9,12 +9,48 @@ pub enum ClientKind {
     /// Claude Code CLI
     #[value(name = "claude-code")]
     ClaudeCode,
-    /// Cursor IDE
+    /// Cursor IDE (local .cursor/mcp.json or global ~/.cursor/mcp.json)
     #[value(name = "cursor")]
     Cursor,
     /// OpenClaw
     #[value(name = "openclaw")]
     OpenClaw,
+    /// Windsurf IDE (Codeium) — ~/.codeium/windsurf/mcp_config.json
+    #[value(name = "windsurf")]
+    Windsurf,
+    /// VS Code / GitHub Copilot (local .vscode/mcp.json or global User/mcp.json)
+    #[value(name = "vscode")]
+    VSCode,
+    /// Gemini CLI (local .gemini/settings.json or global ~/.gemini/settings.json)
+    #[value(name = "gemini")]
+    Gemini,
+    /// Antigravity (Google AI IDE) — ~/.gemini/antigravity/mcp_config.json
+    #[value(name = "antigravity")]
+    Antigravity,
+    /// Cline (VS Code extension) — VS Code globalStorage
+    #[value(name = "cline")]
+    Cline,
+    /// Kiro (AWS IDE, local .kiro/settings/mcp.json or global ~/.kiro/settings/mcp.json)
+    #[value(name = "kiro")]
+    Kiro,
+    /// LM Studio — ~/.lmstudio/mcp.json
+    #[value(name = "lmstudio")]
+    LmStudio,
+    /// Factory (factory.ai droids, local .factory/mcp.json or global ~/.factory/mcp.json)
+    #[value(name = "factory")]
+    Factory,
+    /// Amp coding assistant (local .amp/settings.json or global ~/.config/amp/settings.json)
+    #[value(name = "amp")]
+    Amp,
+    /// opencode (local .opencode.json or global ~/.opencode.json)
+    #[value(name = "opencode")]
+    OpenCode,
+    /// Codex CLI (local .codex/config.toml or global ~/.codex/config.toml)
+    #[value(name = "codex")]
+    Codex,
+    /// Goose (Block) — ~/.config/goose/config.yaml
+    #[value(name = "goose")]
+    Goose,
 }
 
 /// How the MCP entry is encoded in a given config file
@@ -26,6 +62,16 @@ pub enum ConfigFormat {
     ClaudeApp,
     /// { "mcp": { "servers": { "obsidian": { "command": ..., "args": [...], "transport": "stdio" } } } }
     OpenClaw,
+    /// VS Code / GitHub Copilot — { "servers": { "obsidian": { "type": "stdio", "command": ..., "args": [...] } } }
+    VSCode,
+    /// Amp — top-level dotted key: { "amp.mcpServers": { "obsidian": { "command": ..., "args": [...] } } }
+    Amp,
+    /// opencode — { "mcp": { "obsidian": { "type": "local", "command": ["npx", ...all-args] } } }
+    OpenCode,
+    /// Codex CLI — TOML: [mcp_servers.obsidian] with command/args keys
+    Codex,
+    /// Goose (Block) — YAML: extensions list with name/type/cmd/args/enabled/timeout
+    Goose,
 }
 
 /// One concrete install location (a specific config file)
@@ -134,6 +180,245 @@ pub fn all_targets() -> Vec<InstallTarget> {
         });
     }
 
+    // ── Windsurf ──────────────────────────────────────────────────────────────
+    if let Some(path) = windsurf_config_path() {
+        let detected = path.parent().is_some_and(|p| p.exists());
+        out.push(InstallTarget {
+            kind: ClientKind::Windsurf,
+            name: "Windsurf".into(),
+            config_path: path,
+            format: ConfigFormat::Standard,
+            detected,
+            is_local: false,
+        });
+    }
+
+    // ── VS Code – local (.vscode/mcp.json in CWD) ─────────────────────────────
+    out.push(InstallTarget {
+        kind: ClientKind::VSCode,
+        name: "VS Code / Copilot – local (.vscode/mcp.json)".into(),
+        config_path: std::env::current_dir()
+            .unwrap_or_default()
+            .join(".vscode/mcp.json"),
+        format: ConfigFormat::VSCode,
+        detected: true,
+        is_local: true,
+    });
+
+    // ── VS Code – global (User/mcp.json) ──────────────────────────────────────
+    if let Some(path) = vscode_global_config_path() {
+        let detected = path.parent().is_some_and(|p| p.exists());
+        out.push(InstallTarget {
+            kind: ClientKind::VSCode,
+            name: "VS Code / Copilot – global".into(),
+            config_path: path,
+            format: ConfigFormat::VSCode,
+            detected,
+            is_local: false,
+        });
+    }
+
+    // ── Gemini CLI – local (.gemini/settings.json in CWD) ────────────────────
+    out.push(InstallTarget {
+        kind: ClientKind::Gemini,
+        name: "Gemini CLI – local (.gemini/settings.json)".into(),
+        config_path: std::env::current_dir()
+            .unwrap_or_default()
+            .join(".gemini/settings.json"),
+        format: ConfigFormat::Standard,
+        detected: true,
+        is_local: true,
+    });
+
+    // ── Gemini CLI – global (~/.gemini/settings.json) ─────────────────────────
+    if let Some(path) = gemini_global_config_path() {
+        let detected = path.parent().is_some_and(|p| p.exists());
+        out.push(InstallTarget {
+            kind: ClientKind::Gemini,
+            name: "Gemini CLI – global (~/.gemini/settings.json)".into(),
+            config_path: path,
+            format: ConfigFormat::Standard,
+            detected,
+            is_local: false,
+        });
+    }
+
+    // ── Antigravity ───────────────────────────────────────────────────────────
+    if let Some(path) = antigravity_config_path() {
+        let detected = path.parent().is_some_and(|p| p.exists());
+        out.push(InstallTarget {
+            kind: ClientKind::Antigravity,
+            name: "Antigravity".into(),
+            config_path: path,
+            format: ConfigFormat::Standard,
+            detected,
+            is_local: false,
+        });
+    }
+
+    // ── Cline (VS Code extension) ─────────────────────────────────────────────
+    if let Some(path) = cline_config_path() {
+        let detected = path.parent().is_some_and(|p| p.exists());
+        out.push(InstallTarget {
+            kind: ClientKind::Cline,
+            name: "Cline".into(),
+            config_path: path,
+            format: ConfigFormat::Standard,
+            detected,
+            is_local: false,
+        });
+    }
+
+    // ── Kiro – local (.kiro/settings/mcp.json in CWD) ─────────────────────────
+    out.push(InstallTarget {
+        kind: ClientKind::Kiro,
+        name: "Kiro – local (.kiro/settings/mcp.json)".into(),
+        config_path: std::env::current_dir()
+            .unwrap_or_default()
+            .join(".kiro/settings/mcp.json"),
+        format: ConfigFormat::Standard,
+        detected: true,
+        is_local: true,
+    });
+
+    // ── Kiro – global (~/.kiro/settings/mcp.json) ─────────────────────────────
+    if let Some(path) = kiro_global_config_path() {
+        let detected = path.parent().is_some_and(|p| p.exists());
+        out.push(InstallTarget {
+            kind: ClientKind::Kiro,
+            name: "Kiro – global (~/.kiro/settings/mcp.json)".into(),
+            config_path: path,
+            format: ConfigFormat::Standard,
+            detected,
+            is_local: false,
+        });
+    }
+
+    // ── LM Studio ─────────────────────────────────────────────────────────────
+    if let Some(path) = lmstudio_config_path() {
+        let detected = path.parent().is_some_and(|p| p.exists());
+        out.push(InstallTarget {
+            kind: ClientKind::LmStudio,
+            name: "LM Studio".into(),
+            config_path: path,
+            format: ConfigFormat::Standard,
+            detected,
+            is_local: false,
+        });
+    }
+
+    // ── Factory – local (.factory/mcp.json in CWD) ───────────────────────────
+    out.push(InstallTarget {
+        kind: ClientKind::Factory,
+        name: "Factory – local (.factory/mcp.json)".into(),
+        config_path: std::env::current_dir()
+            .unwrap_or_default()
+            .join(".factory/mcp.json"),
+        format: ConfigFormat::Standard,
+        detected: true,
+        is_local: true,
+    });
+
+    // ── Factory – global (~/.factory/mcp.json) ────────────────────────────────
+    if let Some(path) = factory_global_config_path() {
+        let detected = path.parent().is_some_and(|p| p.exists());
+        out.push(InstallTarget {
+            kind: ClientKind::Factory,
+            name: "Factory – global (~/.factory/mcp.json)".into(),
+            config_path: path,
+            format: ConfigFormat::Standard,
+            detected,
+            is_local: false,
+        });
+    }
+
+    // ── Amp – local (.amp/settings.json in CWD) ───────────────────────────────
+    out.push(InstallTarget {
+        kind: ClientKind::Amp,
+        name: "Amp – local (.amp/settings.json)".into(),
+        config_path: std::env::current_dir()
+            .unwrap_or_default()
+            .join(".amp/settings.json"),
+        format: ConfigFormat::Amp,
+        detected: true,
+        is_local: true,
+    });
+
+    // ── Amp – global (~/.config/amp/settings.json) ────────────────────────────
+    if let Some(path) = amp_global_config_path() {
+        let detected = path.parent().is_some_and(|p| p.exists());
+        out.push(InstallTarget {
+            kind: ClientKind::Amp,
+            name: "Amp – global (~/.config/amp/settings.json)".into(),
+            config_path: path,
+            format: ConfigFormat::Amp,
+            detected,
+            is_local: false,
+        });
+    }
+
+    // ── opencode – local (.opencode.json in CWD) ──────────────────────────────
+    out.push(InstallTarget {
+        kind: ClientKind::OpenCode,
+        name: "opencode – local (.opencode.json)".into(),
+        config_path: std::env::current_dir()
+            .unwrap_or_default()
+            .join(".opencode.json"),
+        format: ConfigFormat::OpenCode,
+        detected: true,
+        is_local: true,
+    });
+
+    // ── opencode – global (~/.opencode.json) ──────────────────────────────────
+    if let Some(path) = opencode_global_config_path() {
+        out.push(InstallTarget {
+            kind: ClientKind::OpenCode,
+            name: "opencode – global (~/.opencode.json)".into(),
+            config_path: path.clone(),
+            format: ConfigFormat::OpenCode,
+            detected: path.exists(),
+            is_local: false,
+        });
+    }
+
+    // ── Codex CLI – local (.codex/config.toml in CWD) ─────────────────────────
+    out.push(InstallTarget {
+        kind: ClientKind::Codex,
+        name: "Codex CLI – local (.codex/config.toml)".into(),
+        config_path: std::env::current_dir()
+            .unwrap_or_default()
+            .join(".codex/config.toml"),
+        format: ConfigFormat::Codex,
+        detected: true,
+        is_local: true,
+    });
+
+    // ── Codex CLI – global (~/.codex/config.toml) ─────────────────────────────
+    if let Some(path) = codex_global_config_path() {
+        let detected = path.parent().is_some_and(|p| p.exists());
+        out.push(InstallTarget {
+            kind: ClientKind::Codex,
+            name: "Codex CLI – global (~/.codex/config.toml)".into(),
+            config_path: path,
+            format: ConfigFormat::Codex,
+            detected,
+            is_local: false,
+        });
+    }
+
+    // ── Goose (Block) ─────────────────────────────────────────────────────────
+    if let Some(path) = goose_config_path() {
+        let detected = path.parent().is_some_and(|p| p.exists());
+        out.push(InstallTarget {
+            kind: ClientKind::Goose,
+            name: "Goose".into(),
+            config_path: path,
+            format: ConfigFormat::Goose,
+            detected,
+            is_local: false,
+        });
+    }
+
     out
 }
 
@@ -166,6 +451,75 @@ pub fn cursor_global_config_path() -> Option<PathBuf> {
 
 pub fn openclaw_config_path() -> Option<PathBuf> {
     dirs::home_dir().map(|h| h.join(".openclaw/openclaw.json"))
+}
+
+// ── Config path resolvers (new clients) ──────────────────────────────────────
+
+pub fn windsurf_config_path() -> Option<PathBuf> {
+    dirs::home_dir().map(|h| h.join(".codeium/windsurf/mcp_config.json"))
+}
+
+pub fn vscode_global_config_path() -> Option<PathBuf> {
+    // macOS: ~/Library/Application Support/Code/User/mcp.json
+    // Linux: ~/.config/Code/User/mcp.json
+    // Windows: %APPDATA%\Code\User\mcp.json
+    dirs::config_dir().map(|c| c.join("Code/User/mcp.json"))
+}
+
+pub fn gemini_global_config_path() -> Option<PathBuf> {
+    dirs::home_dir().map(|h| h.join(".gemini/settings.json"))
+}
+
+pub fn antigravity_config_path() -> Option<PathBuf> {
+    dirs::home_dir().map(|h| h.join(".gemini/antigravity/mcp_config.json"))
+}
+
+pub fn cline_config_path() -> Option<PathBuf> {
+    // VS Code extension global storage
+    // macOS: ~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json
+    // Linux: ~/.config/Code/User/globalStorage/…
+    // Windows: %APPDATA%\Code\User\globalStorage\…
+    dirs::config_dir().map(|c| {
+        c.join("Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json")
+    })
+}
+
+pub fn kiro_global_config_path() -> Option<PathBuf> {
+    dirs::home_dir().map(|h| h.join(".kiro/settings/mcp.json"))
+}
+
+pub fn lmstudio_config_path() -> Option<PathBuf> {
+    dirs::home_dir().map(|h| h.join(".lmstudio/mcp.json"))
+}
+
+pub fn factory_global_config_path() -> Option<PathBuf> {
+    dirs::home_dir().map(|h| h.join(".factory/mcp.json"))
+}
+
+pub fn amp_global_config_path() -> Option<PathBuf> {
+    // Uses XDG config dir: ~/.config/amp/settings.json on Linux/macOS
+    // On macOS dirs::config_dir() returns ~/Library/Application Support — use home/.config instead
+    #[cfg(target_os = "macos")]
+    return dirs::home_dir().map(|h| h.join(".config/amp/settings.json"));
+    #[cfg(not(target_os = "macos"))]
+    return dirs::config_dir().map(|c| c.join("amp/settings.json"));
+}
+
+pub fn opencode_global_config_path() -> Option<PathBuf> {
+    dirs::home_dir().map(|h| h.join(".opencode.json"))
+}
+
+pub fn codex_global_config_path() -> Option<PathBuf> {
+    dirs::home_dir().map(|h| h.join(".codex/config.toml"))
+}
+
+pub fn goose_config_path() -> Option<PathBuf> {
+    // Goose stores config at ~/.config/goose/ on macOS and Linux
+    // (does not use ~/Library/Application Support on macOS)
+    #[cfg(target_os = "macos")]
+    return dirs::home_dir().map(|h| h.join(".config/goose/config.yaml"));
+    #[cfg(not(target_os = "macos"))]
+    return dirs::config_dir().map(|c| c.join("goose/config.yaml"));
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
