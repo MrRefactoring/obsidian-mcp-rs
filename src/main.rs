@@ -159,9 +159,15 @@ fn setup_logging(verbose: bool, log_path: Option<PathBuf>) {
 
 /// Print the log file path and its most recent entries for bug reporting.
 fn run_logs() -> anyhow::Result<()> {
+    use console::style;
+
     let path = default_log_path().unwrap_or_else(|| PathBuf::from("obsidian-mcp-rs.log"));
 
-    println!("Log file: {}", path.display());
+    println!(
+        "{} {}",
+        style("Log file:").bold(),
+        style(path.display()).cyan()
+    );
     println!();
 
     if path.exists() {
@@ -172,26 +178,50 @@ fn run_logs() -> anyhow::Result<()> {
 
         if start > 0 {
             println!(
-                "(showing last {} of {} lines)\n",
-                lines.len() - start,
-                lines.len()
+                "{}",
+                style(format!(
+                    "(showing last {} of {} lines)\n",
+                    lines.len() - start,
+                    lines.len()
+                ))
+                .dim()
             );
         }
-        println!("──────────────────────────────────────────────────────────");
+
+        let sep = style("──────────────────────────────────────────────────────────").dim();
+        println!("{sep}");
         for line in &lines[start..] {
-            println!("{}", line);
+            let colored = if line.contains(" ERROR") || line.contains("ERROR ") {
+                style(*line).red().to_string()
+            } else if line.contains(" WARN") || line.contains("WARN ") {
+                style(*line).yellow().to_string()
+            } else if line.contains(" DEBUG") || line.contains(" TRACE") {
+                style(*line).dim().to_string()
+            } else {
+                (*line).to_string()
+            };
+            println!("{colored}");
         }
-        println!("──────────────────────────────────────────────────────────");
+        println!("{sep}");
     } else {
-        println!("(log file does not exist yet — start the MCP server first)");
+        println!(
+            "{}",
+            style("(log file does not exist yet — start the MCP server first)").dim()
+        );
         println!();
         println!("Tip: for verbose output, start the server with --verbose:");
-        println!("  obsidian-mcp-rs --verbose /path/to/vault");
+        println!(
+            "  {}",
+            style("obsidian-mcp-rs --verbose /path/to/vault").cyan()
+        );
     }
 
     println!();
-    println!("To report a bug:");
-    println!("  https://github.com/MrRefactoring/obsidian-mcp-rs/issues/new");
+    println!("{}", style("To report a bug:").bold());
+    println!(
+        "  {}",
+        style("https://github.com/MrRefactoring/obsidian-mcp-rs/issues/new").cyan()
+    );
 
     Ok(())
 }
