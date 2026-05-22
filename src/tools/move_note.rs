@@ -1,4 +1,3 @@
-use rmcp::handler::server::wrapper::Parameters;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -16,5 +15,3 @@ pub struct MoveNoteParams {
     #[serde(rename = "newFilename")]
     pub new_filename: Option<String>,
 }
-
-pub type MoveNote = Parameters<MoveNoteParams>;

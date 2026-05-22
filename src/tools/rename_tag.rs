@@ -1,4 +1,3 @@
-use rmcp::handler::server::wrapper::Parameters;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -12,5 +11,3 @@ pub struct RenameTagParams {
     #[serde(rename = "newTag")]
     pub new_tag: String,
 }
-
-pub type RenameTag = Parameters<RenameTagParams>;

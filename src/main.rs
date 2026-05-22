@@ -1,19 +1,13 @@
-#![allow(dead_code)]
-mod error;
-mod handler;
-mod install;
-mod tools;
-mod vault;
-
 use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use clap::{Parser, Subcommand};
-use handler::ObsidianHandler;
+use obsidian_mcp_rs::handler::ObsidianHandler;
+use obsidian_mcp_rs::install;
+use obsidian_mcp_rs::vault::VaultManager;
 use rmcp::ServiceExt;
-use vault::VaultManager;
 
 #[derive(Parser, Debug)]
 #[command(

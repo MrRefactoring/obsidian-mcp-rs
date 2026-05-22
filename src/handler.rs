@@ -22,6 +22,9 @@ use crate::{
 #[derive(Clone)]
 pub struct ObsidianHandler {
     vault: Arc<VaultManager>,
+    // Populated for the rmcp #[tool_router] macro to dispatch through;
+    // dead-code analysis can't see the macro-generated reads.
+    #[allow(dead_code)]
     tool_router: ToolRouter<Self>,
     no_edit: bool,
 }
@@ -38,6 +41,7 @@ fn err(e: impl std::fmt::Display) -> McpError {
 
 #[tool_router]
 impl ObsidianHandler {
+    #[cfg(test)]
     pub fn new(vault: VaultManager) -> Self {
         Self::with_options(vault, false)
     }

@@ -1,4 +1,3 @@
-use rmcp::handler::server::wrapper::Parameters;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -10,5 +9,3 @@ pub struct RemoveTagsParams {
     /// Array of tags to remove (e.g. "status/active", "project/docs")
     pub tags: Vec<String>,
 }
-
-pub type RemoveTags = Parameters<RemoveTagsParams>;

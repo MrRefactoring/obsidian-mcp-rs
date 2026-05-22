@@ -1,6 +1,6 @@
 [package]
 name = "obsidian-mcp-rs"
-version = "0.1.6"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.94"
 authors = ["Vladislav Tupikin"]
@@ -17,11 +17,9 @@ rmcp = { version = "1.4", features = ["server", "transport-io", "macros"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 schemars = "1.2"
-walkdir = "2.5"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 clap = { version = "4.6", features = ["derive"] }
-regex = "1.12"
 similar = "3"
 thiserror = "2.0"
 anyhow = "1"
@@ -31,9 +29,16 @@ dialoguer = "0.12"
 console = "0.16"
 toml_edit = "0.22"
 serde_yml = "0.0.12"
+ignore = "0.4"
+rayon = "1"
 
 [dev-dependencies]
+criterion = { version = "0.8.2", features = ["html_reports"] }
 tempfile = "3"
+
+[[bench]]
+name = "vault_bench"
+harness = false
 
 [profile.release]
 opt-level = 3

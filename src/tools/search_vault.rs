@@ -1,4 +1,3 @@
-use rmcp::handler::server::wrapper::Parameters;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -16,5 +15,3 @@ pub struct SearchVaultParams {
     #[serde(rename = "searchType")]
     pub search_type: Option<String>,
 }
-
-pub type SearchVault = Parameters<SearchVaultParams>;

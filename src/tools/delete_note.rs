@@ -1,4 +1,3 @@
-use rmcp::handler::server::wrapper::Parameters;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -10,5 +9,3 @@ pub struct DeleteNoteParams {
     /// Optional subfolder path relative to vault root
     pub folder: Option<String>,
 }
-
-pub type DeleteNote = Parameters<DeleteNoteParams>;

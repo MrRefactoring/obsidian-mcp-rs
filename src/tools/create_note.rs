@@ -1,4 +1,3 @@
-use rmcp::handler::server::wrapper::Parameters;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -12,5 +11,3 @@ pub struct CreateNoteParams {
     /// Optional subfolder path relative to vault root. Parent directories are created automatically.
     pub folder: Option<String>,
 }
-
-pub type CreateNote = Parameters<CreateNoteParams>;
