@@ -200,6 +200,7 @@ impl VaultManager {
         new_folder: Option<&str>,
         new_filename: Option<&str>,
     ) -> Result<PathBuf, VaultError> {
+        let root = self.resolve_vault(vault)?.to_path_buf();
         let src = self.note_path(vault, filename, folder)?;
         if !src.exists() {
             return Err(VaultError::NoteNotFound(
@@ -214,6 +215,17 @@ impl VaultManager {
                 .map_err(|e| VaultError::io(parent.display().to_string(), e))?;
         }
         fs::rename(&src, &dest).map_err(|e| VaultError::io(src.display().to_string(), e))?;
+
+        // If the move emptied the source folder, prune it — but never the vault
+        // root. Best-effort: a failed cleanup must not fail the move itself.
+        if let Some(parent) = src.parent()
+            && parent != root
+            && fs::read_dir(parent).is_ok_and(|mut d| d.next().is_none())
+            && let Err(e) = fs::remove_dir(parent)
+        {
+            tracing::warn!(dir = %parent.display(), error = %e, "failed to remove emptied source folder");
+        }
+
         Ok(dest)
     }
 
@@ -740,6 +752,53 @@ mod tests {
         let (dir, vault) = make_vault();
         let name = vault_name(&dir);
         assert!(vault.move_note(&name, "ghost", None, None, None).is_err());
+    }
+
+    #[test]
+    fn move_note_removes_emptied_source_folder() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        fs::create_dir_all(dir.path().join("src")).unwrap();
+        fs::write(dir.path().join("src/note.md"), "body").unwrap();
+        vault
+            .move_note(&name, "note", Some("src"), Some("dst"), None)
+            .unwrap();
+        assert!(dir.path().join("dst/note.md").exists());
+        assert!(
+            !dir.path().join("src").exists(),
+            "emptied source folder must be removed"
+        );
+    }
+
+    #[test]
+    fn move_note_keeps_nonempty_source_folder() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        fs::create_dir_all(dir.path().join("src")).unwrap();
+        fs::write(dir.path().join("src/a.md"), "a").unwrap();
+        fs::write(dir.path().join("src/b.md"), "b").unwrap();
+        vault
+            .move_note(&name, "a", Some("src"), Some("dst"), None)
+            .unwrap();
+        assert!(
+            dir.path().join("src").exists(),
+            "source folder still has b.md and must stay"
+        );
+        assert!(dir.path().join("src/b.md").exists());
+    }
+
+    #[test]
+    fn move_note_does_not_remove_vault_root() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(&dir, "only.md", "body");
+        vault
+            .move_note(&name, "only", None, Some("sub"), None)
+            .unwrap();
+        // The note lived directly in the vault root; the root must never be
+        // pruned even though it is now empty of notes.
+        assert!(dir.path().exists());
+        assert!(dir.path().join("sub/only.md").exists());
     }
 
     // ── create_directory ──────────────────────────────────────────────────────

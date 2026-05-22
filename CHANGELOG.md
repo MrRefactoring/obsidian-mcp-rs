@@ -34,6 +34,7 @@
 
 ### Added
 
+- `move-note` now prunes the source folder when the move leaves it empty. The immediate source directory is removed (best-effort — a failed cleanup never fails the move), and the vault root is never deleted. Tests: `move_note_removes_emptied_source_folder`, `move_note_keeps_nonempty_source_folder`, `move_note_does_not_remove_vault_root`.
 - `CLAUDE.md` — onboarding notes for Claude Code: commands (incl. the `--bin obsidian-mcp-rs` workaround for `cargo test --lib`), the stdout-is-MCP transport invariant, the `safe_join` / `check_write` security model, the multi-vault basename rule, and engineering principles.
 
 
