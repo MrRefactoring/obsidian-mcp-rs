@@ -36,33 +36,7 @@ pub enum WriteOutcome {
 
 /// Check whether obsidian-mcp-rs is registered in the given config file
 pub fn check_status(path: &Path, format: &ConfigFormat) -> InstallStatus {
-    if *format == ConfigFormat::Codex {
-        return check_status_toml(path);
-    }
-    if *format == ConfigFormat::Goose {
-        return check_status_yaml(path);
-    }
-    if !path.exists() {
-        return InstallStatus::FileNotFound;
-    }
-    let Ok(cfg) = read_config(path) else {
-        return InstallStatus::NotInstalled;
-    };
-    let has_entry = match format {
-        ConfigFormat::Standard | ConfigFormat::ClaudeApp => {
-            cfg["mcpServers"]["obsidian"].is_object()
-        }
-        ConfigFormat::OpenClaw => cfg["mcp"]["servers"]["obsidian"].is_object(),
-        ConfigFormat::VSCode => cfg["servers"]["obsidian"].is_object(),
-        ConfigFormat::Amp => cfg["amp.mcpServers"]["obsidian"].is_object(),
-        ConfigFormat::OpenCode => cfg["mcp"]["obsidian"].is_object(),
-        ConfigFormat::Codex | ConfigFormat::Goose => unreachable!(),
-    };
-    if has_entry {
-        InstallStatus::Installed
-    } else {
-        InstallStatus::NotInstalled
-    }
+    backend(format).check_status(path)
 }
 
 /// Add (or overwrite) the obsidian-mcp-rs entry in the config file.
@@ -77,131 +51,61 @@ pub fn write_entry(
     force: bool,
     no_edit: bool,
 ) -> Result<WriteOutcome> {
-    if *format == ConfigFormat::Codex {
-        return write_entry_toml(path, vaults, dry_run, force, no_edit);
-    }
-    if *format == ConfigFormat::Goose {
-        return write_entry_yaml(path, vaults, dry_run, force, no_edit);
-    }
-    let file_exists = path.exists();
-    let mut cfg = if file_exists {
-        read_config(path)?
-    } else {
-        Value::Object(Default::default())
-    };
-
-    let already = match format {
-        ConfigFormat::Standard | ConfigFormat::ClaudeApp => {
-            cfg["mcpServers"]["obsidian"].is_object()
-        }
-        ConfigFormat::OpenClaw => cfg["mcp"]["servers"]["obsidian"].is_object(),
-        ConfigFormat::VSCode => cfg["servers"]["obsidian"].is_object(),
-        ConfigFormat::Amp => cfg["amp.mcpServers"]["obsidian"].is_object(),
-        ConfigFormat::OpenCode => cfg["mcp"]["obsidian"].is_object(),
-        ConfigFormat::Codex | ConfigFormat::Goose => unreachable!(),
-    };
-
-    if already && !force {
-        return Ok(WriteOutcome::AlreadyInstalled);
-    }
-
-    let vault_strings: Vec<String> = vaults
-        .iter()
-        .map(|p| p.to_string_lossy().into_owned())
-        .collect();
-
-    let entry = build_entry(format, &vault_strings, no_edit);
-    insert_entry(&mut cfg, format, entry);
-
-    if dry_run {
-        return Ok(WriteOutcome::DryRun {
-            would_create: !file_exists,
-        });
-    }
-
-    // Create parent directories if needed
-    if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("Cannot create directory {}", parent.display()))?;
-    }
-
-    // Backup existing file
-    if file_exists {
-        let bak = backup_path(path);
-        std::fs::copy(path, &bak)
-            .with_context(|| format!("Cannot write backup to {}", bak.display()))?;
-    }
-
-    let content = serde_json::to_string_pretty(&cfg)?;
-    std::fs::write(path, content + "\n")
-        .with_context(|| format!("Cannot write {}", path.display()))?;
-
-    Ok(WriteOutcome::Written {
-        created: !file_exists,
-    })
+    backend(format).write_entry(path, vaults, dry_run, force, no_edit)
 }
 
 /// Remove the obsidian-mcp-rs entry from the config file.
 /// Returns `true` if an entry was found and removed.
 pub fn remove_entry(path: &Path, format: &ConfigFormat, dry_run: bool) -> Result<bool> {
-    if *format == ConfigFormat::Codex {
-        return remove_entry_toml(path, dry_run);
+    backend(format).remove_entry(path, dry_run)
+}
+
+// ── Backend dispatch ──────────────────────────────────────────────────────────
+
+/// One config-file encoding strategy. A new client format is wired up by
+/// mapping it to a backend in [`backend`] — existing impls stay untouched (OCP).
+trait ConfigBackend {
+    fn check_status(&self, path: &Path) -> InstallStatus;
+    fn write_entry(
+        &self,
+        path: &Path,
+        vaults: &[PathBuf],
+        dry_run: bool,
+        force: bool,
+        no_edit: bool,
+    ) -> Result<WriteOutcome>;
+    fn remove_entry(&self, path: &Path, dry_run: bool) -> Result<bool>;
+}
+
+fn backend(format: &ConfigFormat) -> Box<dyn ConfigBackend> {
+    match format {
+        ConfigFormat::Standard => Box::new(JsonBackend {
+            entry_path: &["mcpServers", "obsidian"],
+            build: build_standard,
+        }),
+        ConfigFormat::ClaudeApp => Box::new(JsonBackend {
+            entry_path: &["mcpServers", "obsidian"],
+            build: build_claude_app,
+        }),
+        ConfigFormat::OpenClaw => Box::new(JsonBackend {
+            entry_path: &["mcp", "servers", "obsidian"],
+            build: build_openclaw,
+        }),
+        ConfigFormat::VSCode => Box::new(JsonBackend {
+            entry_path: &["servers", "obsidian"],
+            build: build_vscode,
+        }),
+        ConfigFormat::Amp => Box::new(JsonBackend {
+            entry_path: &["amp.mcpServers", "obsidian"],
+            build: build_standard,
+        }),
+        ConfigFormat::OpenCode => Box::new(JsonBackend {
+            entry_path: &["mcp", "obsidian"],
+            build: build_opencode,
+        }),
+        ConfigFormat::Codex => Box::new(TomlBackend),
+        ConfigFormat::Goose => Box::new(YamlBackend),
     }
-    if *format == ConfigFormat::Goose {
-        return remove_entry_yaml(path, dry_run);
-    }
-    if !path.exists() {
-        return Ok(false);
-    }
-    let mut cfg = read_config(path)?;
-
-    let removed = match format {
-        ConfigFormat::Standard | ConfigFormat::ClaudeApp => cfg["mcpServers"]
-            .as_object_mut()
-            .map(|o| o.remove("obsidian").is_some())
-            .unwrap_or(false),
-
-        ConfigFormat::OpenClaw => {
-            let mut found = false;
-            if let Some(mcp) = cfg.get_mut("mcp")
-                && let Some(servers) = mcp.get_mut("servers")
-                && let Some(obj) = servers.as_object_mut()
-            {
-                found = obj.remove("obsidian").is_some();
-            }
-            found
-        }
-
-        ConfigFormat::VSCode => cfg["servers"]
-            .as_object_mut()
-            .map(|o| o.remove("obsidian").is_some())
-            .unwrap_or(false),
-
-        ConfigFormat::Amp => cfg["amp.mcpServers"]
-            .as_object_mut()
-            .map(|o| o.remove("obsidian").is_some())
-            .unwrap_or(false),
-
-        ConfigFormat::OpenCode => cfg["mcp"]
-            .as_object_mut()
-            .map(|o| o.remove("obsidian").is_some())
-            .unwrap_or(false),
-
-        ConfigFormat::Codex | ConfigFormat::Goose => unreachable!(),
-    };
-
-    if removed && !dry_run {
-        let bak = backup_path(path);
-        std::fs::copy(path, &bak)
-            .with_context(|| format!("Cannot write backup to {}", bak.display()))?;
-        let content = serde_json::to_string_pretty(&cfg)?;
-        std::fs::write(path, content + "\n")
-            .with_context(|| format!("Cannot write {}", path.display()))?;
-    }
-
-    Ok(removed)
 }
 
 // ── Private helpers ───────────────────────────────────────────────────────────
@@ -212,69 +116,172 @@ fn read_config(path: &Path) -> Result<Value> {
     serde_json::from_str(&content).with_context(|| format!("Invalid JSON in {}", path.display()))
 }
 
-fn build_entry(format: &ConfigFormat, vault_strings: &[String], no_edit: bool) -> Value {
+// ── JSON backend (6 formats differ only by entry path + entry shape) ──────────
+
+struct JsonBackend {
+    /// Key path to the obsidian entry, e.g. `["mcpServers", "obsidian"]`.
+    entry_path: &'static [&'static str],
+    /// Builds the entry value for this format.
+    build: fn(&[String], bool) -> Value,
+}
+
+impl ConfigBackend for JsonBackend {
+    fn check_status(&self, path: &Path) -> InstallStatus {
+        if !path.exists() {
+            return InstallStatus::FileNotFound;
+        }
+        let Ok(cfg) = read_config(path) else {
+            return InstallStatus::NotInstalled;
+        };
+        if json_has_object(&cfg, self.entry_path) {
+            InstallStatus::Installed
+        } else {
+            InstallStatus::NotInstalled
+        }
+    }
+
+    fn write_entry(
+        &self,
+        path: &Path,
+        vaults: &[PathBuf],
+        dry_run: bool,
+        force: bool,
+        no_edit: bool,
+    ) -> Result<WriteOutcome> {
+        let file_exists = path.exists();
+        let mut cfg = if file_exists {
+            read_config(path)?
+        } else {
+            Value::Object(Default::default())
+        };
+
+        if json_has_object(&cfg, self.entry_path) && !force {
+            return Ok(WriteOutcome::AlreadyInstalled);
+        }
+
+        let vault_strings: Vec<String> = vaults
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        let entry = (self.build)(&vault_strings, no_edit);
+        json_insert(&mut cfg, self.entry_path, entry);
+
+        if dry_run {
+            return Ok(WriteOutcome::DryRun {
+                would_create: !file_exists,
+            });
+        }
+
+        write_with_backup(path, &(serde_json::to_string_pretty(&cfg)? + "\n"))?;
+        Ok(WriteOutcome::Written {
+            created: !file_exists,
+        })
+    }
+
+    fn remove_entry(&self, path: &Path, dry_run: bool) -> Result<bool> {
+        if !path.exists() {
+            return Ok(false);
+        }
+        let mut cfg = read_config(path)?;
+        let removed = json_remove(&mut cfg, self.entry_path);
+        if removed && !dry_run {
+            write_with_backup(path, &(serde_json::to_string_pretty(&cfg)? + "\n"))?;
+        }
+        Ok(removed)
+    }
+}
+
+/// Navigate `path` and report whether the final node is a JSON object.
+fn json_has_object(cfg: &Value, path: &[&str]) -> bool {
+    let mut cur = cfg;
+    for key in path {
+        match cur.get(key) {
+            Some(v) => cur = v,
+            None => return false,
+        }
+    }
+    cur.is_object()
+}
+
+/// Set `entry` at `path`, creating intermediate objects as needed.
+fn json_insert(cfg: &mut Value, path: &[&str], entry: Value) {
+    let (last, parents) = path.split_last().expect("entry_path must be non-empty");
+    let mut cur = cfg;
+    for key in parents {
+        if !cur[*key].is_object() {
+            cur[*key] = json!({});
+        }
+        cur = &mut cur[*key];
+    }
+    cur[*last] = entry;
+}
+
+/// Remove the key at `path`. Returns whether something was removed.
+fn json_remove(cfg: &mut Value, path: &[&str]) -> bool {
+    let (last, parents) = path.split_last().expect("entry_path must be non-empty");
+    let mut cur = cfg;
+    for key in parents {
+        match cur.get_mut(key) {
+            Some(v) => cur = v,
+            None => return false,
+        }
+    }
+    cur.as_object_mut()
+        .map(|o| o.remove(*last).is_some())
+        .unwrap_or(false)
+}
+
+fn npx_args(vaults: &[String], no_edit: bool) -> Vec<Value> {
     let mut args: Vec<Value> = vec![json!("-y"), json!("obsidian-mcp-rs")];
     if no_edit {
         args.push(json!("--no-edit"));
     }
-    args.extend(vault_strings.iter().map(|s| json!(s)));
-
-    match format {
-        ConfigFormat::Standard => json!({ "command": "npx", "args": args }),
-        ConfigFormat::ClaudeApp => json!({ "type": "stdio", "command": "npx", "args": args }),
-        ConfigFormat::OpenClaw => json!({ "command": "npx", "args": args, "transport": "stdio" }),
-        ConfigFormat::VSCode => json!({ "type": "stdio", "command": "npx", "args": args }),
-        ConfigFormat::Amp => json!({ "command": "npx", "args": args }),
-        ConfigFormat::OpenCode => {
-            // opencode merges command + args into a single array
-            let mut cmd: Vec<Value> = vec![json!("npx"), json!("-y"), json!("obsidian-mcp-rs")];
-            if no_edit {
-                cmd.push(json!("--no-edit"));
-            }
-            cmd.extend(vault_strings.iter().map(|s| json!(s)));
-            json!({ "type": "local", "command": cmd })
-        }
-        ConfigFormat::Codex | ConfigFormat::Goose => unreachable!(),
-    }
+    args.extend(vaults.iter().map(|s| json!(s)));
+    args
 }
 
-fn insert_entry(cfg: &mut Value, format: &ConfigFormat, entry: Value) {
-    match format {
-        ConfigFormat::Standard | ConfigFormat::ClaudeApp => {
-            if !cfg["mcpServers"].is_object() {
-                cfg["mcpServers"] = json!({});
-            }
-            cfg["mcpServers"]["obsidian"] = entry;
-        }
-        ConfigFormat::OpenClaw => {
-            if !cfg["mcp"].is_object() {
-                cfg["mcp"] = json!({});
-            }
-            if !cfg["mcp"]["servers"].is_object() {
-                cfg["mcp"]["servers"] = json!({});
-            }
-            cfg["mcp"]["servers"]["obsidian"] = entry;
-        }
-        ConfigFormat::VSCode => {
-            if !cfg["servers"].is_object() {
-                cfg["servers"] = json!({});
-            }
-            cfg["servers"]["obsidian"] = entry;
-        }
-        ConfigFormat::Amp => {
-            if !cfg["amp.mcpServers"].is_object() {
-                cfg["amp.mcpServers"] = json!({});
-            }
-            cfg["amp.mcpServers"]["obsidian"] = entry;
-        }
-        ConfigFormat::OpenCode => {
-            if !cfg["mcp"].is_object() {
-                cfg["mcp"] = json!({});
-            }
-            cfg["mcp"]["obsidian"] = entry;
-        }
-        ConfigFormat::Codex | ConfigFormat::Goose => unreachable!(),
+fn build_standard(vaults: &[String], no_edit: bool) -> Value {
+    json!({ "command": "npx", "args": npx_args(vaults, no_edit) })
+}
+
+fn build_claude_app(vaults: &[String], no_edit: bool) -> Value {
+    json!({ "type": "stdio", "command": "npx", "args": npx_args(vaults, no_edit) })
+}
+
+fn build_openclaw(vaults: &[String], no_edit: bool) -> Value {
+    json!({ "command": "npx", "args": npx_args(vaults, no_edit), "transport": "stdio" })
+}
+
+fn build_vscode(vaults: &[String], no_edit: bool) -> Value {
+    json!({ "type": "stdio", "command": "npx", "args": npx_args(vaults, no_edit) })
+}
+
+fn build_opencode(vaults: &[String], no_edit: bool) -> Value {
+    // opencode merges command + args into a single array
+    let mut cmd: Vec<Value> = vec![json!("npx"), json!("-y"), json!("obsidian-mcp-rs")];
+    if no_edit {
+        cmd.push(json!("--no-edit"));
     }
+    cmd.extend(vaults.iter().map(|s| json!(s)));
+    json!({ "type": "local", "command": cmd })
+}
+
+/// Create parent dirs, back up any existing file, then write `content`.
+/// Shared by every backend so the dir/backup/write dance lives in one place.
+fn write_with_backup(path: &Path, content: &str) -> Result<()> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("Cannot create directory {}", parent.display()))?;
+    }
+    if path.exists() {
+        let bak = backup_path(path);
+        std::fs::copy(path, &bak)
+            .with_context(|| format!("Cannot write backup to {}", bak.display()))?;
+    }
+    std::fs::write(path, content).with_context(|| format!("Cannot write {}", path.display()))?;
+    Ok(())
 }
 
 fn backup_path(path: &Path) -> PathBuf {
@@ -294,294 +301,238 @@ fn backup_path(path: &Path) -> PathBuf {
     base
 }
 
-// ── TOML helpers (Codex CLI) ──────────────────────────────────────────────────
+// ── TOML backend (Codex CLI) ──────────────────────────────────────────────────
 
-fn check_status_toml(path: &Path) -> InstallStatus {
-    if !path.exists() {
-        return InstallStatus::FileNotFound;
-    }
-    let Ok(content) = std::fs::read_to_string(path) else {
-        return InstallStatus::NotInstalled;
-    };
-    let Ok(doc) = content.parse::<toml_edit::DocumentMut>() else {
-        return InstallStatus::NotInstalled;
-    };
-    let installed = doc
-        .get("mcp_servers")
-        .and_then(|item| item.as_table())
-        .map(|t| t.contains_key("obsidian"))
-        .unwrap_or(false);
-    if installed {
-        InstallStatus::Installed
-    } else {
-        InstallStatus::NotInstalled
-    }
-}
+struct TomlBackend;
 
-fn write_entry_toml(
-    path: &Path,
-    vaults: &[PathBuf],
-    dry_run: bool,
-    force: bool,
-    no_edit: bool,
-) -> Result<WriteOutcome> {
-    let file_exists = path.exists();
-    let mut doc: toml_edit::DocumentMut = if file_exists {
+impl ConfigBackend for TomlBackend {
+    fn check_status(&self, path: &Path) -> InstallStatus {
+        if !path.exists() {
+            return InstallStatus::FileNotFound;
+        }
+        let Ok(content) = std::fs::read_to_string(path) else {
+            return InstallStatus::NotInstalled;
+        };
+        let Ok(doc) = content.parse::<toml_edit::DocumentMut>() else {
+            return InstallStatus::NotInstalled;
+        };
+        if toml_has_obsidian(&doc) {
+            InstallStatus::Installed
+        } else {
+            InstallStatus::NotInstalled
+        }
+    }
+
+    fn write_entry(
+        &self,
+        path: &Path,
+        vaults: &[PathBuf],
+        dry_run: bool,
+        force: bool,
+        no_edit: bool,
+    ) -> Result<WriteOutcome> {
+        let file_exists = path.exists();
+        let mut doc: toml_edit::DocumentMut = if file_exists {
+            let content = std::fs::read_to_string(path)
+                .with_context(|| format!("Cannot read {}", path.display()))?;
+            content
+                .parse()
+                .with_context(|| format!("Invalid TOML in {}", path.display()))?
+        } else {
+            toml_edit::DocumentMut::new()
+        };
+
+        if toml_has_obsidian(&doc) && !force {
+            return Ok(WriteOutcome::AlreadyInstalled);
+        }
+        if dry_run {
+            return Ok(WriteOutcome::DryRun {
+                would_create: !file_exists,
+            });
+        }
+
+        let mut args_arr = toml_edit::Array::new();
+        args_arr.push("-y");
+        args_arr.push("obsidian-mcp-rs");
+        if no_edit {
+            args_arr.push("--no-edit");
+        }
+        for v in vaults {
+            args_arr.push(v.to_string_lossy().as_ref());
+        }
+
+        let mut obsidian = toml_edit::Table::new();
+        obsidian.insert("command", toml_edit::value("npx"));
+        obsidian.insert("args", toml_edit::value(args_arr));
+
+        if !doc.contains_key("mcp_servers") {
+            doc.insert(
+                "mcp_servers",
+                toml_edit::Item::Table(toml_edit::Table::new()),
+            );
+        }
+        if let Some(servers) = doc
+            .get_mut("mcp_servers")
+            .and_then(|item| item.as_table_mut())
+        {
+            servers.insert("obsidian", toml_edit::Item::Table(obsidian));
+        }
+
+        write_with_backup(path, &doc.to_string())?;
+        Ok(WriteOutcome::Written {
+            created: !file_exists,
+        })
+    }
+
+    fn remove_entry(&self, path: &Path, dry_run: bool) -> Result<bool> {
+        if !path.exists() {
+            return Ok(false);
+        }
         let content = std::fs::read_to_string(path)
             .with_context(|| format!("Cannot read {}", path.display()))?;
-        content
+        let mut doc: toml_edit::DocumentMut = content
             .parse()
-            .with_context(|| format!("Invalid TOML in {}", path.display()))?
-    } else {
-        toml_edit::DocumentMut::new()
-    };
+            .with_context(|| format!("Invalid TOML in {}", path.display()))?;
 
-    let already = doc
-        .get("mcp_servers")
+        let removed = doc
+            .get_mut("mcp_servers")
+            .and_then(|item| item.as_table_mut())
+            .map(|t| t.remove("obsidian").is_some())
+            .unwrap_or(false);
+
+        if removed && !dry_run {
+            write_with_backup(path, &doc.to_string())?;
+        }
+        Ok(removed)
+    }
+}
+
+fn toml_has_obsidian(doc: &toml_edit::DocumentMut) -> bool {
+    doc.get("mcp_servers")
         .and_then(|item| item.as_table())
         .map(|t| t.contains_key("obsidian"))
-        .unwrap_or(false);
-
-    if already && !force {
-        return Ok(WriteOutcome::AlreadyInstalled);
-    }
-
-    if dry_run {
-        return Ok(WriteOutcome::DryRun {
-            would_create: !file_exists,
-        });
-    }
-
-    // Build args array
-    let mut args_arr = toml_edit::Array::new();
-    args_arr.push("-y");
-    args_arr.push("obsidian-mcp-rs");
-    if no_edit {
-        args_arr.push("--no-edit");
-    }
-    for v in vaults {
-        args_arr.push(v.to_string_lossy().as_ref());
-    }
-
-    // Build the [mcp_servers.obsidian] table
-    let mut obsidian = toml_edit::Table::new();
-    obsidian.insert("command", toml_edit::value("npx"));
-    obsidian.insert("args", toml_edit::value(args_arr));
-
-    // Ensure [mcp_servers] exists
-    if !doc.contains_key("mcp_servers") {
-        doc.insert(
-            "mcp_servers",
-            toml_edit::Item::Table(toml_edit::Table::new()),
-        );
-    }
-    if let Some(servers) = doc
-        .get_mut("mcp_servers")
-        .and_then(|item| item.as_table_mut())
-    {
-        servers.insert("obsidian", toml_edit::Item::Table(obsidian));
-    }
-
-    // Create parent directories
-    if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("Cannot create directory {}", parent.display()))?;
-    }
-
-    // Backup
-    if file_exists {
-        let bak = backup_path(path);
-        std::fs::copy(path, &bak)
-            .with_context(|| format!("Cannot write backup to {}", bak.display()))?;
-    }
-
-    std::fs::write(path, doc.to_string())
-        .with_context(|| format!("Cannot write {}", path.display()))?;
-
-    Ok(WriteOutcome::Written {
-        created: !file_exists,
-    })
+        .unwrap_or(false)
 }
 
-fn remove_entry_toml(path: &Path, dry_run: bool) -> Result<bool> {
-    if !path.exists() {
-        return Ok(false);
-    }
-    let content =
-        std::fs::read_to_string(path).with_context(|| format!("Cannot read {}", path.display()))?;
-    let mut doc: toml_edit::DocumentMut = content
-        .parse()
-        .with_context(|| format!("Invalid TOML in {}", path.display()))?;
+// ── YAML backend (Goose) ──────────────────────────────────────────────────────
 
-    let removed = doc
-        .get_mut("mcp_servers")
-        .and_then(|item| item.as_table_mut())
-        .map(|t| t.remove("obsidian").is_some())
-        .unwrap_or(false);
+struct YamlBackend;
 
-    if removed && !dry_run {
-        let bak = backup_path(path);
-        std::fs::copy(path, &bak)
-            .with_context(|| format!("Cannot write backup to {}", bak.display()))?;
-        std::fs::write(path, doc.to_string())
-            .with_context(|| format!("Cannot write {}", path.display()))?;
+impl ConfigBackend for YamlBackend {
+    fn check_status(&self, path: &Path) -> InstallStatus {
+        if !path.exists() {
+            return InstallStatus::FileNotFound;
+        }
+        let Ok(content) = std::fs::read_to_string(path) else {
+            return InstallStatus::NotInstalled;
+        };
+        let Ok(doc) = serde_yml::from_str::<serde_yml::Value>(&content) else {
+            return InstallStatus::NotInstalled;
+        };
+        if yaml_has_obsidian(&doc) {
+            InstallStatus::Installed
+        } else {
+            InstallStatus::NotInstalled
+        }
     }
 
-    Ok(removed)
-}
+    fn write_entry(
+        &self,
+        path: &Path,
+        vaults: &[PathBuf],
+        dry_run: bool,
+        force: bool,
+        no_edit: bool,
+    ) -> Result<WriteOutcome> {
+        let file_exists = path.exists();
+        let mut doc: serde_yml::Value = if file_exists {
+            let content = std::fs::read_to_string(path)
+                .with_context(|| format!("Cannot read {}", path.display()))?;
+            serde_yml::from_str(&content)
+                .with_context(|| format!("Invalid YAML in {}", path.display()))?
+        } else {
+            serde_yml::Value::Mapping(serde_yml::Mapping::new())
+        };
 
-// ── YAML helpers (Goose) ──────────────────────────────────────────────────────
+        if yaml_has_obsidian(&doc) && !force {
+            return Ok(WriteOutcome::AlreadyInstalled);
+        }
+        if dry_run {
+            return Ok(WriteOutcome::DryRun {
+                would_create: !file_exists,
+            });
+        }
 
-fn check_status_yaml(path: &Path) -> InstallStatus {
-    if !path.exists() {
-        return InstallStatus::FileNotFound;
-    }
-    let Ok(content) = std::fs::read_to_string(path) else {
-        return InstallStatus::NotInstalled;
-    };
-    let Ok(doc) = serde_yml::from_str::<serde_yml::Value>(&content) else {
-        return InstallStatus::NotInstalled;
-    };
-    let installed = doc
-        .get("extensions")
-        .and_then(|v| v.as_sequence())
-        .map(|seq| {
-            seq.iter()
-                .any(|item| item.get("name").and_then(|n| n.as_str()) == Some("obsidian"))
-        })
-        .unwrap_or(false);
-    if installed {
-        InstallStatus::Installed
-    } else {
-        InstallStatus::NotInstalled
-    }
-}
+        // Build the extension entry via serde to avoid Value API uncertainty
+        let goose_ext = GooseExtension {
+            name: "obsidian".into(),
+            ext_type: "stdio".into(),
+            cmd: "npx".into(),
+            args: {
+                let mut a = vec!["-y".into(), "obsidian-mcp-rs".into()];
+                if no_edit {
+                    a.push("--no-edit".into());
+                }
+                a.extend(vaults.iter().map(|v| v.to_string_lossy().into_owned()));
+                a
+            },
+            enabled: true,
+            timeout: 300,
+        };
+        let entry: serde_yml::Value = serde_yml::to_value(&goose_ext)?;
 
-fn write_entry_yaml(
-    path: &Path,
-    vaults: &[PathBuf],
-    dry_run: bool,
-    force: bool,
-    no_edit: bool,
-) -> Result<WriteOutcome> {
-    let file_exists = path.exists();
-    let mut doc: serde_yml::Value = if file_exists {
-        let content = std::fs::read_to_string(path)
-            .with_context(|| format!("Cannot read {}", path.display()))?;
-        serde_yml::from_str(&content)
-            .with_context(|| format!("Invalid YAML in {}", path.display()))?
-    } else {
-        serde_yml::Value::Mapping(serde_yml::Mapping::new())
-    };
-
-    let already = doc
-        .get("extensions")
-        .and_then(|v| v.as_sequence())
-        .map(|seq| {
-            seq.iter()
-                .any(|item| item.get("name").and_then(|n| n.as_str()) == Some("obsidian"))
-        })
-        .unwrap_or(false);
-
-    if already && !force {
-        return Ok(WriteOutcome::AlreadyInstalled);
-    }
-
-    if dry_run {
-        return Ok(WriteOutcome::DryRun {
-            would_create: !file_exists,
-        });
-    }
-
-    // Build the extension entry via serde to avoid Value API uncertainty
-    let goose_ext = GooseExtension {
-        name: "obsidian".into(),
-        ext_type: "stdio".into(),
-        cmd: "npx".into(),
-        args: {
-            let mut a = vec!["-y".into(), "obsidian-mcp-rs".into()];
-            if no_edit {
-                a.push("--no-edit".into());
-            }
-            a.extend(vaults.iter().map(|v| v.to_string_lossy().into_owned()));
-            a
-        },
-        enabled: true,
-        timeout: 300,
-    };
-    let entry: serde_yml::Value = serde_yml::to_value(&goose_ext)?;
-
-    // Insert into the extensions sequence
-    let has_extensions = doc
-        .get("extensions")
-        .and_then(|v| v.as_sequence())
-        .is_some();
-    if has_extensions {
+        // Append to the extensions sequence, or create it if absent / not a list.
         if let Some(seq) = doc.get_mut("extensions").and_then(|v| v.as_sequence_mut()) {
             if force {
                 seq.retain(|item| item.get("name").and_then(|n| n.as_str()) != Some("obsidian"));
             }
             seq.push(entry);
+        } else if let Some(mapping) = doc.as_mapping_mut() {
+            mapping.insert(
+                serde_yml::Value::String("extensions".into()),
+                serde_yml::Value::Sequence(vec![entry]),
+            );
         }
-    } else if let Some(mapping) = doc.as_mapping_mut() {
-        mapping.insert(
-            serde_yml::Value::String("extensions".into()),
-            serde_yml::Value::Sequence(vec![entry]),
-        );
+
+        write_with_backup(path, &serde_yml::to_string(&doc)?)?;
+        Ok(WriteOutcome::Written {
+            created: !file_exists,
+        })
     }
 
-    // Create parent directories
-    if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("Cannot create directory {}", parent.display()))?;
+    fn remove_entry(&self, path: &Path, dry_run: bool) -> Result<bool> {
+        if !path.exists() {
+            return Ok(false);
+        }
+        let content = std::fs::read_to_string(path)
+            .with_context(|| format!("Cannot read {}", path.display()))?;
+        let mut doc: serde_yml::Value = serde_yml::from_str(&content)
+            .with_context(|| format!("Invalid YAML in {}", path.display()))?;
+
+        let removed = if let Some(seq) = doc.get_mut("extensions").and_then(|v| v.as_sequence_mut())
+        {
+            let before = seq.len();
+            seq.retain(|item| item.get("name").and_then(|n| n.as_str()) != Some("obsidian"));
+            seq.len() < before
+        } else {
+            false
+        };
+
+        if removed && !dry_run {
+            write_with_backup(path, &serde_yml::to_string(&doc)?)?;
+        }
+        Ok(removed)
     }
-
-    // Backup
-    if file_exists {
-        let bak = backup_path(path);
-        std::fs::copy(path, &bak)
-            .with_context(|| format!("Cannot write backup to {}", bak.display()))?;
-    }
-
-    let content = serde_yml::to_string(&doc)?;
-    std::fs::write(path, content).with_context(|| format!("Cannot write {}", path.display()))?;
-
-    Ok(WriteOutcome::Written {
-        created: !file_exists,
-    })
 }
 
-fn remove_entry_yaml(path: &Path, dry_run: bool) -> Result<bool> {
-    if !path.exists() {
-        return Ok(false);
-    }
-    let content =
-        std::fs::read_to_string(path).with_context(|| format!("Cannot read {}", path.display()))?;
-    let mut doc: serde_yml::Value = serde_yml::from_str(&content)
-        .with_context(|| format!("Invalid YAML in {}", path.display()))?;
-
-    let removed = if let Some(seq) = doc.get_mut("extensions").and_then(|v| v.as_sequence_mut()) {
-        let before = seq.len();
-        seq.retain(|item| item.get("name").and_then(|n| n.as_str()) != Some("obsidian"));
-        seq.len() < before
-    } else {
-        false
-    };
-
-    if removed && !dry_run {
-        let bak = backup_path(path);
-        std::fs::copy(path, &bak)
-            .with_context(|| format!("Cannot write backup to {}", bak.display()))?;
-        let content = serde_yml::to_string(&doc)?;
-        std::fs::write(path, content)
-            .with_context(|| format!("Cannot write {}", path.display()))?;
-    }
-
-    Ok(removed)
+fn yaml_has_obsidian(doc: &serde_yml::Value) -> bool {
+    doc.get("extensions")
+        .and_then(|v| v.as_sequence())
+        .map(|seq| {
+            seq.iter()
+                .any(|item| item.get("name").and_then(|n| n.as_str()) == Some("obsidian"))
+        })
+        .unwrap_or(false)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

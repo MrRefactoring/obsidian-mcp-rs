@@ -1,4 +1,3 @@
-use rmcp::handler::server::wrapper::Parameters;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -10,5 +9,3 @@ pub struct CreateDirectoryParams {
     /// Create parent directories if they do not exist (default: true)
     pub recursive: Option<bool>,
 }
-
-pub type CreateDirectory = Parameters<CreateDirectoryParams>;

@@ -1,4 +1,3 @@
-use rmcp::handler::server::wrapper::Parameters;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -10,5 +9,3 @@ pub struct ReadNoteParams {
     /// Optional subfolder path relative to vault root (e.g. "journal/2024")
     pub folder: Option<String>,
 }
-
-pub type ReadNote = Parameters<ReadNoteParams>;

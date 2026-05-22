@@ -1,5 +1,35 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **Internal refactor, no behavioural change** (same public MCP API, same config-file output). Split the 1700-line `src/vault.rs` into a `src/vault/` module — `mod.rs` (the `VaultManager` orchestrator), `path.rs` (`safe_join` sandbox), `frontmatter.rs` (parsing + `find_closing_fm`), `tags.rs` (tag operations + `replace_inline_tag`), `search.rs` (`SearchResult`/`SearchType` + the walk). Tests moved alongside the code they cover. All 190 tests stay green; `cargo clippy -- -D warnings` and `cargo fmt --check` are clean.
+- `install/writer.rs` reworked around a `ConfigBackend` trait (`JsonBackend` parameterised by entry-path + builder, `TomlBackend`, `YamlBackend`), dispatched from a single `backend(format)` match. Adding a new JSON-shaped client is now one match arm instead of editing five `match`-on-`ConfigFormat` blocks. The dir/backup/write sequence is consolidated into one `write_with_backup` helper.
+- `add_tags_to_frontmatter` flattened from four nested branches into early-return guard clauses; output is byte-for-byte identical.
+
+### Security
+
+- **Path traversal in `add-tags` / `remove-tags`** — the v0.1.6 sandboxing fix routed every other path-bearing tool through `safe_join`, but the two tag tools still used a bare `root.join(file)` for each entry in their `files` array. A crafted `files: ["../../../etc/hosts"]` (or any absolute path) would let an MCP client read and overwrite files anywhere the server process could reach. Both tools now resolve every entry through `safe_join`, so traversal attempts return an `InvalidPath` error before any I/O. New regression tests: `add_tags_blocks_traversal`, `add_tags_blocks_absolute_path`, `remove_tags_blocks_traversal`.
+
+### Fixed
+
+- **Frontmatter terminator false-positives** — the closing-`---` marker was located with `find("\n---")`, which also matched `\n----`, `\n---foo`, and similar non-delimiters, splitting the frontmatter at the wrong byte and corrupting the body on subsequent writes. A new `find_closing_fm` helper requires `---` to stand alone on a line (followed by `\n`, `\r`, or end-of-input) and is now used by `extract_frontmatter`, `add_tags_to_frontmatter`, `add_tags_to_content`, `remove_tags_from_note`, and `rename_tag_in_note`.
+- **Inline-tag rewrites corrupted overlapping tags** — `rename-tag` and `remove-tags` used `String::replace` on `#tag`, so renaming `foo` to `bar` also clobbered `#foobar` → `#barbar` and `#foo-extra` → `#bar-extra`. A new `replace_inline_tag` helper enforces a right-boundary check (tag-continuation characters: alphanumerics, `-`, `_`, `/`). Tests: `rename_tag_does_not_corrupt_overlapping_inline_tags`, `remove_tags_does_not_corrupt_overlapping_inline_tags`.
+- **Vault basename collisions silently shadowed earlier paths** — `VaultManager::new` keyed every vault by `path.file_name()`, so passing `~/work/notes` and `~/personal/notes` would register only the second one. Colliding names are now disambiguated as `<name>-2`, `<name>-3`, … with a `tracing::warn!`. Test: `vault_basename_collisions_are_disambiguated`.
+
+### Removed
+
+- Crate-wide `#![allow(dead_code)]` in `main.rs`. The build is now warning-clean.
+- Unused `pub type Xxx = Parameters<XxxParams>;` aliases from all 11 files under `src/tools/` (no consumer referenced them).
+- Unused `SearchResult.vault` and `Frontmatter.raw` fields (populated but never read).
+- Unused `regex` crate dependency (`normalize_tag` was constructing a `Regex` it never applied).
+
+### Added
+
+- `CLAUDE.md` — onboarding notes for Claude Code: commands (incl. the `--bin obsidian-mcp-rs` workaround for `cargo test --lib`), the stdout-is-MCP transport invariant, the `safe_join` / `check_write` security model, the multi-vault basename rule, and engineering principles.
+
+
 ## [0.1.6] - 2026-05-21
 
 ### Security
@@ -127,6 +157,7 @@
 - GitHub Actions CI: lint, test, cross-target `cargo check`
 - GitHub Actions release pipeline: builds all 7 targets, creates GitHub Release with SHA256 checksums, publishes npm packages with provenance
 
+[Unreleased]: https://github.com/MrRefactoring/obsidian-mcp-rs/compare/v0.1.6...HEAD
 [0.1.6]: https://github.com/MrRefactoring/obsidian-mcp-rs/releases/tag/v0.1.6
 [0.1.5]: https://github.com/MrRefactoring/obsidian-mcp-rs/releases/tag/v0.1.5
 [0.1.4]: https://github.com/MrRefactoring/obsidian-mcp-rs/releases/tag/v0.1.4

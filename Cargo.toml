@@ -21,7 +21,6 @@ walkdir = "2.5"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 clap = { version = "4.6", features = ["derive"] }
-regex = "1.12"
 similar = "3"
 thiserror = "2.0"
 anyhow = "1"

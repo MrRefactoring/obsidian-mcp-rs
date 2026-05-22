@@ -1,4 +1,3 @@
-use rmcp::handler::server::wrapper::Parameters;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -16,5 +15,3 @@ pub struct AddTagsParams {
     /// Where to add inline tags in content: "start" or "end" (default: "end")
     pub position: Option<String>,
 }
-
-pub type AddTags = Parameters<AddTagsParams>;

@@ -1,4 +1,3 @@
-use rmcp::handler::server::wrapper::Parameters;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -16,5 +15,3 @@ pub struct EditNoteParams {
     /// Text to find when using "find_and_replace" operation
     pub search: Option<String>,
 }
-
-pub type EditNote = Parameters<EditNoteParams>;
