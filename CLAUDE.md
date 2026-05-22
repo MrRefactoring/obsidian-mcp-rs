@@ -12,9 +12,13 @@ cargo run -- /path/to/vault              # run server against a vault
 cargo run -- --no-edit /path/to/vault    # read-only mode
 
 # Tests
-cargo test                               # all tests
-cargo test --bin obsidian-mcp-rs <name>  # single test — there is NO lib target,
-                                         # so `cargo test --lib` fails; always use --bin
+cargo test                               # all tests (the unit tests live in the lib target)
+cargo test --lib <name>                  # single test — tests compile under the lib crate
+
+# Benchmarks (criterion, harness = false; see benches/vault_bench.rs)
+cargo bench                              # run search / rename_tag benchmarks
+RAYON_NUM_THREADS=1 cargo bench          # single-threaded baseline for comparison
+cargo bench --no-run                     # compile-only — this is what CI gates on
 
 # Lint gates enforced by CI (.github/workflows/ci.yml)
 cargo fmt --check
@@ -34,7 +38,7 @@ Toolchain is pinned to **stable** (`rust-toolchain.toml`); MSRV is **1.94**. `ru
 
 ## Architecture
 
-This is a **single Rust binary** (`obsidian-mcp-rs`) that speaks MCP over stdio, plus an **npm wrapper** that distributes prebuilt binaries via the optional-dependencies pattern.
+This is a Rust **library** (`src/lib.rs`, crate `obsidian_mcp_rs`) holding all domain logic, with a **thin binary** (`src/main.rs`) that wires up the CLI/logging and speaks MCP over stdio. Splitting lib/bin lets `benches/` and integration tests link against the code. There is also an **npm wrapper** that distributes prebuilt binaries via the optional-dependencies pattern.
 
 ### Transport invariant (do not break)
 
@@ -44,7 +48,8 @@ The server uses `(stdin, stdout)` for the MCP JSON-RPC stream (`main.rs::run_ser
 
 | Module       | Role                                                                                                                 |
 |--------------|----------------------------------------------------------------------------------------------------------------------|
-| `main.rs`    | clap CLI, log setup, dispatches to `install`/`uninstall`/`list`/`logs` subcommands or starts the MCP server          |
+| `lib.rs`     | crate root — re-exports `error`/`handler`/`install`/`tools`/`vault` as the public library surface                    |
+| `main.rs`    | thin bin over the lib: clap CLI, log setup, dispatches to `install`/`uninstall`/`list`/`logs` subcommands or starts the MCP server |
 | `handler.rs` | `ObsidianHandler` with `#[tool_router]` macro — 11 MCP tools, thin wrappers over `vault`                             |
 | `vault/`     | `VaultManager` (`mod.rs`) + submodules: `path` (**`safe_join` sandbox**), `frontmatter` (serde_yml tag parse), `tags`, `search`, `walk` (`md_files` via `ignore`). Vault walks run in parallel with `rayon` |
 | `tools/*.rs` | `serde` + `schemars::JsonSchema` param structs only — one per tool                                                   |

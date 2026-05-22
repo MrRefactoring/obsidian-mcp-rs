@@ -90,6 +90,18 @@ npx obsidian-mcp-rs uninstall claude --dry-run  # preview changes without writin
 - **YAML frontmatter** tag management
 - **`npx` compatible** — runs instantly via npm
 
+## Performance
+
+Vault-wide operations (`search-vault`, `rename-tag`) walk the vault with the [`ignore`](https://crates.io/crates/ignore) crate and process files in parallel via [`rayon`](https://crates.io/crates/rayon). Measured with the criterion suite in [`benches/`](benches/vault_bench.rs) on a synthetic vault, Apple Silicon (10 logical cores); "serial" is the same code pinned to one thread (`RAYON_NUM_THREADS=1`):
+
+| Operation                  | Serial (1 thread) | Parallel  | Speedup |
+| -------------------------- | ----------------- | --------- | ------- |
+| Content search (2000 notes)| 52.8 ms           | 26.3 ms   | ~2.0×   |
+| Tag search (2000 notes)    | 45.6 ms           | 24.4 ms   | ~1.9×   |
+| Tag rename (500 notes)     | 84.3 ms           | 60.0 ms   | ~1.4×   |
+
+Single-note operations (`read-note`, `create-note`, `edit-note`, …) touch one file and are unaffected. Numbers vary with core count and disk; reproduce locally with `cargo bench`.
+
 ## Installation
 
 ```bash
@@ -358,7 +370,16 @@ npm run build
 ### Testing
 
 ```bash
-cargo test
+cargo test               # all tests (lib + integration)
+cargo test --lib         # library unit tests only
+```
+
+### Benchmarks
+
+```bash
+cargo bench                          # run the criterion suite in benches/
+RAYON_NUM_THREADS=1 cargo bench      # single-threaded baseline for comparison
+cargo bench --no-run                 # compile only (what CI runs)
 ```
 
 ### Cross-compilation

@@ -12,8 +12,9 @@
 
 ### Performance
 
-- Vault walks now process files in parallel with `rayon` (`search-vault`, `rename-tag`), giving near-linear speedup on large vaults.
+- Vault walks now process files in parallel with `rayon` (`search-vault`, `rename-tag`). Measured on a 2000-note synthetic vault (Apple Silicon, 10 logical cores) vs. the same code pinned to one thread: content search ~2.0×, tag search ~1.9×, tag rename (500 notes) ~1.4×.
 - Case-insensitive content search lowercases each file once instead of once per line.
+- Added a criterion benchmark suite (`benches/vault_bench.rs`) covering content/tag search and tag rename; CI compiles it (`cargo bench --no-run`) so it can't bitrot. This required splitting the crate into a library (`src/lib.rs`) plus a thin binary (`src/main.rs`) so benches and tests can link against the domain logic — `cargo test --lib` now works.
 
 ### Security
 

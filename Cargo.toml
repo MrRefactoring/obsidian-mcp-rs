@@ -33,7 +33,12 @@ ignore = "0.4"
 rayon = "1"
 
 [dev-dependencies]
+criterion = { version = "0.8.2", features = ["html_reports"] }
 tempfile = "3"
+
+[[bench]]
+name = "vault_bench"
+harness = false
 
 [profile.release]
 opt-level = 3
