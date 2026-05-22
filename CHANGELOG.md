@@ -7,6 +7,13 @@
 - **Internal refactor, no behavioural change** (same public MCP API, same config-file output). Split the 1700-line `src/vault.rs` into a `src/vault/` module — `mod.rs` (the `VaultManager` orchestrator), `path.rs` (`safe_join` sandbox), `frontmatter.rs` (parsing + `find_closing_fm`), `tags.rs` (tag operations + `replace_inline_tag`), `search.rs` (`SearchResult`/`SearchType` + the walk). Tests moved alongside the code they cover. All 190 tests stay green; `cargo clippy -- -D warnings` and `cargo fmt --check` are clean.
 - `install/writer.rs` reworked around a `ConfigBackend` trait (`JsonBackend` parameterised by entry-path + builder, `TomlBackend`, `YamlBackend`), dispatched from a single `backend(format)` match. Adding a new JSON-shaped client is now one match arm instead of editing five `match`-on-`ConfigFormat` blocks. The dir/backup/write sequence is consolidated into one `write_with_backup` helper.
 - `add_tags_to_frontmatter` flattened from four nested branches into early-return guard clauses; output is byte-for-byte identical.
+- Frontmatter `tags` parsing moved from the hand-rolled line scanner to `serde_yml` (`frontmatter::extract_tags`), eliminating a custom YAML subset parser. Boundary detection still uses `find_closing_fm` (serde does not handle `---` markers). **Behaviour change:** parsing is now strict — a note whose frontmatter body is *invalid* YAML yields no tags instead of being scraped line-by-line, and non-string tag values (e.g. `tags: [2024]`) are ignored. Well-formed vaults are unaffected.
+- Vault-wide walks (`search-vault`, `rename-tag`) replaced `walkdir` with the `ignore` crate via a shared `walk::md_files` helper (de-duplicating the two identical walk loops). **Behaviour change:** `.gitignore` rules and hidden files/folders are now respected, so gitignored or hidden notes are skipped — including by `rename-tag`.
+
+### Performance
+
+- Vault walks now process files in parallel with `rayon` (`search-vault`, `rename-tag`), giving near-linear speedup on large vaults.
+- Case-insensitive content search lowercases each file once instead of once per line.
 
 ### Security
 

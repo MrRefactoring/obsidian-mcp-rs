@@ -46,7 +46,7 @@ The server uses `(stdin, stdout)` for the MCP JSON-RPC stream (`main.rs::run_ser
 |--------------|----------------------------------------------------------------------------------------------------------------------|
 | `main.rs`    | clap CLI, log setup, dispatches to `install`/`uninstall`/`list`/`logs` subcommands or starts the MCP server          |
 | `handler.rs` | `ObsidianHandler` with `#[tool_router]` macro — 11 MCP tools, thin wrappers over `vault`                             |
-| `vault.rs`   | `VaultManager`, all domain logic, **`safe_join` sandbox**, frontmatter parsing, tag operations, search via `walkdir` |
+| `vault/`     | `VaultManager` (`mod.rs`) + submodules: `path` (**`safe_join` sandbox**), `frontmatter` (serde_yml tag parse), `tags`, `search`, `walk` (`md_files` via `ignore`). Vault walks run in parallel with `rayon` |
 | `tools/*.rs` | `serde` + `schemars::JsonSchema` param structs only — one per tool                                                   |
 | `install/`   | Writes/removes MCP-server entries in 14 AI-client configs (JSON / TOML for Codex / YAML for Goose)                   |
 | `error.rs`   | `VaultError` + `From<VaultError> for rmcp::ErrorData`                                                                |
@@ -74,9 +74,10 @@ The `--no-edit` flag is a gate enforced in `ObsidianHandler::check_write()`, cal
 ## Conventions worth knowing
 
 - Use `git mv` to rename/move files — preserves history.
-- Frontmatter parsing in `vault.rs` is intentionally a hand-rolled YAML subset (only `tags:` matters); `serde_yml` is reserved for the Goose config writer. Don't expand the hand-rolled parser — extract to a proper YAML lib if you need more.
+- Frontmatter tags are parsed with `serde_yml` (`frontmatter::extract_tags`) — only `tags:` matters. Parsing is strict: malformed YAML in the frontmatter body yields no tags (no line-by-line scraping). The boundary detection is still separate (`find_closing_fm`), since serde doesn't know about `---` markers.
 - The closing-frontmatter marker is detected by `find_closing_fm`, which requires `---` to stand alone on a line. Use this helper anywhere you previously would have written `s.find("\n---")`.
 - Inline-tag rewrites must go through `replace_inline_tag` (right-boundary check), so `#foo` does not match inside `#foobar`/`#foo-extra`.
+- Vault-wide walks (`search`, `rename_tag`) go through `walk::md_files` (the `ignore` crate, so `.gitignore` and hidden files are respected) and process files in parallel via `rayon`. `follow_links(false)` keeps the walk inside the vault.
 
 ## Engineering Principles
 

@@ -2,6 +2,7 @@ mod frontmatter;
 mod path;
 mod search;
 mod tags;
+mod walk;
 
 use std::{
     collections::HashMap,
@@ -9,7 +10,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use walkdir::WalkDir;
+use rayon::prelude::*;
 
 use crate::error::VaultError;
 
@@ -19,6 +20,7 @@ use tags::{
     add_tags_to_content, add_tags_to_frontmatter, normalize_tag, remove_tags_from_note,
     rename_tag_in_note,
 };
+use walk::md_files;
 
 pub use search::{SearchResult, SearchType};
 
@@ -341,26 +343,15 @@ impl VaultManager {
         new_tag: &str,
     ) -> Result<Vec<String>, VaultError> {
         let root = self.resolve_vault(vault)?;
-        let mut modified = Vec::new();
 
-        for entry in WalkDir::new(root)
-            .follow_links(false)
-            .into_iter()
-            .filter_map(|e| e.ok())
-            .filter(|e| e.file_type().is_file())
-            .filter(|e| {
-                e.path()
-                    .extension()
-                    .and_then(|x| x.to_str())
-                    .map(|x| x == "md")
-                    .unwrap_or(false)
-            })
-        {
-            let path = entry.path();
-            let content = fs::read_to_string(path)
-                .map_err(|e| VaultError::io(path.display().to_string(), e))?;
-
-            if content_has_tag(&content, old_tag) {
+        let mut modified: Vec<String> = md_files(root)
+            .par_iter()
+            .map(|path| -> Result<Option<String>, VaultError> {
+                let content = fs::read_to_string(path)
+                    .map_err(|e| VaultError::io(path.display().to_string(), e))?;
+                if !content_has_tag(&content, old_tag) {
+                    return Ok(None);
+                }
                 let new_content = rename_tag_in_note(&content, old_tag, new_tag);
                 fs::write(path, new_content)
                     .map_err(|e| VaultError::io(path.display().to_string(), e))?;
@@ -369,9 +360,13 @@ impl VaultManager {
                     .unwrap_or(path)
                     .display()
                     .to_string();
-                modified.push(rel);
-            }
-        }
+                Ok(Some(rel))
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .flatten()
+            .collect();
+        modified.sort();
 
         Ok(modified)
     }

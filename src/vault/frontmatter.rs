@@ -1,6 +1,32 @@
+use serde::Deserialize;
+
 #[derive(Debug, Clone)]
 pub(crate) struct Frontmatter {
     pub tags: Vec<String>,
+}
+
+/// Frontmatter as far as we care about it — only `tags` is read. Accepts both
+/// a single scalar (`tags: x`) and a sequence (`tags: [a, b]` / block list).
+#[derive(Deserialize)]
+struct RawFrontmatter {
+    #[serde(default)]
+    tags: Option<TagField>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum TagField {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl TagField {
+    fn into_vec(self) -> Vec<String> {
+        match self {
+            TagField::One(t) => vec![t],
+            TagField::Many(t) => t,
+        }
+    }
 }
 
 pub(crate) fn content_has_tag(content: &str, tag: &str) -> bool {
@@ -23,8 +49,18 @@ pub(crate) fn extract_frontmatter(content: &str) -> Option<Frontmatter> {
     let raw = &after[..end];
 
     Some(Frontmatter {
-        tags: parse_yaml_tags(raw),
+        tags: extract_tags(raw),
     })
+}
+
+/// Parse the `tags` field out of a frontmatter YAML body. Malformed YAML yields
+/// no tags (strict parsing — we no longer best-effort scrape line-by-line).
+pub(crate) fn extract_tags(yaml: &str) -> Vec<String> {
+    serde_yml::from_str::<RawFrontmatter>(yaml)
+        .ok()
+        .and_then(|fm| fm.tags)
+        .map(TagField::into_vec)
+        .unwrap_or_default()
 }
 
 /// Locate the closing `---` frontmatter marker — only matches when `---`
@@ -43,38 +79,6 @@ pub(crate) fn find_closing_fm(s: &str) -> Option<usize> {
         }
         start = pos + 1;
     }
-}
-
-pub(crate) fn parse_yaml_tags(yaml: &str) -> Vec<String> {
-    let mut tags = Vec::new();
-    let mut in_tags = false;
-
-    for line in yaml.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("tags:") {
-            let inline = trimmed.trim_start_matches("tags:").trim();
-            if inline.starts_with('[') {
-                let inner = inline.trim_matches(|c| c == '[' || c == ']');
-                for t in inner.split(',') {
-                    let t = t.trim().trim_matches('"').trim_matches('\'');
-                    if !t.is_empty() {
-                        tags.push(t.to_string());
-                    }
-                }
-                in_tags = false;
-            } else if inline.is_empty() {
-                in_tags = true;
-            } else {
-                tags.push(inline.to_string());
-                in_tags = false;
-            }
-        } else if in_tags && trimmed.starts_with("- ") {
-            tags.push(trimmed.trim_start_matches("- ").trim().to_string());
-        } else if in_tags && !trimmed.is_empty() && !trimmed.starts_with('-') {
-            in_tags = false;
-        }
-    }
-    tags
 }
 
 #[cfg(test)]
@@ -99,18 +103,23 @@ mod tests {
     }
 
     #[test]
-    fn extract_frontmatter_ignores_inline_dashes_in_body() {
-        // A standalone closing marker comes only at the third `---` here; the
-        // intervening `----` and inline forms must not terminate the block.
-        let content = "---\ntags:\n  - real\n----\nstill yaml\ntags: [extra]\n---\nbody";
-        let fm = extract_frontmatter(content).unwrap();
-        // `extra` would only be parsed as a tag if we kept consuming past the
-        // false-positive `----` line.
+    fn find_closing_fm_skips_false_marker_line() {
+        // `----` is not a standalone `---` terminator, so the closing marker is
+        // the later standalone `---`. The offset must point past the `----`.
+        let after = "\ntags:\n  - real\n----\nstill text\n---\nbody";
+        let end = find_closing_fm(after).expect("closing marker found");
+        let raw = &after[..end];
         assert!(
-            fm.tags.iter().any(|t| t == "extra"),
-            "tags parsed past false-positive marker, got {:?}",
-            fm.tags
+            raw.contains("----"),
+            "raw must include the false marker line"
         );
+        assert!(raw.contains("real"));
+    }
+
+    #[test]
+    fn extract_frontmatter_parses_multiline_block() {
+        let fm = extract_frontmatter("---\ntitle: t\ntags:\n  - a\n  - b\n---\nbody").unwrap();
+        assert_eq!(fm.tags, vec!["a", "b"]);
     }
 
     #[test]

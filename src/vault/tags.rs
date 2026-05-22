@@ -1,4 +1,4 @@
-use super::frontmatter::{find_closing_fm, parse_yaml_tags};
+use super::frontmatter::{extract_tags, find_closing_fm};
 
 pub(crate) fn normalize_tag(tag: &str) -> String {
     tag.to_lowercase()
@@ -23,7 +23,7 @@ pub(crate) fn add_tags_to_frontmatter(content: &str, tags: &[String]) -> String 
     let rest = &after[end + 4..];
 
     // Only add tags not already present (case-insensitive).
-    let existing_tags = parse_yaml_tags(fm_content);
+    let existing_tags = extract_tags(fm_content);
     let new_tags: Vec<&String> = tags
         .iter()
         .filter(|t| {
