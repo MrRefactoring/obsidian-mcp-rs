@@ -1,6 +1,6 @@
 {
   "name": "@obsidian-mcp-rs/darwin-arm64",
-  "version": "0.1.6",
+  "version": "0.2.0",
   "description": "macOS ARM64 (Apple Silicon) binary for obsidian-mcp-rs",
   "repository": {
     "type": "git",

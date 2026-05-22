@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.2.0] - 2026-05-22
 
 ### Changed
 
@@ -166,7 +166,7 @@
 - GitHub Actions CI: lint, test, cross-target `cargo check`
 - GitHub Actions release pipeline: builds all 7 targets, creates GitHub Release with SHA256 checksums, publishes npm packages with provenance
 
-[Unreleased]: https://github.com/MrRefactoring/obsidian-mcp-rs/compare/v0.1.6...HEAD
+[0.2.0]: https://github.com/MrRefactoring/obsidian-mcp-rs/compare/v0.1.6...v0.2.0
 [0.1.6]: https://github.com/MrRefactoring/obsidian-mcp-rs/releases/tag/v0.1.6
 [0.1.5]: https://github.com/MrRefactoring/obsidian-mcp-rs/releases/tag/v0.1.5
 [0.1.4]: https://github.com/MrRefactoring/obsidian-mcp-rs/releases/tag/v0.1.4
