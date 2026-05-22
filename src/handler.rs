@@ -141,7 +141,8 @@ impl ObsidianHandler {
         ))
     }
 
-    /// Delete a note from the vault.
+    /// Delete a note from the vault. If this empties its containing folder,
+    /// that folder is removed too (the vault root is never deleted).
     #[tool(name = "delete-note")]
     fn delete_note(
         &self,

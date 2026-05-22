@@ -182,6 +182,7 @@ impl VaultManager {
         filename: &str,
         folder: Option<&str>,
     ) -> Result<(), VaultError> {
+        let root = self.resolve_vault(vault)?.to_path_buf();
         let path = self.note_path(vault, filename, folder)?;
         if !path.exists() {
             return Err(VaultError::NoteNotFound(
@@ -189,7 +190,9 @@ impl VaultManager {
                 vault.to_string(),
             ));
         }
-        fs::remove_file(&path).map_err(|e| VaultError::io(path.display().to_string(), e))
+        fs::remove_file(&path).map_err(|e| VaultError::io(path.display().to_string(), e))?;
+        prune_empty_parent(&path, &root);
+        Ok(())
     }
 
     pub fn move_note(
@@ -215,17 +218,7 @@ impl VaultManager {
                 .map_err(|e| VaultError::io(parent.display().to_string(), e))?;
         }
         fs::rename(&src, &dest).map_err(|e| VaultError::io(src.display().to_string(), e))?;
-
-        // If the move emptied the source folder, prune it — but never the vault
-        // root. Best-effort: a failed cleanup must not fail the move itself.
-        if let Some(parent) = src.parent()
-            && parent != root
-            && fs::read_dir(parent).is_ok_and(|mut d| d.next().is_none())
-            && let Err(e) = fs::remove_dir(parent)
-        {
-            tracing::warn!(dir = %parent.display(), error = %e, "failed to remove emptied source folder");
-        }
-
+        prune_empty_parent(&src, &root);
         Ok(dest)
     }
 
@@ -381,6 +374,19 @@ impl VaultManager {
         modified.sort();
 
         Ok(modified)
+    }
+}
+
+/// Remove `note`'s parent directory if the just-completed operation left it
+/// empty — but never the vault `root`. Best-effort: a failed cleanup is logged,
+/// not propagated, so it can't fail the move/delete that triggered it.
+fn prune_empty_parent(note: &Path, root: &Path) {
+    if let Some(parent) = note.parent()
+        && parent != root
+        && fs::read_dir(parent).is_ok_and(|mut d| d.next().is_none())
+        && let Err(e) = fs::remove_dir(parent)
+    {
+        tracing::warn!(dir = %parent.display(), error = %e, "failed to remove emptied source folder");
     }
 }
 
@@ -720,6 +726,45 @@ mod tests {
         let (dir, vault) = make_vault();
         let name = vault_name(&dir);
         assert!(vault.delete_note(&name, "ghost", None).is_err());
+    }
+
+    #[test]
+    fn delete_note_removes_emptied_source_folder() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        fs::create_dir_all(dir.path().join("sub")).unwrap();
+        fs::write(dir.path().join("sub/note.md"), "body").unwrap();
+        vault.delete_note(&name, "note", Some("sub")).unwrap();
+        assert!(
+            !dir.path().join("sub").exists(),
+            "emptied source folder must be removed"
+        );
+    }
+
+    #[test]
+    fn delete_note_keeps_nonempty_source_folder() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        fs::create_dir_all(dir.path().join("sub")).unwrap();
+        fs::write(dir.path().join("sub/a.md"), "a").unwrap();
+        fs::write(dir.path().join("sub/b.md"), "b").unwrap();
+        vault.delete_note(&name, "a", Some("sub")).unwrap();
+        assert!(
+            dir.path().join("sub").exists(),
+            "source folder still has b.md and must stay"
+        );
+        assert!(dir.path().join("sub/b.md").exists());
+    }
+
+    #[test]
+    fn delete_note_does_not_remove_vault_root() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(&dir, "only.md", "body");
+        vault.delete_note(&name, "only", None).unwrap();
+        // The note lived directly in the vault root; the root must never be
+        // pruned even though it is now empty of notes.
+        assert!(dir.path().exists());
     }
 
     // ── move_note ─────────────────────────────────────────────────────────────

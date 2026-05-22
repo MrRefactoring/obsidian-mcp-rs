@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.1] - 2026-05-22
+
+### Changed
+
+- **`delete-note` now prunes an emptied source folder.** When deleting a note leaves its containing folder empty, that folder is removed too — mirroring the behaviour `move-note` gained in 0.2.0. The cleanup is best-effort (a failed `remove_dir` is logged via `tracing::warn!`, never propagated, so it can't fail the delete) and the vault root is never removed. The empty-folder pruning shared by `move-note` and `delete-note` is now a single `prune_empty_parent` helper. Tests: `delete_note_removes_emptied_source_folder`, `delete_note_keeps_nonempty_source_folder`, `delete_note_does_not_remove_vault_root`.
+
 ## [0.2.0] - 2026-05-22
 
 ### Changed
@@ -166,6 +172,7 @@
 - GitHub Actions CI: lint, test, cross-target `cargo check`
 - GitHub Actions release pipeline: builds all 7 targets, creates GitHub Release with SHA256 checksums, publishes npm packages with provenance
 
+[0.2.1]: https://github.com/MrRefactoring/obsidian-mcp-rs/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/MrRefactoring/obsidian-mcp-rs/compare/v0.1.6...v0.2.0
 [0.1.6]: https://github.com/MrRefactoring/obsidian-mcp-rs/releases/tag/v0.1.6
 [0.1.5]: https://github.com/MrRefactoring/obsidian-mcp-rs/releases/tag/v0.1.5
