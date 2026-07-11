@@ -1,6 +1,6 @@
 {
   "name": "@obsidian-mcp-rs/darwin-x64",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "macOS x64 (Intel) binary for obsidian-mcp-rs",
   "repository": {
     "type": "git",
