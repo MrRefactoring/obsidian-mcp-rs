@@ -27,7 +27,7 @@ serde_json = "1"
 dirs = "6"
 dialoguer = "0.12"
 console = "0.16"
-toml_edit = "0.22"
+toml_edit = "0.25"
 ignore = "0.4"
 rayon = "1"
 # Maintained serde-yaml fork, aliased as `serde_yml` in code. Replaces the
