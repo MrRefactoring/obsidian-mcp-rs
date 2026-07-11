@@ -58,7 +58,8 @@ pub enum ClientKind {
 pub enum ConfigFormat {
     /// { "mcpServers": { "obsidian": { "command": ..., "args": [...] } } }
     Standard,
-    /// ~/.claude.json: same root but entry has "type": "stdio"
+    /// Claude Code stdio entry (`.mcp.json` + `~/.claude.json`): `mcpServers`
+    /// root, entry carries `"type": "stdio"`
     ClaudeApp,
     /// { "mcp": { "servers": { "obsidian": { "command": ..., "args": [...], "transport": "stdio" } } } }
     OpenClaw,
@@ -124,7 +125,9 @@ pub fn all_targets() -> Vec<InstallTarget> {
         config_path: std::env::current_dir()
             .unwrap_or_default()
             .join(".mcp.json"),
-        format: ConfigFormat::Standard,
+        // Claude Code's `.mcp.json` schema carries `"type": "stdio"` — same
+        // entry shape as the global `~/.claude.json` writer below.
+        format: ConfigFormat::ClaudeApp,
         detected: true, // always possible to create
         is_local: true,
     });

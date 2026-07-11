@@ -682,6 +682,30 @@ mod tests {
     }
 
     #[test]
+    fn write_entry_claude_app_format_has_type_stdio() {
+        // Claude Code configs (`.mcp.json` local + `~/.claude.json` global) both
+        // use the ClaudeApp format: `mcpServers` root, entry with `type: stdio`.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(".mcp.json");
+        let vaults = vec![std::path::PathBuf::from("/vault")];
+        write_entry(
+            &path,
+            &ConfigFormat::ClaudeApp,
+            &vaults,
+            false,
+            false,
+            false,
+        )
+        .unwrap();
+        let content: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let entry = &content["mcpServers"]["obsidian"];
+        assert!(entry.is_object());
+        assert_eq!(entry["type"], "stdio");
+        assert_eq!(entry["command"], "npx");
+    }
+
+    #[test]
     fn write_entry_creates_backup() {
         let (_dir, path) = temp_cfg(r#"{"mcpServers":{}}"#);
         let vaults = vec![std::path::PathBuf::from("/vault")];
