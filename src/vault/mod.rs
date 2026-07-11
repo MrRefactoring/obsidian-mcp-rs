@@ -392,6 +392,19 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
+    // An absolute path outside any vault, for the current OS. A `/etc/…` string
+    // is absolute on Unix but NOT on Windows (no drive prefix), where it would be
+    // rejected by the escape check instead of the absolute-path check — so we use
+    // a genuine per-OS absolute path to exercise the `is_absolute()` branch.
+    #[cfg(unix)]
+    const ABS_FILE: &str = "/etc/passwd";
+    #[cfg(not(unix))]
+    const ABS_FILE: &str = r"C:\Windows\System32\drivers\etc\hosts";
+    #[cfg(unix)]
+    const ABS_FOLDER: &str = "/tmp";
+    #[cfg(not(unix))]
+    const ABS_FOLDER: &str = r"C:\Windows";
+
     fn make_vault() -> (TempDir, VaultManager) {
         let dir = TempDir::new().unwrap();
         let manager = VaultManager::new(vec![dir.path().to_path_buf()]);
@@ -1299,7 +1312,7 @@ mod tests {
     fn rejects_absolute_filename() {
         let (dir, vault) = make_vault();
         let name = vault_name(&dir);
-        let result = vault.note_path(&name, "/etc/passwd", None);
+        let result = vault.note_path(&name, ABS_FILE, None);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("absolute"));
     }
@@ -1308,7 +1321,7 @@ mod tests {
     fn rejects_absolute_folder() {
         let (dir, vault) = make_vault();
         let name = vault_name(&dir);
-        let result = vault.note_path(&name, "note", Some("/tmp"));
+        let result = vault.note_path(&name, "note", Some(ABS_FOLDER));
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("absolute"));
     }
@@ -1391,7 +1404,7 @@ mod tests {
         let name = vault_name(&dir);
         let result = vault.add_tags(
             &name,
-            &["/etc/hosts".into()],
+            &[ABS_FILE.into()],
             &["x".into()],
             "frontmatter",
             false,
