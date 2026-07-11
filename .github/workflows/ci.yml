@@ -87,7 +87,7 @@ jobs:
 
       # ── Upload both reports to Codecov ─────────────────────────────────────
       - name: Upload Rust coverage
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v7
         with:
           files: lcov-rust.info
           flags: rust
@@ -95,7 +95,7 @@ jobs:
           comment: false
 
       - name: Upload TypeScript coverage
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v7
         with:
           files: npm/obsidian-mcp-rs/coverage/lcov.info
           flags: typescript
