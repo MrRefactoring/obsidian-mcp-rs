@@ -42,7 +42,7 @@ This is a Rust **library** (`src/lib.rs`, crate `obsidian_mcp_rs`) holding all d
 
 ### Transport invariant (do not break)
 
-The server uses `(stdin, stdout)` for the MCP JSON-RPC stream (`main.rs::run_server`). **Anything that writes to stdout will corrupt the protocol.** All diagnostics go to stderr or to a rotating file log (`~/Library/Logs/obsidian-mcp-rs/obsidian-mcp-rs.log` on macOS, `~/.local/share/...` on Linux, `%LOCALAPPDATA%\...` on Windows). `tracing_subscriber` is configured in `main::setup_logging`: stderr layer = WARN by default (DEBUG with `--verbose`), file layer = always DEBUG.
+The server uses `(stdin, stdout)` for the MCP JSON-RPC stream (`main.rs::run_server`). **Anything that writes to stdout will corrupt the protocol.** All diagnostics go to stderr or to a size-rotated file log (`~/Library/Logs/obsidian-mcp-rs/obsidian-mcp-rs.log` on macOS, `~/.local/share/...` on Linux, `%LOCALAPPDATA%\...` on Windows). `tracing_subscriber` is configured in `main::setup_logging`: stderr layer = WARN by default (DEBUG with `--verbose`), file layer = always DEBUG. Rotation is size-based and runs at startup — `main::rotate_if_large` renames the log to `<path>.1` once it passes `MAX_LOG_BYTES` (5 MiB), keeping one backup, so the current path stays stable.
 
 ### Module layout
 
@@ -79,7 +79,7 @@ The `--no-edit` flag is a gate enforced in `ObsidianHandler::check_write()`, cal
 ## Conventions worth knowing
 
 - Use `git mv` to rename/move files — preserves history.
-- Frontmatter tags are parsed with `serde_yml` (`frontmatter::extract_tags`) — only `tags:` matters. Parsing is strict: malformed YAML in the frontmatter body yields no tags (no line-by-line scraping). The boundary detection is still separate (`find_closing_fm`), since serde doesn't know about `---` markers.
+- Frontmatter tags are parsed with `serde_yml` (`frontmatter::extract_tags`) — only `tags:` matters. (`serde_yml` is a Cargo alias for the maintained `serde_yaml_ng`; the previous `serde_yml`/`libyml` crates were RustSec-flagged unmaintained.) Parsing is strict: malformed YAML in the frontmatter body yields no tags (no line-by-line scraping). The boundary detection is still separate (`find_closing_fm`), since serde doesn't know about `---` markers.
 - The closing-frontmatter marker is detected by `find_closing_fm`, which requires `---` to stand alone on a line. Use this helper anywhere you previously would have written `s.find("\n---")`.
 - Inline-tag rewrites must go through `replace_inline_tag` (right-boundary check), so `#foo` does not match inside `#foobar`/`#foo-extra`.
 - Vault-wide walks (`search`, `rename_tag`) go through `walk::md_files` (the `ignore` crate, so `.gitignore` and hidden files are respected) and process files in parallel via `rayon`. `follow_links(false)` keeps the walk inside the vault.

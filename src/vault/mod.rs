@@ -3,6 +3,7 @@ mod path;
 mod search;
 mod tags;
 mod walk;
+mod write;
 
 use std::{
     collections::HashMap,
@@ -21,8 +22,9 @@ use tags::{
     rename_tag_in_note,
 };
 use walk::md_files;
+use write::atomic_write;
 
-pub use search::{SearchResult, SearchType};
+pub use search::{SearchOutput, SearchResult, SearchType};
 
 #[derive(Debug, Clone)]
 pub struct VaultManager {
@@ -125,7 +127,7 @@ impl VaultManager {
             fs::create_dir_all(parent)
                 .map_err(|e| VaultError::io(parent.display().to_string(), e))?;
         }
-        fs::write(&path, content).map_err(|e| VaultError::io(path.display().to_string(), e))?;
+        atomic_write(&path, content.as_bytes())?;
         Ok(path)
     }
 
@@ -158,10 +160,7 @@ impl VaultManager {
                     )
                 })?;
                 if !old.contains(needle) {
-                    return Err(VaultError::InvalidPath(format!(
-                        "Search text not found in note '{}'",
-                        filename
-                    )));
+                    return Err(VaultError::SearchTextNotFound(filename.to_string()));
                 }
                 old.replacen(needle, content, 1)
             }
@@ -172,7 +171,7 @@ impl VaultManager {
                 )));
             }
         };
-        fs::write(&path, &new).map_err(|e| VaultError::io(path.display().to_string(), e))?;
+        atomic_write(&path, new.as_bytes())?;
         Ok((old, new))
     }
 
@@ -306,8 +305,7 @@ impl VaultManager {
                 }
             };
 
-            fs::write(&path, new_content)
-                .map_err(|e| VaultError::io(path.display().to_string(), e))?;
+            atomic_write(&path, new_content.as_bytes())?;
             modified.push(file.clone());
         }
 
@@ -333,8 +331,7 @@ impl VaultManager {
                 .map_err(|e| VaultError::io(path.display().to_string(), e))?;
 
             let new_content = remove_tags_from_note(&content, tags);
-            fs::write(&path, new_content)
-                .map_err(|e| VaultError::io(path.display().to_string(), e))?;
+            atomic_write(&path, new_content.as_bytes())?;
             modified.push(file.clone());
         }
 
@@ -358,8 +355,7 @@ impl VaultManager {
                     return Ok(None);
                 }
                 let new_content = rename_tag_in_note(&content, old_tag, new_tag);
-                fs::write(path, new_content)
-                    .map_err(|e| VaultError::io(path.display().to_string(), e))?;
+                atomic_write(path, new_content.as_bytes())?;
                 let rel = path
                     .strip_prefix(root)
                     .unwrap_or(path)

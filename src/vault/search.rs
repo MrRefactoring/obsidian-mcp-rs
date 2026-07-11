@@ -1,15 +1,27 @@
 use std::{fs, path::Path};
 
 use rayon::prelude::*;
+use schemars::JsonSchema;
+use serde::Serialize;
 
 use super::frontmatter::content_has_tag;
 use super::walk::md_files;
 
-#[derive(Debug, Clone)]
+/// One file's search hits. Serialized into the `search-vault` tool's
+/// `structuredContent` and also used to build the human-readable text.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct SearchResult {
     pub path: String,
     pub filename: String,
     pub matches: Vec<String>,
+}
+
+/// Structured output payload for `search-vault` — its `structuredContent` and
+/// declared `outputSchema`. The list is wrapped in an object so the schema root
+/// is an object, as MCP requires.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct SearchOutput {
+    pub results: Vec<SearchResult>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

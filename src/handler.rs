@@ -2,13 +2,14 @@ use std::sync::Arc;
 
 use rmcp::{
     ErrorData as McpError, ServerHandler,
-    handler::server::router::tool::ToolRouter,
-    model::{CallToolResult, Content, ServerCapabilities, ServerInfo},
+    handler::server::{router::tool::ToolRouter, wrapper::Json},
+    model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerInfo},
     tool, tool_handler, tool_router,
 };
 use similar::TextDiff;
 
 use crate::{
+    error::VaultError,
     tools::{
         add_tags::AddTagsParams, create_directory::CreateDirectoryParams,
         create_note::CreateNoteParams, delete_note::DeleteNoteParams, edit_note::EditNoteParams,
@@ -16,7 +17,7 @@ use crate::{
         remove_tags::RemoveTagsParams, rename_tag::RenameTagParams,
         search_vault::SearchVaultParams,
     },
-    vault::{SearchType, VaultManager},
+    vault::{SearchOutput, SearchType, VaultManager},
 };
 
 #[derive(Clone)]
@@ -30,13 +31,31 @@ pub struct ObsidianHandler {
 }
 
 fn ok(text: impl Into<String>) -> Result<CallToolResult, McpError> {
-    Ok(CallToolResult::success(vec![Content::text(text.into())]))
+    Ok(CallToolResult::success(vec![ContentBlock::text(
+        text.into(),
+    )]))
 }
 
-fn err(e: impl std::fmt::Display) -> McpError {
-    let msg = e.to_string();
-    tracing::error!("{}", msg);
-    McpError::internal_error(msg, None)
+fn err(e: VaultError) -> McpError {
+    tracing::error!("{}", e);
+    // Preserve the granular MCP error code (INVALID_PARAMS vs INTERNAL_ERROR)
+    // from the `From<VaultError>` impl instead of flattening everything.
+    McpError::from(e)
+}
+
+/// Map a failed vault operation onto the correct MCP shape. Per the spec,
+/// tool-execution errors (note missing / already exists / search text not found)
+/// are returned as `isError: true` results so the model can see and self-correct;
+/// malformed-request errors and server faults stay JSON-RPC protocol errors.
+fn tool_error(e: VaultError) -> Result<CallToolResult, McpError> {
+    if e.is_tool_execution_error() {
+        tracing::debug!(error = %e, "tool execution error (isError result)");
+        Ok(CallToolResult::error(vec![ContentBlock::text(
+            e.to_string(),
+        )]))
+    } else {
+        Err(err(e))
+    }
 }
 
 #[tool_router]
@@ -66,7 +85,10 @@ impl ObsidianHandler {
     }
 
     /// Read the content of an existing note in the vault.
-    #[tool(name = "read-note")]
+    #[tool(
+        name = "read-note",
+        annotations(title = "Read note", read_only_hint = true, open_world_hint = false)
+    )]
     fn read_note(
         &self,
         rmcp::handler::server::wrapper::Parameters(ReadNoteParams {
@@ -76,15 +98,22 @@ impl ObsidianHandler {
         }): rmcp::handler::server::wrapper::Parameters<ReadNoteParams>,
     ) -> Result<CallToolResult, McpError> {
         tracing::debug!(tool = "read-note", %vault, %filename);
-        let content = self
-            .vault
-            .read_note(&vault, &filename, folder.as_deref())
-            .map_err(err)?;
-        ok(content)
+        match self.vault.read_note(&vault, &filename, folder.as_deref()) {
+            Ok(content) => ok(content),
+            Err(e) => tool_error(e),
+        }
     }
 
     /// Create a new note in the specified vault with Markdown content.
-    #[tool(name = "create-note")]
+    #[tool(
+        name = "create-note",
+        annotations(
+            title = "Create note",
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false
+        )
+    )]
     fn create_note(
         &self,
         rmcp::handler::server::wrapper::Parameters(CreateNoteParams {
@@ -96,15 +125,25 @@ impl ObsidianHandler {
     ) -> Result<CallToolResult, McpError> {
         tracing::debug!(tool = "create-note", %vault, %filename);
         self.check_write()?;
-        let path = self
+        match self
             .vault
             .create_note(&vault, &filename, &content, folder.as_deref())
-            .map_err(err)?;
-        ok(format!("Created note at {}", path.display()))
+        {
+            Ok(path) => ok(format!("Created note at {}", path.display())),
+            Err(e) => tool_error(e),
+        }
     }
 
     /// Edit an existing note. Operations: append, prepend, replace, find_and_replace.
-    #[tool(name = "edit-note")]
+    #[tool(
+        name = "edit-note",
+        annotations(
+            title = "Edit note",
+            destructive_hint = true,
+            idempotent_hint = false,
+            open_world_hint = false
+        )
+    )]
     fn edit_note(
         &self,
         rmcp::handler::server::wrapper::Parameters(EditNoteParams {
@@ -118,17 +157,17 @@ impl ObsidianHandler {
     ) -> Result<CallToolResult, McpError> {
         tracing::debug!(tool = "edit-note", %vault, %filename, %operation);
         self.check_write()?;
-        let (old, new) = self
-            .vault
-            .edit_note(
-                &vault,
-                &filename,
-                &operation,
-                &content,
-                folder.as_deref(),
-                search.as_deref(),
-            )
-            .map_err(err)?;
+        let (old, new) = match self.vault.edit_note(
+            &vault,
+            &filename,
+            &operation,
+            &content,
+            folder.as_deref(),
+            search.as_deref(),
+        ) {
+            Ok(v) => v,
+            Err(e) => return tool_error(e),
+        };
         let diff = TextDiff::from_lines(&old, &new);
         let unified = diff
             .unified_diff()
@@ -143,7 +182,15 @@ impl ObsidianHandler {
 
     /// Delete a note from the vault. If this empties its containing folder,
     /// that folder is removed too (the vault root is never deleted).
-    #[tool(name = "delete-note")]
+    #[tool(
+        name = "delete-note",
+        annotations(
+            title = "Delete note",
+            destructive_hint = true,
+            idempotent_hint = false,
+            open_world_hint = false
+        )
+    )]
     fn delete_note(
         &self,
         rmcp::handler::server::wrapper::Parameters(DeleteNoteParams {
@@ -154,14 +201,22 @@ impl ObsidianHandler {
     ) -> Result<CallToolResult, McpError> {
         tracing::debug!(tool = "delete-note", %vault, %filename);
         self.check_write()?;
-        self.vault
-            .delete_note(&vault, &filename, folder.as_deref())
-            .map_err(err)?;
-        ok(format!("Deleted note '{}'", filename))
+        match self.vault.delete_note(&vault, &filename, folder.as_deref()) {
+            Ok(()) => ok(format!("Deleted note '{}'", filename)),
+            Err(e) => tool_error(e),
+        }
     }
 
     /// Move or rename a note within the vault.
-    #[tool(name = "move-note")]
+    #[tool(
+        name = "move-note",
+        annotations(
+            title = "Move or rename note",
+            destructive_hint = true,
+            idempotent_hint = false,
+            open_world_hint = false
+        )
+    )]
     fn move_note(
         &self,
         rmcp::handler::server::wrapper::Parameters(MoveNoteParams {
@@ -174,21 +229,28 @@ impl ObsidianHandler {
     ) -> Result<CallToolResult, McpError> {
         tracing::debug!(tool = "move-note", %vault, %filename);
         self.check_write()?;
-        let dest = self
-            .vault
-            .move_note(
-                &vault,
-                &filename,
-                folder.as_deref(),
-                new_folder.as_deref(),
-                new_filename.as_deref(),
-            )
-            .map_err(err)?;
-        ok(format!("Moved note to {}", dest.display()))
+        match self.vault.move_note(
+            &vault,
+            &filename,
+            folder.as_deref(),
+            new_folder.as_deref(),
+            new_filename.as_deref(),
+        ) {
+            Ok(dest) => ok(format!("Moved note to {}", dest.display())),
+            Err(e) => tool_error(e),
+        }
     }
 
     /// Create a new directory in the vault.
-    #[tool(name = "create-directory")]
+    #[tool(
+        name = "create-directory",
+        annotations(
+            title = "Create directory",
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false
+        )
+    )]
     fn create_directory(
         &self,
         rmcp::handler::server::wrapper::Parameters(CreateDirectoryParams {
@@ -199,15 +261,20 @@ impl ObsidianHandler {
     ) -> Result<CallToolResult, McpError> {
         tracing::debug!(tool = "create-directory", %vault, %path);
         self.check_write()?;
-        let dir = self
+        match self
             .vault
             .create_directory(&vault, &path, recursive.unwrap_or(true))
-            .map_err(err)?;
-        ok(format!("Created directory {}", dir.display()))
+        {
+            Ok(dir) => ok(format!("Created directory {}", dir.display())),
+            Err(e) => tool_error(e),
+        }
     }
 
     /// Search for specific content within vault notes. Supports content, filename, and tag search.
-    #[tool(name = "search-vault")]
+    #[tool(
+        name = "search-vault",
+        annotations(title = "Search vault", read_only_hint = true, open_world_hint = false)
+    )]
     fn search_vault(
         &self,
         rmcp::handler::server::wrapper::Parameters(SearchVaultParams {
@@ -217,7 +284,7 @@ impl ObsidianHandler {
             case_sensitive,
             search_type,
         }): rmcp::handler::server::wrapper::Parameters<SearchVaultParams>,
-    ) -> Result<CallToolResult, McpError> {
+    ) -> Result<Json<SearchOutput>, McpError> {
         tracing::debug!(tool = "search-vault", %vault, %query);
         let st = match search_type.as_deref() {
             Some("filename") => SearchType::Filename,
@@ -225,6 +292,8 @@ impl ObsidianHandler {
             _ => SearchType::Content,
         };
 
+        // Returning `Json<T>` lets rmcp derive the tool's `outputSchema` from
+        // `SearchOutput` and emit both `structuredContent` and a JSON text block.
         let results = self
             .vault
             .search_vault(
@@ -235,25 +304,19 @@ impl ObsidianHandler {
                 &st,
             )
             .map_err(err)?;
-
-        if results.is_empty() {
-            return ok("No results found.");
-        }
-
-        let output = results
-            .iter()
-            .map(|r| {
-                let matches = r.matches.join("\n    ");
-                format!("## {}\nPath: {}\n    {}", r.filename, r.path, matches)
-            })
-            .collect::<Vec<_>>()
-            .join("\n\n");
-
-        ok(format!("Found {} result(s):\n\n{}", results.len(), output))
+        Ok(Json(SearchOutput { results }))
     }
 
     /// Add tags to notes in frontmatter and/or content.
-    #[tool(name = "add-tags")]
+    #[tool(
+        name = "add-tags",
+        annotations(
+            title = "Add tags",
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
     fn add_tags(
         &self,
         rmcp::handler::server::wrapper::Parameters(AddTagsParams {
@@ -267,44 +330,61 @@ impl ObsidianHandler {
     ) -> Result<CallToolResult, McpError> {
         tracing::debug!(tool = "add-tags", %vault, ?tags);
         self.check_write()?;
-        let modified = self
-            .vault
-            .add_tags(
-                &vault,
-                &files,
-                &tags,
-                location.as_deref().unwrap_or("both"),
-                normalize.unwrap_or(true),
-                position.as_deref().unwrap_or("end"),
-            )
-            .map_err(err)?;
-        ok(format!(
-            "Added tags {:?} to {} file(s): {}",
-            tags,
-            modified.len(),
-            modified.join(", ")
-        ))
+        match self.vault.add_tags(
+            &vault,
+            &files,
+            &tags,
+            location.as_deref().unwrap_or("both"),
+            normalize.unwrap_or(true),
+            position.as_deref().unwrap_or("end"),
+        ) {
+            Ok(modified) => ok(format!(
+                "Added tags {:?} to {} file(s): {}",
+                tags,
+                modified.len(),
+                modified.join(", ")
+            )),
+            Err(e) => tool_error(e),
+        }
     }
 
     /// Remove tags from notes in frontmatter and content.
-    #[tool(name = "remove-tags")]
+    #[tool(
+        name = "remove-tags",
+        annotations(
+            title = "Remove tags",
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
     fn remove_tags(
         &self,
         rmcp::handler::server::wrapper::Parameters(RemoveTagsParams { vault, files, tags }): rmcp::handler::server::wrapper::Parameters<RemoveTagsParams>,
     ) -> Result<CallToolResult, McpError> {
         tracing::debug!(tool = "remove-tags", %vault, ?tags);
         self.check_write()?;
-        let modified = self.vault.remove_tags(&vault, &files, &tags).map_err(err)?;
-        ok(format!(
-            "Removed tags {:?} from {} file(s): {}",
-            tags,
-            modified.len(),
-            modified.join(", ")
-        ))
+        match self.vault.remove_tags(&vault, &files, &tags) {
+            Ok(modified) => ok(format!(
+                "Removed tags {:?} from {} file(s): {}",
+                tags,
+                modified.len(),
+                modified.join(", ")
+            )),
+            Err(e) => tool_error(e),
+        }
     }
 
     /// Rename a tag across all notes in the vault.
-    #[tool(name = "rename-tag")]
+    #[tool(
+        name = "rename-tag",
+        annotations(
+            title = "Rename tag",
+            destructive_hint = true,
+            idempotent_hint = false,
+            open_world_hint = false
+        )
+    )]
     fn rename_tag(
         &self,
         rmcp::handler::server::wrapper::Parameters(RenameTagParams {
@@ -315,21 +395,23 @@ impl ObsidianHandler {
     ) -> Result<CallToolResult, McpError> {
         tracing::debug!(tool = "rename-tag", %vault, %old_tag, %new_tag);
         self.check_write()?;
-        let modified = self
-            .vault
-            .rename_tag(&vault, &old_tag, &new_tag)
-            .map_err(err)?;
-        ok(format!(
-            "Renamed tag '{}' to '{}' in {} file(s): {}",
-            old_tag,
-            new_tag,
-            modified.len(),
-            modified.join(", ")
-        ))
+        match self.vault.rename_tag(&vault, &old_tag, &new_tag) {
+            Ok(modified) => ok(format!(
+                "Renamed tag '{}' to '{}' in {} file(s): {}",
+                old_tag,
+                new_tag,
+                modified.len(),
+                modified.join(", ")
+            )),
+            Err(e) => tool_error(e),
+        }
     }
 
     /// List all available vaults configured for this server.
-    #[tool(name = "list-available-vaults")]
+    #[tool(
+        name = "list-available-vaults",
+        annotations(title = "List vaults", read_only_hint = true, open_world_hint = false)
+    )]
     fn list_available_vaults(
         &self,
         rmcp::handler::server::wrapper::Parameters(ListVaultsParams {}): rmcp::handler::server::wrapper::Parameters<ListVaultsParams>,
@@ -352,6 +434,18 @@ impl ObsidianHandler {
 impl ServerHandler for ObsidianHandler {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            // Identify *this* server, not the rmcp library (whose from_build_env
+            // default reports "rmcp"/its own version).
+            .with_server_info(
+                Implementation::new(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"))
+                    .with_title("Obsidian (Rust MCP)"),
+            )
+            .with_instructions(
+                "Notes live in one or more named vaults. Call `list-available-vaults` to \
+                 discover vault names, then pass a `vault` name to every tool. Filenames are \
+                 relative to the vault root; the `.md` extension is optional. Tag search uses \
+                 a `tag:` prefix in `search-vault`.",
+            )
     }
 }
 
@@ -388,6 +482,13 @@ mod tests {
         fs::write(dir.path().join(name), content).unwrap();
     }
 
+    /// Assert a tool-execution error surfaced as an `isError: true` result
+    /// (not a JSON-RPC protocol error), per the MCP spec.
+    fn assert_is_error(r: Result<CallToolResult, McpError>) {
+        let res = r.expect("expected an isError tool result, got a protocol error");
+        assert_eq!(res.is_error, Some(true), "expected isError result");
+    }
+
     // ── read-note ─────────────────────────────────────────────────────────────
 
     #[test]
@@ -403,13 +504,25 @@ mod tests {
     }
 
     #[test]
-    fn read_note_not_found_is_err() {
-        let (_, h, vault) = setup();
+    fn read_note_not_found_is_tool_error() {
+        let (_dir, h, vault) = setup();
         let r = h.read_note(Parameters(ReadNoteParams {
             vault,
             filename: "ghost".into(),
             folder: None,
         }));
+        assert_is_error(r);
+    }
+
+    #[test]
+    fn unknown_vault_is_protocol_error() {
+        let (_, h, _) = setup();
+        let r = h.read_note(Parameters(ReadNoteParams {
+            vault: "no-such-vault".into(),
+            filename: "n".into(),
+            folder: None,
+        }));
+        // A bad vault name is a malformed request → JSON-RPC protocol error, not isError.
         assert!(r.is_err());
     }
 
@@ -429,7 +542,7 @@ mod tests {
     }
 
     #[test]
-    fn create_note_duplicate_is_err() {
+    fn create_note_duplicate_is_tool_error() {
         let (dir, h, vault) = setup();
         write(&dir, "dup.md", "");
         let r = h.create_note(Parameters(CreateNoteParams {
@@ -438,7 +551,7 @@ mod tests {
             content: "".into(),
             folder: None,
         }));
-        assert!(r.is_err());
+        assert_is_error(r);
     }
 
     // ── edit-note ─────────────────────────────────────────────────────────────
@@ -459,8 +572,8 @@ mod tests {
     }
 
     #[test]
-    fn edit_note_error_on_missing() {
-        let (_, h, vault) = setup();
+    fn edit_note_missing_is_tool_error() {
+        let (_dir, h, vault) = setup();
         let r = h.edit_note(Parameters(EditNoteParams {
             vault,
             filename: "ghost".into(),
@@ -469,7 +582,22 @@ mod tests {
             folder: None,
             search: None,
         }));
-        assert!(r.is_err());
+        assert_is_error(r);
+    }
+
+    #[test]
+    fn edit_note_search_text_not_found_is_tool_error() {
+        let (dir, h, vault) = setup();
+        write(&dir, "e.md", "hello world");
+        let r = h.edit_note(Parameters(EditNoteParams {
+            vault,
+            filename: "e.md".into(),
+            operation: "find_and_replace".into(),
+            content: "x".into(),
+            folder: None,
+            search: Some("missing".into()),
+        }));
+        assert_is_error(r);
     }
 
     // ── delete-note ───────────────────────────────────────────────────────────
@@ -487,14 +615,14 @@ mod tests {
     }
 
     #[test]
-    fn delete_note_missing_is_err() {
-        let (_, h, vault) = setup();
+    fn delete_note_missing_is_tool_error() {
+        let (_dir, h, vault) = setup();
         let r = h.delete_note(Parameters(DeleteNoteParams {
             vault,
             filename: "ghost".into(),
             folder: None,
         }));
-        assert!(r.is_err());
+        assert_is_error(r);
     }
 
     // ── move-note ─────────────────────────────────────────────────────────────
@@ -514,8 +642,8 @@ mod tests {
     }
 
     #[test]
-    fn move_note_missing_is_err() {
-        let (_, h, vault) = setup();
+    fn move_note_missing_is_tool_error() {
+        let (_dir, h, vault) = setup();
         let r = h.move_note(Parameters(MoveNoteParams {
             vault,
             filename: "ghost".into(),
@@ -523,7 +651,7 @@ mod tests {
             new_folder: None,
             new_filename: None,
         }));
-        assert!(r.is_err());
+        assert_is_error(r);
     }
 
     // ── create-directory ──────────────────────────────────────────────────────
@@ -565,9 +693,8 @@ mod tests {
             case_sensitive: None,
             search_type: None,
         }));
-        assert!(r.is_ok());
-        let text = r.unwrap().content[0].as_text().unwrap().text.clone();
-        assert!(text.contains("result"));
+        let out = r.unwrap().0;
+        assert_eq!(out.results.len(), 1);
     }
 
     #[test]
@@ -581,9 +708,38 @@ mod tests {
             case_sensitive: None,
             search_type: None,
         }));
-        assert!(r.is_ok());
-        let text = r.unwrap().content[0].as_text().unwrap().text.clone();
-        assert!(text.contains("No results"));
+        assert!(r.unwrap().0.results.is_empty());
+    }
+
+    #[test]
+    fn search_vault_returns_structured_content() {
+        let (dir, h, vault) = setup();
+        write(&dir, "s.md", "needle content");
+        let r = h.search_vault(Parameters(SearchVaultParams {
+            vault,
+            query: "needle".into(),
+            path: None,
+            case_sensitive: None,
+            search_type: None,
+        }));
+        let out = r.unwrap().0;
+        assert_eq!(out.results.len(), 1);
+        assert_eq!(out.results[0].path, "s.md");
+        assert!(!out.results[0].matches.is_empty());
+    }
+
+    #[test]
+    fn search_vault_empty_still_has_structured_content() {
+        let (dir, h, vault) = setup();
+        write(&dir, "s.md", "no match here");
+        let r = h.search_vault(Parameters(SearchVaultParams {
+            vault,
+            query: "zzz".into(),
+            path: None,
+            case_sensitive: None,
+            search_type: None,
+        }));
+        assert!(r.unwrap().0.results.is_empty());
     }
 
     #[test]
