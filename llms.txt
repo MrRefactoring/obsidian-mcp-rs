@@ -4,7 +4,7 @@
 
 ## What it does
 
-- Exposes 12 MCP tools for full note lifecycle management: create, read, edit, delete, move, search, tag
+- Exposes 11 MCP tools for full note lifecycle management: create, read, edit, delete, move, search, tag
 - Supports multiple vaults simultaneously via CLI arguments
 - Ships as a single static binary — no runtime required
 - Distributed as an npm package (`obsidian-mcp-rs`) with platform-specific binaries via optional dependencies
@@ -45,7 +45,7 @@ MCP config (Claude Desktop / Cursor / Claude Code):
 ## Tech stack
 
 - Language: Rust (stable)
-- MCP library: rmcp 1.4 (stdio transport)
+- MCP library: rmcp 2.2 (stdio transport)
 - CLI: clap
 - Distributed via npm optional dependencies pattern
 
