@@ -537,7 +537,12 @@ mod tests {
 
     #[test]
     fn normalize_vaults_keeps_nonexistent_path() {
-        let paths = vec![PathBuf::from("/nonexistent/path/vault")];
+        // Use a per-OS absolute path: `/…` is absolute on Unix, `C:\…` on Windows.
+        #[cfg(unix)]
+        let input = "/nonexistent/path/vault";
+        #[cfg(not(unix))]
+        let input = r"C:\nonexistent\path\vault";
+        let paths = vec![PathBuf::from(input)];
         let normalized = normalize_vaults(&paths);
         assert_eq!(normalized.len(), 1);
         assert!(normalized[0].is_absolute());

@@ -1,6 +1,6 @@
 use std::fs::File;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use clap::{Parser, Subcommand};
@@ -67,6 +67,32 @@ enum Commands {
 
 // ── Logging setup ─────────────────────────────────────────────────────────────
 
+/// Roll the log over once it grows past this size (one `.1` backup is kept).
+const MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
+
+/// Size-based log rotation, run once at startup before the log is opened.
+///
+/// When `path` is larger than `max_bytes` it is renamed to `<path>.1` (replacing
+/// any previous backup) so the active log restarts empty. Best-effort: any
+/// failure is ignored and logging simply continues appending to the existing
+/// file. Keeping a single stable current path means [`run_logs`] and the
+/// documented location never change.
+fn rotate_if_large(path: &Path, max_bytes: u64) {
+    let too_big = std::fs::metadata(path)
+        .map(|m| m.len() > max_bytes)
+        .unwrap_or(false);
+    if too_big {
+        let _ = std::fs::rename(path, rotated_path(path));
+    }
+}
+
+/// `<path>.1` — the single retained previous log.
+fn rotated_path(path: &Path) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(".1");
+    PathBuf::from(name)
+}
+
 /// Platform-specific default log file path.
 fn default_log_path() -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
@@ -126,6 +152,7 @@ fn setup_logging(verbose: bool, log_path: Option<PathBuf>) {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
+        rotate_if_large(path, MAX_LOG_BYTES);
         let file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -287,4 +314,67 @@ async fn run_server(vaults: Vec<PathBuf>, no_edit: bool) -> anyhow::Result<()> {
     service.waiting().await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rotated_path_appends_dot_one() {
+        assert_eq!(
+            rotated_path(Path::new("/logs/app.log")),
+            PathBuf::from("/logs/app.log.1")
+        );
+    }
+
+    #[test]
+    fn rotate_leaves_small_file_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("app.log");
+        std::fs::write(&log, b"small").unwrap();
+
+        rotate_if_large(&log, 1024);
+
+        assert!(log.exists());
+        assert!(!rotated_path(&log).exists());
+        assert_eq!(std::fs::read(&log).unwrap(), b"small");
+    }
+
+    #[test]
+    fn rotate_moves_oversized_file_to_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("app.log");
+        std::fs::write(&log, vec![b'x'; 2048]).unwrap();
+
+        rotate_if_large(&log, 1024);
+
+        // Active log is gone (caller re-creates it); backup holds the old data.
+        assert!(!log.exists());
+        let backup = rotated_path(&log);
+        assert!(backup.exists());
+        assert_eq!(std::fs::read(&backup).unwrap().len(), 2048);
+    }
+
+    #[test]
+    fn rotate_replaces_previous_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("app.log");
+        let backup = rotated_path(&log);
+        std::fs::write(&backup, b"stale backup").unwrap();
+        std::fs::write(&log, vec![b'y'; 2048]).unwrap();
+
+        rotate_if_large(&log, 1024);
+
+        assert_eq!(std::fs::read(&backup).unwrap().len(), 2048);
+    }
+
+    #[test]
+    fn rotate_ignores_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("does-not-exist.log");
+        // Must not panic when the log has never been created.
+        rotate_if_large(&log, 1024);
+        assert!(!log.exists());
+    }
 }

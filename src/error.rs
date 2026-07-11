@@ -17,6 +17,9 @@ pub enum VaultError {
     #[error("Invalid path: {0}")]
     InvalidPath(String),
 
+    #[error("Search text not found in note '{0}'")]
+    SearchTextNotFound(String),
+
     #[error("Invalid frontmatter in '{0}': {1}")]
     InvalidFrontmatter(String, String),
 
@@ -31,15 +34,39 @@ impl VaultError {
     pub fn io(path: impl Into<String>, err: std::io::Error) -> Self {
         Self::Io(path.into(), err)
     }
+
+    /// Tool *execution* errors: the request was well-formed but the operation
+    /// can't complete given the vault's current state. Per the MCP spec these
+    /// are reported to the model as `isError: true` tool results (so it can
+    /// self-correct), not as JSON-RPC protocol errors. Malformed-request errors
+    /// (bad vault/path/args) and server faults (IO/search) are not in this set.
+    pub fn is_tool_execution_error(&self) -> bool {
+        matches!(
+            self,
+            VaultError::NoteNotFound(..)
+                | VaultError::NoteAlreadyExists(..)
+                | VaultError::DirectoryAlreadyExists(..)
+                | VaultError::SearchTextNotFound(..)
+        )
+    }
 }
 
 impl From<VaultError> for rmcp::ErrorData {
     fn from(err: VaultError) -> Self {
-        rmcp::ErrorData::new(
-            rmcp::model::ErrorCode::INTERNAL_ERROR,
-            err.to_string(),
-            None,
-        )
+        use rmcp::model::ErrorCode;
+        // Client mistakes (bad vault/note/path) map to INVALID_PARAMS so the MCP
+        // client can tell them apart from genuine server faults (IO/search).
+        let code = match &err {
+            VaultError::VaultNotFound(..)
+            | VaultError::NoteNotFound(..)
+            | VaultError::NoteAlreadyExists(..)
+            | VaultError::DirectoryAlreadyExists(..)
+            | VaultError::InvalidPath(..)
+            | VaultError::SearchTextNotFound(..)
+            | VaultError::InvalidFrontmatter(..) => ErrorCode::INVALID_PARAMS,
+            VaultError::Io(..) | VaultError::Search(..) => ErrorCode::INTERNAL_ERROR,
+        };
+        rmcp::ErrorData::new(code, err.to_string(), None)
     }
 }
 
@@ -102,5 +129,46 @@ mod tests {
         let e = VaultError::NoteNotFound("n".into(), "v".into());
         let data: rmcp::ErrorData = e.into();
         assert!(data.message.contains("not found"));
+    }
+
+    #[test]
+    fn client_errors_map_to_invalid_params() {
+        use rmcp::model::ErrorCode;
+        for e in [
+            VaultError::VaultNotFound("v".into(), "".into()),
+            VaultError::NoteNotFound("n".into(), "v".into()),
+            VaultError::NoteAlreadyExists("n".into(), "v".into()),
+            VaultError::DirectoryAlreadyExists("d".into()),
+            VaultError::InvalidPath("bad".into()),
+            VaultError::InvalidFrontmatter("n".into(), "bad".into()),
+        ] {
+            let data: rmcp::ErrorData = e.into();
+            assert_eq!(data.code, ErrorCode::INVALID_PARAMS);
+        }
+    }
+
+    #[test]
+    fn tool_execution_errors_are_classified() {
+        // Business errors the model can self-correct on → isError result.
+        assert!(VaultError::NoteNotFound("n".into(), "v".into()).is_tool_execution_error());
+        assert!(VaultError::NoteAlreadyExists("n".into(), "v".into()).is_tool_execution_error());
+        assert!(VaultError::DirectoryAlreadyExists("d".into()).is_tool_execution_error());
+        assert!(VaultError::SearchTextNotFound("n".into()).is_tool_execution_error());
+        // Malformed-request / server faults → protocol errors, not isError.
+        assert!(!VaultError::VaultNotFound("v".into(), "".into()).is_tool_execution_error());
+        assert!(!VaultError::InvalidPath("bad".into()).is_tool_execution_error());
+        assert!(!VaultError::Search("regex".into()).is_tool_execution_error());
+        assert!(!VaultError::io("/p", std::io::Error::other("x")).is_tool_execution_error());
+    }
+
+    #[test]
+    fn server_errors_map_to_internal_error() {
+        use rmcp::model::ErrorCode;
+        let io = VaultError::io("/p", std::io::Error::other("boom"));
+        let search = VaultError::Search("regex".into());
+        for e in [io, search] {
+            let data: rmcp::ErrorData = e.into();
+            assert_eq!(data.code, ErrorCode::INTERNAL_ERROR);
+        }
     }
 }

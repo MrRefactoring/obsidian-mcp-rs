@@ -1,5 +1,39 @@
 # Changelog
 
+## [0.3.0] - 2026-07-11
+
+### Added
+
+- **Atomic note writes.** `create-note`, `edit-note`, `add-tags`, `remove-tags`, and `rename-tag` now write to a sibling temp file and `rename` it over the target (`vault::write::atomic_write`), so a crash or concurrent write can never leave a half-written or truncated note — only the whole old or whole new content. `move-note` already used `fs::rename` and is unchanged. Tests: `writes_full_contents_and_leaves_no_temp`, `overwrites_existing_file`, `temp_path_is_sibling_of_target`.
+- **`search-vault` now returns MCP `structuredContent` with a declared `outputSchema`.** The tool returns a typed `Json<SearchOutput>` (`{ results: [{ filename, path, matches }] }`); rmcp advertises the derived `outputSchema` in `tools/list` and fills both `structuredContent` and the text block (serialized JSON), so clients and the model consume hits without parsing prose. Tests: `search_vault_returns_structured_content`, `search_vault_empty_still_has_structured_content`.
+- **Tool annotations and richer server identity.** Every tool now carries MCP hints — `readOnlyHint` on `read-note`/`search-vault`/`list-available-vaults`, `destructiveHint` on `delete-note`/`edit-note`/`move-note`/`remove-tags`/`rename-tag`, `openWorldHint = false` on all (a local vault is a closed world), plus a human-readable `title`. The `initialize` response now sets `instructions` and a proper `serverInfo` (see Changed). This lets clients such as Claude auto-approve read-only calls and warn before destructive ones.
+- **Size-based log rotation.** At startup `main::rotate_if_large` rolls the log to `<path>.1` once it passes 5 MiB (keeping one backup), so the file no longer grows without bound. The current log path stays stable, so `logs` and the documented location are unchanged. Tests: `rotate_moves_oversized_file_to_backup`, `rotate_leaves_small_file_untouched`, `rotate_replaces_previous_backup`, `rotate_ignores_missing_file`.
+- **End-to-end MCP stdio test** (`tests/mcp_stdio.rs`) — spawns the built binary and drives a full JSON-RPC handshake (`initialize` → `initialized` → `tools/list` → `tools/call`) over stdin/stdout, asserting all 11 tools are exposed and a note reads back over the live transport.
+- **CI hardening.** `cargo test` now runs on a Linux/macOS/Windows matrix (was Linux-only); new jobs enforce the MSRV (`cargo check` on Rust 1.94, `--locked`) and run `cargo audit`; a `.github/dependabot.yml` keeps Cargo, npm, and GitHub-Actions dependencies current.
+- **Prompt-based install is now the primary setup path in the README.** The `## Setup` section leads with a copy-paste prompt that has an agentic client (Claude Code, Cursor, Windsurf, …) run the installer itself, plus the native `claude mcp add obsidian -- npx -y obsidian-mcp-rs <vault>` one-liner; the interactive CLI wizard moves under a "Prefer a CLI?" subsection for non-agentic clients like Claude Desktop. Includes a heads-up that MCP config is read at session start, so a restart (and, for a project-scoped `.mcp.json`, `/mcp` approval) is needed before the tools appear.
+
+### Changed
+
+- **`serverInfo` now identifies this server** as `obsidian-mcp-rs` / its crate version (with a `title` of "Obsidian (Rust MCP)"). Previously the rmcp default surfaced the library's own identity (`rmcp` / the rmcp version) to clients.
+- **Tool-execution errors are now reported as `isError: true` results instead of JSON-RPC protocol errors.** Per the MCP spec, business failures the model can recover from — note not found, note/directory already exists, `find_and_replace` search text not found — are returned inside the tool result (`isError: true`) so the model sees them and can self-correct. Genuinely malformed requests (unknown vault, path traversal / absolute path) map to `INVALID_PARAMS` (-32602) and server faults (IO/search) to `INTERNAL_ERROR` (-32603). **Behaviour change:** clients that previously received a JSON-RPC error for a missing note will now receive a successful response carrying `isError: true`. New `VaultError::SearchTextNotFound` and `VaultError::is_tool_execution_error()`; new tests cover the split.
+- **Replaced the unmaintained, unsound `serde_yml`/`libyml` YAML stack** (RUSTSEC-2025-0067, RUSTSEC-2025-0068) with the maintained `serde_yaml_ng`, aliased back to `serde_yml` in code so call sites are unchanged. `cargo audit` is now clean. Goose `config.yaml` output is byte-for-byte covered by the existing `install`/`writer` tests.
+- **Upgraded rmcp 1.8 → 2.2**, moving the server onto the MCP **2025-11-25** model. It now negotiates protocol version `2025-11-25` with capable clients (older clients still get the version they request). The upgrade aligned model types (internally `Content` → `ContentBlock`) and let `search-vault` adopt the `Json<T>` return idiom (see Added). No MSRV bump was required — the build still checks clean on Rust 1.94 (`cargo +1.94.0 check --all-targets --locked`).
+- Refreshed the dependency lockfile (`cargo update`).
+- `rustfmt` edition set to 2024 to match `Cargo.toml` (was 2021).
+
+### Fixed
+
+- **The file log was documented as "rotating" but grew without bound.** It now genuinely rotates (size-based, see Added), and the wording in `CLAUDE.md` matches the behaviour.
+- **MCP error codes were flattened.** Every `VaultError` mapped to `INTERNAL_ERROR`; codes are now granular (`INVALID_PARAMS` vs `INTERNAL_ERROR`) via `From<VaultError> for rmcp::ErrorData`.
+- **Doc drift:** `README.md`, `README.ru.md`, and `llms.txt` said "12 tools"; the server exposes 11.
+- **Claude Code local config (`.mcp.json`) now writes `"type": "stdio"`.** The installer emitted the bare `{ command, args }` (`Standard`) form for `.mcp.json` while the global `~/.claude.json` writer already included `"type": "stdio"` — inconsistent, since Claude Code's `.mcp.json` schema uses the typed form. Both Claude Code targets now share the `ClaudeApp` entry shape. New test `write_entry_claude_app_format_has_type_stdio`.
+- **Doc drift (Claude Code):** the README config heading "Claude Code / CLAUDE.md" was wrong — `CLAUDE.md` is a memory/instructions file, never an MCP config location. Renamed to "Claude Code (`.mcp.json` / `~/.claude.json`)" and the example now shows `"type": "stdio"`. `llms.txt` still said "rmcp 1.4"; updated to 2.2.
+- Four handler tests bound the vault `TempDir` to `_`, dropping it before the call, so they exercised "missing vault root" (an IO error) rather than the intended "missing note"; they now keep the vault alive and assert the real business error.
+
+### Security
+
+- Documented a known, out-of-threat-model TOCTOU nuance in `vault::safe_join`: it returns a lexical (not canonicalized) path, so a symlink component swapped between the check and the caller's filesystem operation could escape. Winning that race requires write access to the vault directory, which already defeats the sandbox's purpose for a local single-user tool, so this is accepted as won't-fix and documented in the code.
+
 ## [0.2.1] - 2026-05-22
 
 ### Changed

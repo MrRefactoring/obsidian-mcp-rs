@@ -14,6 +14,14 @@ use crate::error::VaultError;
 ///
 /// The path may refer to a not-yet-existing file. We canonicalize the deepest
 /// existing ancestor and require it to live under the canonicalized vault root.
+///
+/// Note on TOCTOU (accepted, won't-fix): the returned path is *lexical* (not
+/// canonicalized), so the caller's filesystem operation resolves symlinks a
+/// second time. A symlink component swapped between this check and that
+/// operation could still escape. Winning that race requires write access to the
+/// vault directory, which already defeats the sandbox for a local single-user
+/// tool — so this is out of the threat model rather than closed with
+/// `openat`-style (`RESOLVE_BENEATH`) APIs.
 pub(crate) fn safe_join(
     root: &Path,
     folder: Option<&str>,

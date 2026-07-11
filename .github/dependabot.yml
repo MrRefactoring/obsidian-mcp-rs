@@ -1,0 +1,19 @@
+version: 2
+updates:
+  # Rust crate dependencies (root Cargo.toml).
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+
+  # npm launcher wrapper.
+  - package-ecosystem: "npm"
+    directory: "/npm/obsidian-mcp-rs"
+    schedule:
+      interval: "weekly"
+
+  # GitHub Actions used by the CI and release workflows.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"

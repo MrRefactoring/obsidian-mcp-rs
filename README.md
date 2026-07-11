@@ -38,15 +38,30 @@
 >
 > To restrict the server to read-only access, pass `--no-edit` — see [Read-only mode](#read-only-mode-no-edit).
 
-## Quick setup
+## Setup
 
-Connect your vault to any AI client in seconds with the interactive wizard:
+**The fastest way: just ask your AI agent to install it.** If you already work inside an agentic client (Claude Code, Cursor, Windsurf, …), you never touch a config file — paste one prompt and let the agent run the installer for you. Swap in your own vault path:
+
+> Install the **obsidian-mcp-rs** MCP server for this editor. My Obsidian vault is at `~/Documents/Obsidian/MyVault`. Run the matching installer, e.g. `npx -y obsidian-mcp-rs install claude-code ~/Documents/Obsidian/MyVault` (use `cursor`, `windsurf`, `vscode`, `claude`, … for other clients), then tell me to restart the session and approve the server if the client asks.
+
+**Claude Code** also ships a native MCP CLI, so you can instead ask it to run:
+
+```bash
+claude mcp add obsidian -- npx -y obsidian-mcp-rs ~/Documents/Obsidian/MyVault
+# add `--scope user` to enable it in every project (writes ~/.claude.json)
+```
+
+> **Heads-up:** clients read MCP config at **session start**, so the agent can write it but can't hot-load it. After it installs the server, **restart** the client — and in Claude Code approve a project-scoped `.mcp.json` server via the `/mcp` panel — before the 11 tools appear. Only Claude Code has a native `mcp add` CLI; for every other client the agent just runs the `npx obsidian-mcp-rs install <client>` command above.
+
+### Prefer a CLI? (or not using an agent)
+
+Not inside an agentic client — e.g. **Claude Desktop**, which can't run shell commands — or just prefer to do it yourself? The interactive wizard scans for installed AI clients, lets you pick where to install, and writes the config automatically:
 
 ```bash
 npx obsidian-mcp-rs install
 ```
 
-The wizard scans for installed AI clients, lets you pick where to install, and writes the config automatically. Or install directly without interaction:
+Or install directly without interaction:
 
 ```bash
 # Claude Desktop
@@ -81,7 +96,7 @@ npx obsidian-mcp-rs uninstall claude --dry-run  # preview changes without writin
 
 ## Features
 
-- **12 tools** covering note CRUD, search, directory management, and tag operations
+- **11 tools** covering note CRUD, search, directory management, and tag operations
 - **Multi-vault** support — pass multiple vault paths as arguments
 - **Read-only mode** — `--no-edit` flag disables all write tools at the server level
 - **Zero runtime dependencies** — single static binary, no Node.js required for execution
@@ -149,12 +164,15 @@ npx obsidian-mcp-rs install   # wizard writes the config for you
 }
 ```
 
-### Claude Code / CLAUDE.md
+### Claude Code (`.mcp.json` / `~/.claude.json`)
+
+Claude Code's config carries an explicit `"type": "stdio"` (Claude Desktop, above, omits it):
 
 ```json
 {
   "mcpServers": {
     "obsidian": {
+      "type": "stdio",
       "command": "npx",
       "args": ["-y", "obsidian-mcp-rs", "~/Documents/Obsidian/MyVault"]
     }
@@ -177,7 +195,7 @@ Add the server to Cursor's MCP settings via **Settings → MCP → Add Server**,
 }
 ```
 
-Once added, Cursor's AI will have access to all 12 vault tools. You can verify with the MCP panel in Settings.
+Once added, Cursor's AI will have access to all 11 vault tools. You can verify with the MCP panel in Settings.
 
 ### OpenClaw (`~/.openclaw/openclaw.json`)
 
@@ -461,7 +479,7 @@ npx obsidian-mcp-rs /vault/path
           │
           ├── clap → CLI args parsing
           ├── VaultManager → filesystem operations
-          ├── ObsidianHandler → 12 MCP tool implementations
+          ├── ObsidianHandler → 11 MCP tool implementations
           └── rmcp → JSON-RPC / MCP protocol
 ```
 
