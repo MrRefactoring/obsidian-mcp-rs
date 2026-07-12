@@ -62,7 +62,9 @@ Tools are wired via the `#[tool_router]` / `#[tool_handler]` rmcp macros — add
 
 All paths that touch the filesystem **must** route through `vault::safe_join(root, folder, filename)`. It canonicalises the deepest existing ancestor and rejects anything that escapes the canonicalised vault root. This covers `..` traversal, absolute paths, and symlink escapes. There is a dedicated test block in `vault.rs` (`rejects_parent_traversal_*`, `rejects_symlink_escape`, `*_blocks_traversal`) — when adding any tool that accepts a user-supplied path component, add a matching block-traversal test.
 
-The `--no-edit` flag is a gate enforced in `ObsidianHandler::check_write()`, called by every mutating tool. Read tools (`read-note`, `search-vault`, `list-available-vaults`) skip this gate. Adding a new write tool means calling `check_write()?` first.
+The `--no-edit` flag is a gate enforced in `ObsidianHandler::check_write()`, called by every mutating tool. Read tools (`read-note`, `search-vault`, `list-available-vaults`) skip this gate. Adding a new write tool means calling `check_write()?` first. (`frontmatter` both reads and writes, so it gates per-action: `get` is allowed, `set`/`remove` are not.)
+
+**Every mutating `VaultManager` method must take `self.write_guard()` as its first statement, and hold it for the whole read-modify-write.** The MCP server answers requests concurrently; `atomic_write` makes a single write atomic but not the read→edit→write *pair*, so without the guard two concurrent calls on one note both read the old text and the second write silently discards the first one's edit. Reads intentionally don't take the lock — `atomic_write` renames into place, so a reader sees the old note or the new one, never a torn one.
 
 ### Multi-vault model
 

@@ -11,6 +11,7 @@ use std::{
     collections::HashMap,
     fs,
     path::{Path, PathBuf},
+    sync::Mutex,
 };
 
 use rayon::prelude::*;
@@ -135,9 +136,11 @@ pub struct LinkOutput {
     pub total: usize,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct VaultManager {
     vaults: HashMap<String, PathBuf>,
+    /// Serialises every mutation. See `write_guard`.
+    write_lock: Mutex<()>,
 }
 
 impl VaultManager {
@@ -171,7 +174,30 @@ impl VaultManager {
             };
             vaults.insert(name, path);
         }
-        Self { vaults }
+        Self {
+            vaults,
+            write_lock: Mutex::new(()),
+        }
+    }
+
+    /// Hold this for the whole of any mutation.
+    ///
+    /// Every write tool is a read-modify-write: read the note, edit the text,
+    /// write it back. `atomic_write` makes the *write* atomic, but not the pair —
+    /// and the MCP server answers requests concurrently, so two calls against one
+    /// note would both read the old text and the second write would silently
+    /// discard the first one's edit. Reads deliberately don't take this lock:
+    /// `atomic_write` renames into place, so a reader sees the old note or the
+    /// new one, never a torn one.
+    ///
+    /// One lock for all writes, rather than one per note: vault mutations are
+    /// short, tool calls are not a hot loop, and a single lock cannot deadlock.
+    fn write_guard(&self) -> std::sync::MutexGuard<'_, ()> {
+        // A poisoned lock means some earlier call panicked mid-edit. Refusing
+        // every write from then on is worse than carrying on.
+        self.write_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     pub fn list_vaults(&self) -> Vec<(String, PathBuf)> {
@@ -241,6 +267,7 @@ impl VaultManager {
         content: &str,
         folder: Option<&str>,
     ) -> Result<PathBuf, VaultError> {
+        let _guard = self.write_guard();
         let path = self.note_path(vault, filename, folder)?;
         if path.exists() {
             return Err(VaultError::NoteAlreadyExists(
@@ -270,6 +297,7 @@ impl VaultManager {
         folder: Option<&str>,
         edit: &Edit<'_>,
     ) -> Result<(String, String), VaultError> {
+        let _guard = self.write_guard();
         let path = self.note_path(vault, filename, folder)?;
         let old = self.note_content(vault, filename, folder)?;
 
@@ -329,6 +357,7 @@ impl VaultManager {
         key: Option<&str>,
         value: Option<&serde_json::Value>,
     ) -> Result<FrontmatterOutput, VaultError> {
+        let _guard = self.write_guard();
         let root = self.resolve_vault(vault)?.to_path_buf();
         let path = self.note_path(vault, filename, folder)?;
         let content = self.note_content(vault, filename, folder)?;
@@ -386,6 +415,7 @@ impl VaultManager {
         filename: &str,
         folder: Option<&str>,
     ) -> Result<(), VaultError> {
+        let _guard = self.write_guard();
         let root = self.resolve_vault(vault)?.to_path_buf();
         let path = self.note_path(vault, filename, folder)?;
         if !path.exists() {
@@ -415,6 +445,7 @@ impl VaultManager {
         new_folder: Option<&str>,
         new_filename: Option<&str>,
     ) -> Result<MoveOutcome, VaultError> {
+        let _guard = self.write_guard();
         let root = self.resolve_vault(vault)?.to_path_buf();
         let src = self.note_path(vault, filename, folder)?;
         if !src.exists() {
@@ -482,6 +513,7 @@ impl VaultManager {
         path: &str,
         recursive: bool,
     ) -> Result<PathBuf, VaultError> {
+        let _guard = self.write_guard();
         let root = self.resolve_vault(vault)?;
         let dir = safe_join(root, None, path)?;
         if dir.exists() {
@@ -619,6 +651,7 @@ impl VaultManager {
         normalize: bool,
         position: &str,
     ) -> Result<Vec<String>, VaultError> {
+        let _guard = self.write_guard();
         let root = self.resolve_vault(vault)?;
         let mut modified = Vec::new();
 
@@ -664,6 +697,7 @@ impl VaultManager {
         files: &[String],
         tags: &[String],
     ) -> Result<Vec<String>, VaultError> {
+        let _guard = self.write_guard();
         let root = self.resolve_vault(vault)?;
         let mut modified = Vec::new();
 
@@ -690,6 +724,7 @@ impl VaultManager {
         old_tag: &str,
         new_tag: &str,
     ) -> Result<Vec<String>, VaultError> {
+        let _guard = self.write_guard();
         let root = self.resolve_vault(vault)?;
 
         let mut modified: Vec<String> = md_files(root)
@@ -969,6 +1004,85 @@ mod tests {
             fs::read_to_string(dir.path().join("note.md")).unwrap(),
             "line1\nline2"
         );
+    }
+
+    // ── Concurrent writes ─────────────────────────────────────────────────────
+
+    #[test]
+    fn concurrent_edits_to_one_note_do_not_lose_updates() {
+        // The MCP server answers requests concurrently. Every write tool is a
+        // read-modify-write, so without serialisation these threads all read the
+        // same original note and all but the last write is silently discarded.
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(&dir, "note.md", "start\n");
+
+        std::thread::scope(|scope| {
+            for i in 0..8 {
+                let (vault, name) = (&vault, &name);
+                scope.spawn(move || {
+                    let line = format!("entry {}", i);
+                    vault
+                        .edit_note(
+                            name,
+                            "note",
+                            None,
+                            &edit(EditOperation::Append, &line, None),
+                        )
+                        .unwrap();
+                });
+            }
+        });
+
+        let out = fs::read_to_string(dir.path().join("note.md")).unwrap();
+        for i in 0..8 {
+            assert!(
+                out.contains(&format!("entry {}", i)),
+                "edit {i} was lost:\n{out}"
+            );
+        }
+    }
+
+    #[test]
+    fn concurrent_tag_and_frontmatter_writes_do_not_lose_each_other() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(&dir, "note.md", "---\ntitle: T\n---\nbody\n");
+
+        std::thread::scope(|scope| {
+            let (v, n) = (&vault, &name);
+            scope.spawn(move || {
+                v.add_tags(
+                    n,
+                    &["note.md".into()],
+                    &["work".into()],
+                    "frontmatter",
+                    false,
+                    "end",
+                )
+                .unwrap();
+            });
+            let (v, n) = (&vault, &name);
+            scope.spawn(move || {
+                v.frontmatter(
+                    n,
+                    "note",
+                    None,
+                    &FrontmatterAction::Set,
+                    Some("status"),
+                    Some(&serde_json::json!("draft")),
+                )
+                .unwrap();
+            });
+        });
+
+        let out = fs::read_to_string(dir.path().join("note.md")).unwrap();
+        assert!(out.contains("work"), "the tag write was lost:\n{out}");
+        assert!(
+            out.contains("status: draft"),
+            "the frontmatter write was lost:\n{out}"
+        );
+        assert!(out.contains("title: T"));
     }
 
     // ── edit_note: patch targets ──────────────────────────────────────────────
