@@ -272,37 +272,36 @@ impl ObsidianHandler {
         }
     }
 
-    /// Search for specific content within vault notes. Supports content, filename, and tag search.
+    /// Search notes by content, filename, or tag ("tag:" prefix). Results are
+    /// ranked best-first and capped — read `total` to see how many matched.
     #[tool(
         name = "search-vault",
         annotations(title = "Search vault", read_only_hint = true, open_world_hint = false)
     )]
     fn search_vault(
         &self,
-        rmcp::handler::server::wrapper::Parameters(SearchVaultParams {
-            vault,
-            query,
-            path,
-            case_sensitive,
-            search_type,
-        }): rmcp::handler::server::wrapper::Parameters<SearchVaultParams>,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<
+            SearchVaultParams,
+        >,
     ) -> Result<Json<SearchOutput>, McpError> {
-        tracing::debug!(tool = "search-vault", %vault, %query);
-        let st = search_type.unwrap_or_default();
+        tracing::debug!(tool = "search-vault", vault = %params.vault, query = %params.query);
+        let limits = params.limits();
+        let st = params.search_type.unwrap_or_default();
 
         // Returning `Json<T>` lets rmcp derive the tool's `outputSchema` from
         // `SearchOutput` and emit both `structuredContent` and a JSON text block.
-        let results = self
+        let out = self
             .vault
             .search_vault(
-                &vault,
-                &query,
-                path.as_deref(),
-                case_sensitive.unwrap_or(false),
+                &params.vault,
+                &params.query,
+                params.path.as_deref(),
+                params.case_sensitive.unwrap_or(false),
                 &st,
+                &limits,
             )
             .map_err(err)?;
-        Ok(Json(SearchOutput { results }))
+        Ok(Json(out))
     }
 
     /// Add tags to notes in frontmatter and/or content.
@@ -690,6 +689,9 @@ mod tests {
             path: None,
             case_sensitive: None,
             search_type: None,
+            limit: None,
+            offset: None,
+            max_matches_per_file: None,
         }));
         let out = r.unwrap().0;
         assert_eq!(out.results.len(), 1);
@@ -705,6 +707,9 @@ mod tests {
             path: None,
             case_sensitive: None,
             search_type: None,
+            limit: None,
+            offset: None,
+            max_matches_per_file: None,
         }));
         assert!(r.unwrap().0.results.is_empty());
     }
@@ -719,11 +724,14 @@ mod tests {
             path: None,
             case_sensitive: None,
             search_type: None,
+            limit: None,
+            offset: None,
+            max_matches_per_file: None,
         }));
         let out = r.unwrap().0;
         assert_eq!(out.results.len(), 1);
         assert_eq!(out.results[0].path, "s.md");
-        assert!(!out.results[0].matches.is_empty());
+        assert!(!out.results[0].snippets.is_empty());
     }
 
     #[test]
@@ -736,6 +744,9 @@ mod tests {
             path: None,
             case_sensitive: None,
             search_type: None,
+            limit: None,
+            offset: None,
+            max_matches_per_file: None,
         }));
         assert!(r.unwrap().0.results.is_empty());
     }
@@ -750,6 +761,9 @@ mod tests {
             path: None,
             case_sensitive: None,
             search_type: Some(SearchType::Filename),
+            limit: None,
+            offset: None,
+            max_matches_per_file: None,
         }));
         assert!(r.is_ok());
     }
@@ -764,6 +778,9 @@ mod tests {
             path: None,
             case_sensitive: None,
             search_type: Some(SearchType::Both),
+            limit: None,
+            offset: None,
+            max_matches_per_file: None,
         }));
         assert!(r.is_ok());
     }
@@ -983,6 +1000,9 @@ mod tests {
             path: None,
             case_sensitive: None,
             search_type: None,
+            limit: None,
+            offset: None,
+            max_matches_per_file: None,
         }));
         assert!(r.is_ok());
     }

@@ -1,6 +1,6 @@
 use serde::Deserialize;
 
-use crate::vault::SearchType;
+use crate::vault::{SearchLimits, SearchType};
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SearchVaultParams {
@@ -16,6 +16,27 @@ pub struct SearchVaultParams {
     /// What to match the query against (default: "content")
     #[serde(rename = "searchType")]
     pub search_type: Option<SearchType>,
+    /// Maximum number of files to return, best-matching first (default: 20)
+    pub limit: Option<usize>,
+    /// Skip this many files — use with `limit` to page through matches (default: 0)
+    pub offset: Option<usize>,
+    /// Maximum matching lines to quote per file (default: 3)
+    #[serde(rename = "maxMatchesPerFile")]
+    pub max_matches_per_file: Option<usize>,
+}
+
+impl SearchVaultParams {
+    /// Result limits, with the defaults applied. These exist to keep a careless
+    /// query from flooding the model's context: without them a common word on a
+    /// large vault returns every matching line of every matching file.
+    pub fn limits(&self) -> SearchLimits {
+        let d = SearchLimits::default();
+        SearchLimits {
+            limit: self.limit.unwrap_or(d.limit),
+            offset: self.offset.unwrap_or(d.offset),
+            max_matches_per_file: self.max_matches_per_file.unwrap_or(d.max_matches_per_file),
+        }
+    }
 }
 
 #[cfg(test)]
