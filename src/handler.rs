@@ -16,12 +16,14 @@ use crate::{
         add_tags::AddTagsParams, create_directory::CreateDirectoryParams,
         create_note::CreateNoteParams, delete_note::DeleteNoteParams, edit_note::EditNoteParams,
         frontmatter::FrontmatterParams, list_vaults::ListVaultsParams, move_note::MoveNoteParams,
-        read_note::ReadNoteParams, remove_tags::RemoveTagsParams, rename_tag::RenameTagParams,
-        search_vault::SearchVaultParams, vault_info::VaultInfoParams, wikilinks::WikilinksParams,
+        periodic::PeriodicParams, read_note::ReadNoteParams, remove_tags::RemoveTagsParams,
+        rename_tag::RenameTagParams, search_vault::SearchVaultParams, vault_info::VaultInfoParams,
+        wikilinks::WikilinksParams,
     },
     vault::{
         DEFAULT_RECENT, DeleteOutcome, Edit, FrontmatterAction, FrontmatterOutput, InfoOutput,
-        LinkOutput, SearchOutput, Target, VaultManager,
+        LinkOutput, PeriodicAction, PeriodicOutput, PeriodicRequest, SearchOutput, Target,
+        VaultManager,
     },
 };
 
@@ -35,10 +37,13 @@ pub struct ObsidianHandler {
     no_edit: bool,
 }
 
+/// How many notes `periodic` lists by default.
+const DEFAULT_PERIODIC_LIST: usize = 10;
+
 /// Tools that only ever write. Under `--no-edit` these are removed from the
 /// router, so they are absent from `tools/list` *and* unreachable via
 /// `tools/call` — `check_write` then stays as the second layer, and is what gates
-/// `frontmatter`, the one tool that both reads and writes.
+/// `frontmatter` and `periodic`, the two tools that both read and write.
 const WRITE_TOOLS: [&str; 8] = [
     "create-note",
     "edit-note",
@@ -556,6 +561,52 @@ impl ObsidianHandler {
             )),
             Err(e) => tool_error(e),
         }
+    }
+
+    /// Today's daily note, and its weekly/monthly/quarterly/yearly siblings.
+    /// `action: "create"` is the one to use for "add this to today's note" — it
+    /// returns the note, creating it first if it isn't there yet. The note's name
+    /// and folder come from the vault's own Obsidian settings, so this writes to
+    /// the note the user actually keeps. To add to it, call this, then `edit-note`
+    /// with the path it returns.
+    #[tool(
+        name = "periodic",
+        annotations(
+            title = "Periodic note",
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    fn periodic(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(PeriodicParams {
+            vault,
+            period,
+            action,
+            date,
+            content,
+            limit,
+        }): rmcp::handler::server::wrapper::Parameters<PeriodicParams>,
+    ) -> Result<Json<PeriodicOutput>, McpError> {
+        tracing::debug!(tool = "periodic", %vault, ?period, ?action, ?date);
+        if action != PeriodicAction::Get && action != PeriodicAction::List {
+            self.check_write()?;
+        }
+        let out = self
+            .vault
+            .periodic(
+                &vault,
+                &PeriodicRequest {
+                    period,
+                    action,
+                    date: date.as_deref(),
+                    content: content.as_deref(),
+                    limit: limit.unwrap_or(DEFAULT_PERIODIC_LIST),
+                },
+            )
+            .map_err(err)?;
+        Ok(Json(out))
     }
 
     /// Describe a vault before searching it: `query: "tags"` lists every tag
@@ -1333,7 +1384,7 @@ mod tests {
     #[test]
     fn every_tool_is_listed_when_writes_are_allowed() {
         let (_dir, h, _) = setup();
-        assert_eq!(h.tool_router.list_all().len(), 14);
+        assert_eq!(h.tool_router.list_all().len(), 15);
     }
 
     #[test]

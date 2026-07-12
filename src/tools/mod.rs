@@ -6,6 +6,7 @@ pub mod edit_note;
 pub mod frontmatter;
 pub mod list_vaults;
 pub mod move_note;
+pub mod periodic;
 pub mod read_note;
 pub mod remove_tags;
 pub mod rename_tag;
