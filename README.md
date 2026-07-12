@@ -51,7 +51,7 @@ claude mcp add obsidian -- npx -y obsidian-mcp-rs ~/Documents/Obsidian/MyVault
 # add `--scope user` to enable it in every project (writes ~/.claude.json)
 ```
 
-> **Heads-up:** clients read MCP config at **session start**, so the agent can write it but can't hot-load it. After it installs the server, **restart** the client — and in Claude Code approve a project-scoped `.mcp.json` server via the `/mcp` panel — before the 13 tools appear. Only Claude Code has a native `mcp add` CLI; for every other client the agent just runs the `npx obsidian-mcp-rs install <client>` command above.
+> **Heads-up:** clients read MCP config at **session start**, so the agent can write it but can't hot-load it. After it installs the server, **restart** the client — and in Claude Code approve a project-scoped `.mcp.json` server via the `/mcp` panel — before the 15 tools appear. Only Claude Code has a native `mcp add` CLI; for every other client the agent just runs the `npx obsidian-mcp-rs install <client>` command above.
 
 ### Prefer a CLI? (or not using an agent)
 
@@ -96,14 +96,17 @@ npx obsidian-mcp-rs uninstall claude --dry-run  # preview changes without writin
 
 ## Features
 
-- **13 tools** covering note CRUD, search, links, frontmatter, directory management, and tag operations
+- **15 tools** covering note CRUD, search, links, frontmatter, daily notes, directory management, and tag operations
 - **Ranked search** — BM25 relevance with field boosts (a term in the title outranks the same term buried in a paragraph), returned best-first and capped so a common word can't flood the model's context
 - **Link-aware moves** — renaming a note rewrites every `[[wikilink]]` and markdown link pointing at it, so moving a note never silently orphans references
 - **Link graph** — `wikilinks` answers backlinks, outgoing, broken links and orphans
 - **Section-scoped edits** — point `edit-note` at one heading or one `^block-id` and only those bytes are rewritten; the rest of the note is passed through untouched
 - **Frontmatter access** — `frontmatter` reads and writes any YAML key, not just `tags`, and touches only the key you named
 - **Multi-vault** support — pass multiple vault paths as arguments
-- **Read-only mode** — `--no-edit` flag disables all write tools at the server level
+- **Recoverable deletes** — `delete-note` moves the note to the vault's `.trash/` (as Obsidian does) rather than erasing it; a trashed note disappears from search and the link graph, but the user can still get it back
+- **Daily notes** — `periodic` reads/creates daily…yearly notes using the vault's *own* Obsidian settings (name format, folder, template), so it writes to the note you actually keep
+- **Vault orientation** — `vault-info` answers what tags exist, what changed recently, and how big the vault is
+- **Read-only mode** — `--no-edit` removes every write tool from `tools/list` entirely, so a read-only server describes itself as one
 - **Zero runtime dependencies** — single static binary, no Node.js required for execution
 - **Cross-platform** — macOS (ARM64 + x64), Linux (x64 + ARM64 + musl), Windows (x64 + ARM64)
 - **Tag search** via `tag:` prefix in queries
