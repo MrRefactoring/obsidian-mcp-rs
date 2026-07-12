@@ -18,3 +18,27 @@ pub(crate) fn md_files(root: &Path) -> Vec<PathBuf> {
         .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("md"))
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[test]
+    fn hidden_directories_are_not_walked() {
+        // Load-bearing for `delete-note`: a trashed note lives in `.trash/`, and
+        // must not come back in search results or the link graph.
+        let dir = TempDir::new().unwrap();
+        fs::create_dir(dir.path().join(".trash")).unwrap();
+        fs::write(dir.path().join(".trash/gone.md"), "trashed").unwrap();
+        fs::write(dir.path().join("live.md"), "kept").unwrap();
+
+        let found: Vec<String> = md_files(dir.path())
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+
+        assert_eq!(found, vec!["live.md"], "a trashed note must stay invisible");
+    }
+}

@@ -103,6 +103,17 @@ pub struct FrontmatterOutput {
     pub changed: bool,
 }
 
+/// Where a deleted note goes. Hidden, so `md_files` — and therefore search, the
+/// link graph and `rename-tag` — never sees it again.
+const TRASH: &str = ".trash";
+
+/// What `delete-note` did.
+#[derive(Debug, Clone)]
+pub struct DeleteOutcome {
+    /// Where the note now sits, vault-relative — or `None` when it was erased.
+    pub trashed_to: Option<String>,
+}
+
 /// What `move-note` did. `relinked` names the notes whose links were updated to
 /// follow the moved note — empty when nothing pointed at it, or when the links
 /// still resolve on their own (a bare `[[Note]]` survives a folder move).
@@ -409,12 +420,21 @@ impl VaultManager {
         })
     }
 
+    /// Delete a note — by default to the vault's `.trash/`, so the user can get
+    /// it back.
+    ///
+    /// An agent deleting the wrong note is a plausible mistake and an
+    /// unrecoverable one, so the default is the recoverable path. This is also
+    /// what Obsidian itself does. `.trash` is hidden, and `md_files` skips hidden
+    /// directories, so a trashed note disappears from search and the link graph
+    /// exactly as if it were gone (test: `hidden_directories_are_not_walked`).
     pub fn delete_note(
         &self,
         vault: &str,
         filename: &str,
         folder: Option<&str>,
-    ) -> Result<(), VaultError> {
+        permanent: bool,
+    ) -> Result<DeleteOutcome, VaultError> {
         let _guard = self.write_guard();
         let root = self.resolve_vault(vault)?.to_path_buf();
         let path = self.note_path(vault, filename, folder)?;
@@ -424,9 +444,29 @@ impl VaultManager {
                 vault.to_string(),
             ));
         }
-        fs::remove_file(&path).map_err(|e| VaultError::io(path.display().to_string(), e))?;
+
+        // Emptying the trash is the one delete that must actually erase.
+        let already_trashed = path.strip_prefix(&root).is_ok_and(|r| r.starts_with(TRASH));
+        if permanent || already_trashed {
+            fs::remove_file(&path).map_err(|e| VaultError::io(path.display().to_string(), e))?;
+            prune_empty_parent(&path, &root);
+            return Ok(DeleteOutcome { trashed_to: None });
+        }
+
+        // Mirror the note's folder inside the trash, so `a/note.md` and
+        // `b/note.md` don't land on top of each other.
+        let rel = path.strip_prefix(&root).unwrap_or(&path).to_path_buf();
+        let dest = free_path(&root.join(TRASH).join(&rel));
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| VaultError::io(parent.display().to_string(), e))?;
+        }
+        fs::rename(&path, &dest).map_err(|e| VaultError::io(path.display().to_string(), e))?;
         prune_empty_parent(&path, &root);
-        Ok(())
+
+        Ok(DeleteOutcome {
+            trashed_to: Some(rel_path(&root, &dest)),
+        })
     }
 
     /// Move or rename a note, updating every `[[wikilink]]` and markdown link
@@ -752,6 +792,28 @@ impl VaultManager {
 
         Ok(modified)
     }
+}
+
+/// A free path at or beside `wanted`: `note.md`, then `note-2.md`, and so on.
+/// Two notes with the same name deleted from different folders must both survive
+/// in the trash.
+fn free_path(wanted: &Path) -> PathBuf {
+    if !wanted.exists() {
+        return wanted.to_path_buf();
+    }
+    let stem = wanted
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let ext = wanted
+        .extension()
+        .map(|e| format!(".{}", e.to_string_lossy()))
+        .unwrap_or_default();
+
+    (2..)
+        .map(|n| wanted.with_file_name(format!("{}-{}{}", stem, n, ext)))
+        .find(|candidate| !candidate.exists())
+        .expect("the integers run out long after the filesystem does")
 }
 
 /// A note's path as the vault refers to it: relative to the root, `/`-separated
@@ -1552,15 +1614,130 @@ mod tests {
         let (dir, vault) = make_vault();
         let name = vault_name(&dir);
         write_note(&dir, "del.md", "bye");
-        vault.delete_note(&name, "del", None).unwrap();
+        vault.delete_note(&name, "del", None, true).unwrap();
         assert!(!dir.path().join("del.md").exists());
+    }
+
+    #[test]
+    fn delete_moves_the_note_to_the_trash_by_default() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(&dir, "del.md", "precious");
+
+        let out = vault.delete_note(&name, "del", None, false).unwrap();
+
+        assert_eq!(out.trashed_to.as_deref(), Some(".trash/del.md"));
+        assert!(!dir.path().join("del.md").exists());
+        assert_eq!(
+            fs::read_to_string(dir.path().join(".trash/del.md")).unwrap(),
+            "precious",
+            "the note must be recoverable, byte for byte"
+        );
+    }
+
+    #[test]
+    fn a_trashed_note_is_invisible_to_search() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(&dir, "del.md", "needle");
+        vault.delete_note(&name, "del", None, false).unwrap();
+
+        let hits = vault
+            .search_vault(
+                &name,
+                "needle",
+                None,
+                false,
+                &SearchType::Content,
+                &SearchLimits::default(),
+            )
+            .unwrap();
+        assert!(
+            hits.results.is_empty(),
+            "a deleted note must behave as deleted: {hits:?}"
+        );
+    }
+
+    #[test]
+    fn delete_keeps_the_folder_structure_inside_the_trash() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        fs::create_dir_all(dir.path().join("a")).unwrap();
+        fs::create_dir_all(dir.path().join("b")).unwrap();
+        fs::write(dir.path().join("a/note.md"), "from a").unwrap();
+        fs::write(dir.path().join("b/note.md"), "from b").unwrap();
+
+        vault.delete_note(&name, "note", Some("a"), false).unwrap();
+        vault.delete_note(&name, "note", Some("b"), false).unwrap();
+
+        // Same basename, different folders — neither may overwrite the other.
+        assert_eq!(
+            fs::read_to_string(dir.path().join(".trash/a/note.md")).unwrap(),
+            "from a"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join(".trash/b/note.md")).unwrap(),
+            "from b"
+        );
+    }
+
+    #[test]
+    fn trashing_the_same_path_twice_does_not_overwrite_the_first() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(&dir, "note.md", "first");
+        vault.delete_note(&name, "note", None, false).unwrap();
+        write_note(&dir, "note.md", "second");
+        let out = vault.delete_note(&name, "note", None, false).unwrap();
+
+        assert_eq!(out.trashed_to.as_deref(), Some(".trash/note-2.md"));
+        assert_eq!(
+            fs::read_to_string(dir.path().join(".trash/note.md")).unwrap(),
+            "first"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join(".trash/note-2.md")).unwrap(),
+            "second"
+        );
+    }
+
+    #[test]
+    fn permanent_delete_erases_the_note() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(&dir, "del.md", "bye");
+
+        let out = vault.delete_note(&name, "del", None, true).unwrap();
+
+        assert!(out.trashed_to.is_none());
+        assert!(!dir.path().join("del.md").exists());
+        assert!(!dir.path().join(".trash").exists(), "nothing was trashed");
+    }
+
+    #[test]
+    fn deleting_from_the_trash_erases_it() {
+        // Emptying the trash is the one delete that has to actually erase.
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(&dir, "del.md", "bye");
+        vault.delete_note(&name, "del", None, false).unwrap();
+
+        let out = vault
+            .delete_note(&name, "del", Some(".trash"), false)
+            .unwrap();
+
+        assert!(
+            out.trashed_to.is_none(),
+            "must not re-trash into .trash/.trash"
+        );
+        assert!(!dir.path().join(".trash/del.md").exists());
     }
 
     #[test]
     fn delete_note_error_if_not_found() {
         let (dir, vault) = make_vault();
         let name = vault_name(&dir);
-        assert!(vault.delete_note(&name, "ghost", None).is_err());
+        assert!(vault.delete_note(&name, "ghost", None, false).is_err());
     }
 
     #[test]
@@ -1569,7 +1746,7 @@ mod tests {
         let name = vault_name(&dir);
         fs::create_dir_all(dir.path().join("sub")).unwrap();
         fs::write(dir.path().join("sub/note.md"), "body").unwrap();
-        vault.delete_note(&name, "note", Some("sub")).unwrap();
+        vault.delete_note(&name, "note", Some("sub"), true).unwrap();
         assert!(
             !dir.path().join("sub").exists(),
             "emptied source folder must be removed"
@@ -1583,7 +1760,7 @@ mod tests {
         fs::create_dir_all(dir.path().join("sub")).unwrap();
         fs::write(dir.path().join("sub/a.md"), "a").unwrap();
         fs::write(dir.path().join("sub/b.md"), "b").unwrap();
-        vault.delete_note(&name, "a", Some("sub")).unwrap();
+        vault.delete_note(&name, "a", Some("sub"), true).unwrap();
         assert!(
             dir.path().join("sub").exists(),
             "source folder still has b.md and must stay"
@@ -1596,7 +1773,7 @@ mod tests {
         let (dir, vault) = make_vault();
         let name = vault_name(&dir);
         write_note(&dir, "only.md", "body");
-        vault.delete_note(&name, "only", None).unwrap();
+        vault.delete_note(&name, "only", None, true).unwrap();
         // The note lived directly in the vault root; the root must never be
         // pruned even though it is now empty of notes.
         assert!(dir.path().exists());
@@ -2375,7 +2552,7 @@ mod tests {
         // create a sibling file outside the vault
         let outside = dir.path().parent().unwrap().join("sibling.md");
         fs::write(&outside, "private").unwrap();
-        let result = vault.delete_note(&name, "../sibling", None);
+        let result = vault.delete_note(&name, "../sibling", None, true);
         assert!(result.is_err());
         assert!(outside.exists(), "outside file must not be deleted");
         fs::remove_file(&outside).ok();
