@@ -9,3 +9,4 @@ pub mod read_note;
 pub mod remove_tags;
 pub mod rename_tag;
 pub mod search_vault;
+pub mod wikilinks;

@@ -17,9 +17,9 @@ use crate::{
         create_note::CreateNoteParams, delete_note::DeleteNoteParams, edit_note::EditNoteParams,
         list_vaults::ListVaultsParams, move_note::MoveNoteParams, read_note::ReadNoteParams,
         remove_tags::RemoveTagsParams, rename_tag::RenameTagParams,
-        search_vault::SearchVaultParams,
+        search_vault::SearchVaultParams, wikilinks::WikilinksParams,
     },
-    vault::{SearchOutput, VaultManager},
+    vault::{LinkOutput, SearchOutput, VaultManager},
 };
 
 #[derive(Clone)]
@@ -238,9 +238,47 @@ impl ObsidianHandler {
             new_folder.as_deref(),
             new_filename.as_deref(),
         ) {
-            Ok(dest) => ok(format!("Moved note to {}", dest.display())),
+            Ok(outcome) => {
+                let mut msg = format!("Moved note to {}", outcome.path.display());
+                if !outcome.relinked.is_empty() {
+                    msg.push_str(&format!(
+                        "\n\nUpdated links in {} note(s): {}",
+                        outcome.relinked.len(),
+                        outcome.relinked.join(", ")
+                    ));
+                }
+                ok(msg)
+            }
             Err(e) => tool_error(e),
         }
+    }
+
+    /// Explore the vault's link graph: which notes link here (backlinks), what
+    /// this note links to (outgoing), links pointing nowhere (broken), or notes
+    /// nothing links to (orphans).
+    #[tool(
+        name = "wikilinks",
+        annotations(
+            title = "Explore links",
+            read_only_hint = true,
+            open_world_hint = false
+        )
+    )]
+    fn wikilinks(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(WikilinksParams {
+            vault,
+            query,
+            filename,
+            folder,
+        }): rmcp::handler::server::wrapper::Parameters<WikilinksParams>,
+    ) -> Result<Json<LinkOutput>, McpError> {
+        tracing::debug!(tool = "wikilinks", %vault, ?query);
+        let out = self
+            .vault
+            .wikilinks(&vault, &query, filename.as_deref(), folder.as_deref())
+            .map_err(err)?;
+        Ok(Json(out))
     }
 
     /// Create a new directory in the vault.
