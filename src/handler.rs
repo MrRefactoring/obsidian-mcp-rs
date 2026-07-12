@@ -20,7 +20,8 @@ use crate::{
         search_vault::SearchVaultParams, wikilinks::WikilinksParams,
     },
     vault::{
-        Edit, FrontmatterAction, FrontmatterOutput, LinkOutput, SearchOutput, Target, VaultManager,
+        DeleteOutcome, Edit, FrontmatterAction, FrontmatterOutput, LinkOutput, SearchOutput,
+        Target, VaultManager,
     },
 };
 
@@ -33,6 +34,21 @@ pub struct ObsidianHandler {
     tool_router: ToolRouter<Self>,
     no_edit: bool,
 }
+
+/// Tools that only ever write. Under `--no-edit` these are removed from the
+/// router, so they are absent from `tools/list` *and* unreachable via
+/// `tools/call` — `check_write` then stays as the second layer, and is what gates
+/// `frontmatter`, the one tool that both reads and writes.
+const WRITE_TOOLS: [&str; 8] = [
+    "create-note",
+    "edit-note",
+    "delete-note",
+    "move-note",
+    "create-directory",
+    "add-tags",
+    "remove-tags",
+    "rename-tag",
+];
 
 fn ok(text: impl Into<String>) -> Result<CallToolResult, McpError> {
     Ok(CallToolResult::success(vec![ContentBlock::text(
@@ -70,9 +86,20 @@ impl ObsidianHandler {
     }
 
     pub fn with_options(vault: VaultManager, no_edit: bool) -> Self {
+        let mut tool_router = Self::tool_router();
+        if no_edit {
+            // Don't advertise what we will only refuse. A tool the model can see
+            // is a tool it will try, and a rejection it has to spend a turn
+            // recovering from; removing the routes means `tools/list` describes a
+            // read-only server honestly. `frontmatter` stays, because `get` is a
+            // read — `check_write` gates it per action.
+            for name in WRITE_TOOLS {
+                tool_router.remove_route(name);
+            }
+        }
         Self {
             vault: Arc::new(vault),
-            tool_router: Self::tool_router(),
+            tool_router,
             no_edit,
         }
     }
@@ -255,8 +282,10 @@ impl ObsidianHandler {
         Ok(Json(out))
     }
 
-    /// Delete a note from the vault. If this empties its containing folder,
-    /// that folder is removed too (the vault root is never deleted).
+    /// Delete a note. By default it moves to the vault's `.trash/`, where the
+    /// user can recover it; pass `permanent: true` to erase it instead. If this
+    /// empties its containing folder, that folder is removed too (the vault root
+    /// is never deleted).
     #[tool(
         name = "delete-note",
         annotations(
@@ -272,12 +301,26 @@ impl ObsidianHandler {
             vault,
             filename,
             folder,
+            permanent,
         }): rmcp::handler::server::wrapper::Parameters<DeleteNoteParams>,
     ) -> Result<CallToolResult, McpError> {
-        tracing::debug!(tool = "delete-note", %vault, %filename);
+        tracing::debug!(tool = "delete-note", %vault, %filename, ?permanent);
         self.check_write()?;
-        match self.vault.delete_note(&vault, &filename, folder.as_deref()) {
-            Ok(()) => ok(format!("Deleted note '{}'", filename)),
+        match self.vault.delete_note(
+            &vault,
+            &filename,
+            folder.as_deref(),
+            permanent.unwrap_or(false),
+        ) {
+            Ok(DeleteOutcome {
+                trashed_to: Some(dest),
+            }) => ok(format!(
+                "Moved note '{}' to '{}' — it can still be recovered from the vault's trash.",
+                filename, dest
+            )),
+            Ok(DeleteOutcome { trashed_to: None }) => {
+                ok(format!("Permanently deleted note '{}'", filename))
+            }
             Err(e) => tool_error(e),
         }
     }
@@ -851,6 +894,7 @@ mod tests {
             vault,
             filename: "del".into(),
             folder: None,
+            permanent: None,
         }));
         assert!(r.is_ok());
     }
@@ -862,6 +906,7 @@ mod tests {
             vault,
             filename: "ghost".into(),
             folder: None,
+            permanent: None,
         }));
         assert_is_error(r);
     }
@@ -1150,6 +1195,7 @@ mod tests {
             vault,
             filename: "del.md".into(),
             folder: None,
+            permanent: None,
         }));
         assert!(r.is_err());
         assert!(r.unwrap_err().message.contains("--no-edit"));
@@ -1222,6 +1268,44 @@ mod tests {
         }));
         assert!(r.is_err());
         assert!(r.unwrap_err().message.contains("--no-edit"));
+    }
+
+    #[test]
+    fn no_edit_hides_write_tools_from_the_tool_list() {
+        // A tool the model can see is a tool it will try. In a read-only server
+        // `tools/list` must describe a read-only server.
+        let (_dir, h, _) = setup_readonly();
+        let listed: Vec<String> = h
+            .tool_router
+            .list_all()
+            .iter()
+            .map(|t| t.name.to_string())
+            .collect();
+
+        for write_tool in WRITE_TOOLS {
+            assert!(
+                !listed.iter().any(|n| n == write_tool),
+                "--no-edit must not advertise '{write_tool}': {listed:?}"
+            );
+        }
+        for read_tool in [
+            "read-note",
+            "search-vault",
+            "wikilinks",
+            "list-available-vaults",
+        ] {
+            assert!(listed.iter().any(|n| n == read_tool), "missing {read_tool}");
+        }
+        assert!(
+            listed.iter().any(|n| n == "frontmatter"),
+            "frontmatter reads as well as writes, so it stays — gated per action"
+        );
+    }
+
+    #[test]
+    fn every_tool_is_listed_when_writes_are_allowed() {
+        let (_dir, h, _) = setup();
+        assert_eq!(h.tool_router.list_all().len(), 13);
     }
 
     #[test]

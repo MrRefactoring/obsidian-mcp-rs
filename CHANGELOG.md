@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **`delete-note` now moves the note to the vault's `.trash/` instead of erasing it.** An agent deleting the wrong note is a plausible mistake and, until now, an unrecoverable one. `.trash` is hidden and `md_files` skips hidden directories, so a trashed note vanishes from search, the link graph and `rename-tag` exactly as if it were gone — but the user can still get it back. This is what Obsidian itself does. Pass `permanent: true` to erase; deleting a note that is *already* in the trash erases it, so emptying the trash still works. The note's folder is mirrored inside the trash (`a/note.md` and `b/note.md` don't collide) and a repeat delete of the same path becomes `note-2.md` rather than overwriting the first. Tests: `delete_moves_the_note_to_the_trash_by_default`, `a_trashed_note_is_invisible_to_search`, `trashing_the_same_path_twice_does_not_overwrite_the_first`, `deleting_from_the_trash_erases_it`.
+- **`--no-edit` now hides the write tools from `tools/list`** instead of advertising them and rejecting the call. A tool the model can see is a tool it will try, and a rejection it then has to spend a turn recovering from; a read-only server should describe itself as one. The eight write-only tools are removed from the router, so they are absent from `tools/list` *and* unreachable via `tools/call`. `frontmatter` stays listed because `get` is a read — it is gated per action. Tests: `no_edit_hides_write_tools_from_the_tool_list`, `every_tool_is_listed_when_writes_are_allowed`.
+- **`NoteNotFound` now tells the model how to recover** ("Check the folder, or run search-vault with searchType=\"filename\" to locate it"), matching the hint already on `TargetNotFound`.
+
 ## [0.4.0] - 2026-07-13
 
 ### Added

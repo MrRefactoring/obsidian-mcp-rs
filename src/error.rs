@@ -5,7 +5,9 @@ pub enum VaultError {
     #[error("Vault '{0}' not found. Available vaults: {1}")]
     VaultNotFound(String, String),
 
-    #[error("Note '{0}' not found in vault '{1}'")]
+    #[error(
+        "Note '{0}' not found in vault '{1}'. Check the folder, or run search-vault with searchType=\"filename\" to locate it."
+    )]
     NoteNotFound(String, String),
 
     #[error("Note '{0}' already exists in vault '{1}'")]
