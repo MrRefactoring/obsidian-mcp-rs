@@ -6,6 +6,8 @@
 
 pub mod error;
 pub mod handler;
+#[cfg(feature = "http")]
+pub mod http;
 pub mod install;
 pub mod tools;
 pub mod vault;

@@ -42,6 +42,8 @@ This is a Rust **library** (`src/lib.rs`, crate `obsidian_mcp_rs`) holding all d
 
 ### Transport invariant (do not break)
 
+The `http` cargo feature (off by default) adds a Streamable HTTP transport (`src/http.rs`, `--http`). It does **not** relax the stdout rule: stdio mode must stay sterile, and `tests/mcp_stdio.rs` proves it. The HTTP server validates the `Origin` header — the MCP spec requires it of local servers, and it is the only thing standing between a malicious web page and a vault the server will happily read and rewrite without authentication.
+
 The server uses `(stdin, stdout)` for the MCP JSON-RPC stream (`main.rs::run_server`). **Anything that writes to stdout will corrupt the protocol.** All diagnostics go to stderr or to a size-rotated file log (`~/Library/Logs/obsidian-mcp-rs/obsidian-mcp-rs.log` on macOS, `~/.local/share/...` on Linux, `%LOCALAPPDATA%\...` on Windows). `tracing_subscriber` is configured in `main::setup_logging`: stderr layer = WARN by default (DEBUG with `--verbose`), file layer = always DEBUG. Rotation is size-based and runs at startup — `main::rotate_if_large` renames the log to `<path>.1` once it passes `MAX_LOG_BYTES` (5 MiB), keeping one backup, so the current path stays stable.
 
 ### Module layout

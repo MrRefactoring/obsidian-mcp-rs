@@ -7,6 +7,7 @@
 - Exposes 15 MCP tools for full note lifecycle management: create, read, edit, delete, move, search, tag, frontmatter, links, daily notes
 - Supports multiple vaults simultaneously via CLI arguments
 - Ships as a single static binary — no runtime required
+- stdio by default; Streamable HTTP (`--http`) available via the optional `http` cargo feature
 - Distributed as an npm package (`obsidian-mcp-rs`) with platform-specific binaries via optional dependencies
 
 ## Tools
