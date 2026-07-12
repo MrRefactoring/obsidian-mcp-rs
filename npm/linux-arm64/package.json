@@ -1,6 +1,6 @@
 {
   "name": "@obsidian-mcp-rs/linux-arm64",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Linux ARM64 binary for obsidian-mcp-rs",
   "repository": {
     "type": "git",
