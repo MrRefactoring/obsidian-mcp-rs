@@ -1,6 +1,6 @@
 [package]
 name = "obsidian-mcp-rs"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2024"
 rust-version = "1.88"
 authors = ["Vladislav Tupikin"]
@@ -11,6 +11,17 @@ homepage = "https://github.com/MrRefactoring/obsidian-mcp-rs"
 readme = "README.md"
 keywords = ["obsidian", "mcp", "notes", "vault", "ai"]
 categories = ["command-line-utilities", "filesystem"]
+# The npm wrapper, CI config and contributor notes ship with the repo, not with
+# the crate — a `cargo install` needs none of them.
+exclude = [
+    ".github/",
+    "npm/",
+    "scripts/",
+    "benches/",
+    "CLAUDE.md",
+    "llms.txt",
+    "codecov.yml",
+]
 
 [dependencies]
 rmcp = { version = "2.2", features = ["server", "transport-io", "macros"] }
