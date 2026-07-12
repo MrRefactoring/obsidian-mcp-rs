@@ -122,6 +122,13 @@ Terms are weighted by where they occur: filename ×5, tags ×4, headings ×3, fr
 
 Results are paged (`limit`, default 20; `offset`) and each file quotes at most `maxMatchesPerFile` lines (default 3). Every response carries `total` and `truncated`, so the model can see that more matches exist without you paying for them in context.
 
+Ranking answers "which notes are *about* this". Two questions it can't answer have their own arguments:
+
+- **`regex: true`** — match a *shape* rather than words: a phone number, a `TODO(name)`, a URL. Hits are then ranked by how many lines matched, since relevance means nothing for a pattern.
+- **`frontmatter: {"status": "active"}`** — keep only notes carrying those fields. A **list** field matches when it *contains* the value, so `{"tags": "work"}` finds a note with `tags: [work, urgent]`. Combine it with a query, or use it alone with an empty query as a pure metadata lookup ("every active note in this vault").
+
+Both are computed inside the walk that already reads every note, so neither costs an extra pass.
+
 ## Performance
 
 Vault-wide operations (`search-vault`, `rename-tag`) walk the vault with the [`ignore`](https://crates.io/crates/ignore) crate and process files in parallel via [`rayon`](https://crates.io/crates/rayon). Measured with the criterion suite in [`benches/`](benches/vault_bench.rs) on a synthetic vault, Apple Silicon (10 logical cores); "serial" is the same code pinned to one thread (`RAYON_NUM_THREADS=1`):

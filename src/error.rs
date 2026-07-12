@@ -35,6 +35,9 @@ pub enum VaultError {
 
     #[error("Search error: {0}")]
     Search(String),
+
+    #[error("Invalid regex '{0}': {1}. Fix the pattern, or drop regex=true to search for words.")]
+    InvalidRegex(String, String),
 }
 
 impl VaultError {
@@ -72,7 +75,8 @@ impl From<VaultError> for rmcp::ErrorData {
             | VaultError::InvalidPath(..)
             | VaultError::SearchTextNotFound(..)
             | VaultError::TargetNotFound(..)
-            | VaultError::InvalidFrontmatter(..) => ErrorCode::INVALID_PARAMS,
+            | VaultError::InvalidFrontmatter(..)
+            | VaultError::InvalidRegex(..) => ErrorCode::INVALID_PARAMS,
             VaultError::Io(..) | VaultError::Search(..) => ErrorCode::INTERNAL_ERROR,
         };
         rmcp::ErrorData::new(code, err.to_string(), None)
@@ -150,6 +154,7 @@ mod tests {
             VaultError::DirectoryAlreadyExists("d".into()),
             VaultError::InvalidPath("bad".into()),
             VaultError::InvalidFrontmatter("n".into(), "bad".into()),
+            VaultError::InvalidRegex("[0-9".into(), "unclosed class".into()),
         ] {
             let data: rmcp::ErrorData = e.into();
             assert_eq!(data.code, ErrorCode::INVALID_PARAMS);
@@ -168,6 +173,13 @@ mod tests {
         let target = VaultError::TargetNotFound("## Log".into(), "n.md".into());
         assert!(target.is_tool_execution_error());
         assert!(target.to_string().contains("outline"));
+        // An unparseable regex is a malformed *argument*, so it stays a protocol
+        // error (INVALID_PARAMS) rather than an isError result — but the message
+        // hands the model back its own pattern and a way out.
+        let regex = VaultError::InvalidRegex("555-[0-9".into(), "unclosed class".into());
+        assert!(!regex.is_tool_execution_error());
+        assert!(regex.to_string().contains("555-[0-9"));
+        assert!(regex.to_string().contains("regex=true"));
         // Malformed-request / server faults → protocol errors, not isError.
         assert!(!VaultError::VaultNotFound("v".into(), "".into()).is_tool_execution_error());
         assert!(!VaultError::InvalidPath("bad".into()).is_tool_execution_error());

@@ -34,8 +34,8 @@ pub use links::{LinkKind, LinkRef};
 pub use patch::TargetKind;
 pub use periodic::{Period, PeriodicAction, PeriodicOutput};
 pub use search::{
-    DEFAULT_LIMIT, DEFAULT_MAX_MATCHES_PER_FILE, SearchLimits, SearchOutput, SearchResult,
-    SearchType, Snippet,
+    DEFAULT_LIMIT, DEFAULT_MAX_MATCHES_PER_FILE, MetaFilter, SearchLimits, SearchOutput,
+    SearchQuery, SearchResult, SearchType, Snippet,
 };
 
 /// What an edit does to the note — or, with a `Target`, to that part of it.
@@ -593,10 +593,8 @@ impl VaultManager {
     pub fn search_vault(
         &self,
         vault: &str,
-        query: &str,
         search_path: Option<&str>,
-        case_sensitive: bool,
-        search_type: &SearchType,
+        query: &SearchQuery<'_>,
         limits: &SearchLimits,
     ) -> Result<SearchOutput, VaultError> {
         let root = self.resolve_vault(vault)?;
@@ -604,14 +602,7 @@ impl VaultManager {
             Some(p) if !p.is_empty() => safe_join(root, None, p)?,
             _ => root.to_path_buf(),
         };
-        Ok(search::search(
-            root,
-            &search_root,
-            query,
-            case_sensitive,
-            search_type,
-            limits,
-        ))
+        search::search(root, &search_root, query, limits)
     }
 
     /// Query the vault's link graph. One parallel pass builds the whole graph,
@@ -966,6 +957,23 @@ mod tests {
     fn write_note(dir: &TempDir, filename: &str, content: &str) {
         fs::write(dir.path().join(filename), content).unwrap();
     }
+
+    /// A plain word query — the shape every pre-regex caller used.
+    fn text_query<'a>(
+        query: &'a str,
+        case_sensitive: bool,
+        search_type: &'a SearchType,
+    ) -> SearchQuery<'a> {
+        SearchQuery {
+            query,
+            case_sensitive,
+            search_type,
+            regex: false,
+            frontmatter: NO_FILTER.get_or_init(MetaFilter::new),
+        }
+    }
+
+    static NO_FILTER: std::sync::OnceLock<MetaFilter> = std::sync::OnceLock::new();
 
     /// A whole-note edit — the shape every pre-patch caller used.
     fn edit<'a>(operation: EditOperation, content: &'a str, search: Option<&'a str>) -> Edit<'a> {
@@ -1853,10 +1861,8 @@ mod tests {
         let hits = vault
             .search_vault(
                 &name,
-                "needle",
                 None,
-                false,
-                &SearchType::Content,
+                &text_query("needle", false, &SearchType::Content),
                 &SearchLimits::default(),
             )
             .unwrap();
@@ -2235,10 +2241,8 @@ mod tests {
         let results = vault
             .search_vault(
                 &name,
-                "quick",
                 None,
-                false,
-                &SearchType::Content,
+                &text_query("quick", false, &SearchType::Content),
                 &SearchLimits::default(),
             )
             .unwrap();
@@ -2255,10 +2259,8 @@ mod tests {
         let results = vault
             .search_vault(
                 &name,
-                "journal",
                 None,
-                false,
-                &SearchType::Filename,
+                &text_query("journal", false, &SearchType::Filename),
                 &SearchLimits::default(),
             )
             .unwrap();
@@ -2274,10 +2276,8 @@ mod tests {
         let results = vault
             .search_vault(
                 &name,
-                "target",
                 None,
-                false,
-                &SearchType::Both,
+                &text_query("target", false, &SearchType::Both),
                 &SearchLimits::default(),
             )
             .unwrap();
@@ -2293,10 +2293,8 @@ mod tests {
         let results = vault
             .search_vault(
                 &name,
-                "tag:work",
                 None,
-                false,
-                &SearchType::Content,
+                &text_query("tag:work", false, &SearchType::Content),
                 &SearchLimits::default(),
             )
             .unwrap();
@@ -2312,10 +2310,8 @@ mod tests {
         let results = vault
             .search_vault(
                 &name,
-                "tag:urgent",
                 None,
-                false,
-                &SearchType::Content,
+                &text_query("tag:urgent", false, &SearchType::Content),
                 &SearchLimits::default(),
             )
             .unwrap();
@@ -2330,20 +2326,16 @@ mod tests {
         let insensitive = vault
             .search_vault(
                 &name,
-                "hello",
                 None,
-                false,
-                &SearchType::Content,
+                &text_query("hello", false, &SearchType::Content),
                 &SearchLimits::default(),
             )
             .unwrap();
         let sensitive = vault
             .search_vault(
                 &name,
-                "hello",
                 None,
-                true,
-                &SearchType::Content,
+                &text_query("hello", true, &SearchType::Content),
                 &SearchLimits::default(),
             )
             .unwrap();
@@ -2361,10 +2353,8 @@ mod tests {
         let results = vault
             .search_vault(
                 &name,
-                "needle",
                 Some("sub"),
-                false,
-                &SearchType::Content,
+                &text_query("needle", false, &SearchType::Content),
                 &SearchLimits::default(),
             )
             .unwrap();
@@ -2380,10 +2370,8 @@ mod tests {
         let results = vault
             .search_vault(
                 &name,
-                "zzz_not_here",
                 None,
-                false,
-                &SearchType::Content,
+                &text_query("zzz_not_here", false, &SearchType::Content),
                 &SearchLimits::default(),
             )
             .unwrap();
@@ -2780,10 +2768,8 @@ mod tests {
         let name = vault_name(&dir);
         let result = vault.search_vault(
             &name,
-            "x",
             Some("../.."),
-            false,
-            &SearchType::Content,
+            &text_query("x", false, &SearchType::Content),
             &SearchLimits::default(),
         );
         assert!(result.is_err());
