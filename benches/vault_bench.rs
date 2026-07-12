@@ -5,7 +5,7 @@ use std::fs;
 use std::hint::black_box;
 
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
-use obsidian_mcp_rs::vault::{SearchType, VaultManager};
+use obsidian_mcp_rs::vault::{SearchLimits, SearchType, VaultManager};
 use tempfile::TempDir;
 
 /// Build a temp vault of `n` notes spread across subfolders. Each note carries
@@ -45,7 +45,14 @@ fn bench_search(c: &mut Criterion) {
         b.iter(|| {
             black_box(
                 vault
-                    .search_vault(&name, "needle", None, false, &SearchType::Content)
+                    .search_vault(
+                        &name,
+                        "needle",
+                        None,
+                        false,
+                        &SearchType::Content,
+                        &SearchLimits::default(),
+                    )
                     .unwrap(),
             )
         })
@@ -54,7 +61,14 @@ fn bench_search(c: &mut Criterion) {
         b.iter(|| {
             black_box(
                 vault
-                    .search_vault(&name, "tag:alpha", None, false, &SearchType::Content)
+                    .search_vault(
+                        &name,
+                        "tag:alpha",
+                        None,
+                        false,
+                        &SearchType::Content,
+                        &SearchLimits::default(),
+                    )
                     .unwrap(),
             )
         })
