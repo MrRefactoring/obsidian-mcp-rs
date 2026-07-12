@@ -51,7 +51,7 @@ claude mcp add obsidian -- npx -y obsidian-mcp-rs ~/Documents/Obsidian/MyVault
 # add `--scope user` to enable it in every project (writes ~/.claude.json)
 ```
 
-> **Heads-up:** clients read MCP config at **session start**, so the agent can write it but can't hot-load it. After it installs the server, **restart** the client — and in Claude Code approve a project-scoped `.mcp.json` server via the `/mcp` panel — before the 12 tools appear. Only Claude Code has a native `mcp add` CLI; for every other client the agent just runs the `npx obsidian-mcp-rs install <client>` command above.
+> **Heads-up:** clients read MCP config at **session start**, so the agent can write it but can't hot-load it. After it installs the server, **restart** the client — and in Claude Code approve a project-scoped `.mcp.json` server via the `/mcp` panel — before the 13 tools appear. Only Claude Code has a native `mcp add` CLI; for every other client the agent just runs the `npx obsidian-mcp-rs install <client>` command above.
 
 ### Prefer a CLI? (or not using an agent)
 
@@ -96,10 +96,12 @@ npx obsidian-mcp-rs uninstall claude --dry-run  # preview changes without writin
 
 ## Features
 
-- **12 tools** covering note CRUD, search, links, directory management, and tag operations
+- **13 tools** covering note CRUD, search, links, frontmatter, directory management, and tag operations
 - **Ranked search** — BM25 relevance with field boosts (a term in the title outranks the same term buried in a paragraph), returned best-first and capped so a common word can't flood the model's context
 - **Link-aware moves** — renaming a note rewrites every `[[wikilink]]` and markdown link pointing at it, so moving a note never silently orphans references
 - **Link graph** — `wikilinks` answers backlinks, outgoing, broken links and orphans
+- **Section-scoped edits** — point `edit-note` at one heading or one `^block-id` and only those bytes are rewritten; the rest of the note is passed through untouched
+- **Frontmatter access** — `frontmatter` reads and writes any YAML key, not just `tags`, and touches only the key you named
 - **Multi-vault** support — pass multiple vault paths as arguments
 - **Read-only mode** — `--no-edit` flag disables all write tools at the server level
 - **Zero runtime dependencies** — single static binary, no Node.js required for execution

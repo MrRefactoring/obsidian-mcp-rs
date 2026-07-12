@@ -43,7 +43,7 @@ pub(crate) struct Link {
 /// Load-bearing: a `[[wikilink]]` inside a code block is an *example*, not a
 /// reference. Rewriting it on rename would corrupt the very documentation that
 /// explains the syntax, and counting it would invent links that don't exist.
-fn code_spans(content: &str) -> Vec<Range<usize>> {
+pub(crate) fn code_spans(content: &str) -> Vec<Range<usize>> {
     let mut spans = Vec::new();
     let mut fence: Option<char> = None;
     let mut offset = 0;
@@ -109,7 +109,7 @@ fn inline_code_spans(_line: &str, base: usize, text: &str) -> Vec<Range<usize>> 
     spans
 }
 
-fn in_code(spans: &[Range<usize>], pos: usize) -> bool {
+pub(crate) fn in_code(spans: &[Range<usize>], pos: usize) -> bool {
     spans.iter().any(|s| s.contains(&pos))
 }
 

@@ -50,8 +50,8 @@ The server uses `(stdin, stdout)` for the MCP JSON-RPC stream (`main.rs::run_ser
 |--------------|----------------------------------------------------------------------------------------------------------------------|
 | `lib.rs`     | crate root — re-exports `error`/`handler`/`install`/`tools`/`vault` as the public library surface                    |
 | `main.rs`    | thin bin over the lib: clap CLI, log setup, dispatches to `install`/`uninstall`/`list`/`logs` subcommands or starts the MCP server |
-| `handler.rs` | `ObsidianHandler` with `#[tool_router]` macro — 11 MCP tools, thin wrappers over `vault`                             |
-| `vault/`     | `VaultManager` (`mod.rs`) + submodules: `path` (**`safe_join` sandbox**), `frontmatter` (serde_yml tag parse), `tags`, `search`, `walk` (`md_files` via `ignore`). Vault walks run in parallel with `rayon` |
+| `handler.rs` | `ObsidianHandler` with `#[tool_router]` macro — 13 MCP tools, thin wrappers over `vault`                             |
+| `vault/`     | `VaultManager` (`mod.rs`) + submodules: `path` (**`safe_join` sandbox**), `frontmatter` (parse + line-surgery edits), `tags`, `patch` (heading/block targets + outline), `links`, `search`, `walk` (`md_files` via `ignore`). Vault walks run in parallel with `rayon` |
 | `tools/*.rs` | `serde` + `schemars::JsonSchema` param structs only — one per tool                                                   |
 | `install/`   | Writes/removes MCP-server entries in 14 AI-client configs (JSON / TOML for Codex / YAML for Goose)                   |
 | `error.rs`   | `VaultError` + `From<VaultError> for rmcp::ErrorData`                                                                |
@@ -81,7 +81,9 @@ The `--no-edit` flag is a gate enforced in `ObsidianHandler::check_write()`, cal
 - Use `git mv` to rename/move files — preserves history.
 - Frontmatter tags are parsed with `serde_yml` (`frontmatter::extract_tags`) — only `tags:` matters. (`serde_yml` is a Cargo alias for the maintained `serde_yaml_ng`; the previous `serde_yml`/`libyml` crates were RustSec-flagged unmaintained.) Parsing is strict: malformed YAML in the frontmatter body yields no tags (no line-by-line scraping). The boundary detection is still separate (`find_closing_fm`), since serde doesn't know about `---` markers.
 - The closing-frontmatter marker is detected by `find_closing_fm`, which requires `---` to stand alone on a line. Use this helper anywhere you previously would have written `s.find("\n---")`.
+- **Never round-trip the frontmatter through `serde_yml` to write it.** Every rewrite is line surgery on the one key being changed, via `frontmatter::edit_frontmatter` (the single split/reassemble point — hand-rolled reassembly is what previously glued the closing `---` onto the last tag line) plus `find_field`. A full YAML round-trip is less code but reformats the user's whole block: comments dropped, key order normalised, quoting churned. `frontmatter::set_field` does let serde *render* the one `key: value` it is writing, so quoting and escaping stay serde's problem.
 - Inline-tag rewrites must go through `replace_inline_tag` (right-boundary check), so `#foo` does not match inside `#foobar`/`#foo-extra`.
+- Heading and block-reference scanning lives in `vault::patch` and skips code fences (via `links::code_spans`) and the frontmatter. `read-note view=outline` and the `edit-note` patcher share those scanners on purpose: every target the outline offers must be one the patcher can actually find.
 - Vault-wide walks (`search`, `rename_tag`) go through `walk::md_files` (the `ignore` crate, so `.gitignore` and hidden files are respected) and process files in parallel via `rayon`. `follow_links(false)` keeps the walk inside the vault.
 
 ## Engineering Principles
