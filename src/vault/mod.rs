@@ -1,4 +1,5 @@
 mod frontmatter;
+mod links;
 mod path;
 mod search;
 mod tags;
@@ -24,10 +25,44 @@ use tags::{
 use walk::md_files;
 use write::atomic_write;
 
+pub use links::{LinkKind, LinkRef};
 pub use search::{
     DEFAULT_LIMIT, DEFAULT_MAX_MATCHES_PER_FILE, SearchLimits, SearchOutput, SearchResult,
     SearchType, Snippet,
 };
+
+/// What `move-note` did. `relinked` names the notes whose links were updated to
+/// follow the moved note — empty when nothing pointed at it, or when the links
+/// still resolve on their own (a bare `[[Note]]` survives a folder move).
+#[derive(Debug, Clone)]
+pub struct MoveOutcome {
+    pub path: PathBuf,
+    pub relinked: Vec<String>,
+}
+
+/// Which slice of the link graph the `wikilinks` tool should return.
+#[derive(Debug, Clone, PartialEq, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum LinkQuery {
+    /// Notes that link *to* the given note.
+    Backlinks,
+    /// Links *from* the given note.
+    Outgoing,
+    /// Links whose target does not exist.
+    Broken,
+    /// Notes nothing links to.
+    Orphans,
+}
+
+/// Answer to a `wikilinks` query.
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
+pub struct LinkOutput {
+    /// Populated for `backlinks`, `outgoing` and `broken`.
+    pub links: Vec<LinkRef>,
+    /// Populated for `orphans` — vault-relative paths.
+    pub notes: Vec<String>,
+    pub total: usize,
+}
 
 #[derive(Debug, Clone)]
 pub struct VaultManager {
@@ -197,6 +232,14 @@ impl VaultManager {
         Ok(())
     }
 
+    /// Move or rename a note, updating every `[[wikilink]]` and markdown link
+    /// that pointed at it.
+    ///
+    /// Returns the new path and the notes whose links were rewritten. The move
+    /// itself is a single `fs::rename`, and each link rewrite is an
+    /// `atomic_write` — but the operation *as a whole* is not atomic. A journal
+    /// would be needed for that, which is a large bet for a local single-user
+    /// tool; instead a failed rewrite is reported rather than swallowed.
     pub fn move_note(
         &self,
         vault: &str,
@@ -204,7 +247,7 @@ impl VaultManager {
         folder: Option<&str>,
         new_folder: Option<&str>,
         new_filename: Option<&str>,
-    ) -> Result<PathBuf, VaultError> {
+    ) -> Result<MoveOutcome, VaultError> {
         let root = self.resolve_vault(vault)?.to_path_buf();
         let src = self.note_path(vault, filename, folder)?;
         if !src.exists() {
@@ -219,9 +262,51 @@ impl VaultManager {
             fs::create_dir_all(parent)
                 .map_err(|e| VaultError::io(parent.display().to_string(), e))?;
         }
+
+        // Resolve links against the vault as it stands *before* the move —
+        // afterwards `src` no longer exists and nothing would resolve to it.
+        let files = md_files(&root);
+        let resolver = links::Resolver::new(&root, &files);
+
         fs::rename(&src, &dest).map_err(|e| VaultError::io(src.display().to_string(), e))?;
         prune_empty_parent(&src, &root);
-        Ok(dest)
+
+        let dest_rel = dest
+            .strip_prefix(&root)
+            .unwrap_or(&dest)
+            .to_string_lossy()
+            .replace('\\', "/");
+
+        // The moved note can link to itself; it is already at its new path, so
+        // rewrite it there rather than at the path it just left.
+        let mut relinked: Vec<String> = files
+            .par_iter()
+            .filter_map(|path| {
+                let read_at = if path == &src { &dest } else { path };
+                let content = fs::read_to_string(read_at).ok()?;
+                let updated =
+                    links::rewrite_links(&content, path, &src, &dest_rel, &resolver)?;
+                match atomic_write(read_at, updated.as_bytes()) {
+                    Ok(()) => Some(
+                        read_at
+                            .strip_prefix(&root)
+                            .unwrap_or(read_at)
+                            .to_string_lossy()
+                            .replace('\\', "/"),
+                    ),
+                    Err(e) => {
+                        tracing::warn!(note = %read_at.display(), error = %e, "failed to update links");
+                        None
+                    }
+                }
+            })
+            .collect();
+        relinked.sort();
+
+        Ok(MoveOutcome {
+            path: dest,
+            relinked,
+        })
     }
 
     pub fn create_directory(
@@ -267,6 +352,95 @@ impl VaultManager {
             search_type,
             limits,
         ))
+    }
+
+    /// Query the vault's link graph. One parallel pass builds the whole graph,
+    /// so no index is kept and nothing can go stale.
+    pub fn wikilinks(
+        &self,
+        vault: &str,
+        query: &LinkQuery,
+        filename: Option<&str>,
+        folder: Option<&str>,
+    ) -> Result<LinkOutput, VaultError> {
+        let root = self.resolve_vault(vault)?.to_path_buf();
+        let (files, _, refs) = links::link_graph(&root);
+
+        // `backlinks` and `outgoing` are about one note, so they need one.
+        let note = match query {
+            LinkQuery::Backlinks | LinkQuery::Outgoing => {
+                let filename = filename.ok_or_else(|| {
+                    VaultError::InvalidPath(format!(
+                        "the '{}' query needs a 'filename'",
+                        match query {
+                            LinkQuery::Backlinks => "backlinks",
+                            _ => "outgoing",
+                        }
+                    ))
+                })?;
+                let path = self.note_path(vault, filename, folder)?;
+                if !path.exists() {
+                    return Err(VaultError::NoteNotFound(
+                        path.display().to_string(),
+                        vault.to_string(),
+                    ));
+                }
+                Some(
+                    path.strip_prefix(&root)
+                        .unwrap_or(&path)
+                        .to_string_lossy()
+                        .replace('\\', "/"),
+                )
+            }
+            _ => None,
+        };
+
+        let (links, notes) = match query {
+            LinkQuery::Backlinks => {
+                let note = note.expect("checked above");
+                let mut hits: Vec<LinkRef> = refs
+                    .into_iter()
+                    .filter(|r| r.resolved.as_deref() == Some(note.as_str()))
+                    .collect();
+                hits.sort_by(|a, b| (&a.from, a.line).cmp(&(&b.from, b.line)));
+                (hits, Vec::new())
+            }
+            LinkQuery::Outgoing => {
+                let note = note.expect("checked above");
+                let mut hits: Vec<LinkRef> = refs.into_iter().filter(|r| r.from == note).collect();
+                hits.sort_by_key(|r| r.line);
+                (hits, Vec::new())
+            }
+            LinkQuery::Broken => {
+                let mut hits: Vec<LinkRef> =
+                    refs.into_iter().filter(|r| r.resolved.is_none()).collect();
+                hits.sort_by(|a, b| (&a.from, a.line).cmp(&(&b.from, b.line)));
+                (hits, Vec::new())
+            }
+            LinkQuery::Orphans => {
+                let linked: std::collections::HashSet<&str> =
+                    refs.iter().filter_map(|r| r.resolved.as_deref()).collect();
+                let mut notes: Vec<String> = files
+                    .iter()
+                    .map(|p| {
+                        p.strip_prefix(&root)
+                            .unwrap_or(p)
+                            .to_string_lossy()
+                            .replace('\\', "/")
+                    })
+                    .filter(|rel| !linked.contains(rel.as_str()))
+                    .collect();
+                notes.sort();
+                (Vec::new(), notes)
+            }
+        };
+
+        let total = links.len() + notes.len();
+        Ok(LinkOutput {
+            links,
+            notes,
+            total,
+        })
     }
 
     pub fn add_tags(
@@ -791,7 +965,7 @@ mod tests {
         let dest = vault
             .move_note(&name, "original", None, None, Some("renamed"))
             .unwrap();
-        assert!(dest.exists());
+        assert!(dest.path.exists());
         assert!(!dir.path().join("original.md").exists());
     }
 
@@ -811,6 +985,138 @@ mod tests {
         let (dir, vault) = make_vault();
         let name = vault_name(&dir);
         assert!(vault.move_note(&name, "ghost", None, None, None).is_err());
+    }
+
+    #[test]
+    fn move_note_rewrites_inbound_links_on_rename() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(&dir, "target.md", "the target\n");
+        write_note(&dir, "a.md", "see [[target]] and ![[target#Sec|alias]]\n");
+        write_note(&dir, "b.md", "and [label](target.md)\n");
+
+        let out = vault
+            .move_note(&name, "target", None, None, Some("renamed"))
+            .unwrap();
+        assert_eq!(out.relinked, vec!["a.md", "b.md"]);
+
+        let a = fs::read_to_string(dir.path().join("a.md")).unwrap();
+        assert_eq!(a, "see [[renamed]] and ![[renamed#Sec|alias]]\n");
+        let b = fs::read_to_string(dir.path().join("b.md")).unwrap();
+        assert_eq!(b, "and [label](renamed.md)\n");
+    }
+
+    #[test]
+    fn move_note_leaves_links_in_code_blocks_alone() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(&dir, "target.md", "x\n");
+        write_note(&dir, "doc.md", "```\n[[target]]\n```\nreal [[target]]\n");
+
+        vault
+            .move_note(&name, "target", None, None, Some("renamed"))
+            .unwrap();
+
+        let doc = fs::read_to_string(dir.path().join("doc.md")).unwrap();
+        assert_eq!(
+            doc, "```\n[[target]]\n```\nreal [[renamed]]\n",
+            "a link inside a code sample is documentation, not a reference"
+        );
+    }
+
+    #[test]
+    fn move_note_to_a_folder_leaves_bare_links_alone() {
+        // The basename still resolves from anywhere, so there is nothing to fix.
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(&dir, "target.md", "x\n");
+        write_note(&dir, "a.md", "see [[target]]\n");
+
+        let out = vault
+            .move_note(&name, "target", None, Some("archive"), None)
+            .unwrap();
+        assert!(out.relinked.is_empty());
+        assert_eq!(
+            fs::read_to_string(dir.path().join("a.md")).unwrap(),
+            "see [[target]]\n"
+        );
+    }
+
+    // ── wikilinks ─────────────────────────────────────────────────────────────
+
+    fn linked_vault() -> (TempDir, VaultManager, String) {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(&dir, "hub.md", "x\n");
+        write_note(&dir, "a.md", "see [[hub]]\n");
+        write_note(&dir, "b.md", "also [[hub]] and [[ghost]]\n");
+        write_note(&dir, "lonely.md", "nobody links here\n");
+        (dir, vault, name)
+    }
+
+    #[test]
+    fn wikilinks_backlinks_lists_the_linking_notes() {
+        let (_dir, vault, name) = linked_vault();
+        let out = vault
+            .wikilinks(&name, &LinkQuery::Backlinks, Some("hub"), None)
+            .unwrap();
+        let from: Vec<&str> = out.links.iter().map(|l| l.from.as_str()).collect();
+        assert_eq!(from, vec!["a.md", "b.md"]);
+    }
+
+    #[test]
+    fn wikilinks_outgoing_lists_this_notes_links() {
+        let (_dir, vault, name) = linked_vault();
+        let out = vault
+            .wikilinks(&name, &LinkQuery::Outgoing, Some("b"), None)
+            .unwrap();
+        let targets: Vec<&str> = out.links.iter().map(|l| l.target.as_str()).collect();
+        assert_eq!(targets, vec!["hub", "ghost"]);
+    }
+
+    #[test]
+    fn wikilinks_broken_finds_targets_that_do_not_exist() {
+        let (_dir, vault, name) = linked_vault();
+        let out = vault
+            .wikilinks(&name, &LinkQuery::Broken, None, None)
+            .unwrap();
+        assert_eq!(out.links.len(), 1);
+        assert_eq!(out.links[0].target, "ghost");
+        assert!(out.links[0].resolved.is_none());
+    }
+
+    #[test]
+    fn wikilinks_orphans_finds_notes_nothing_links_to() {
+        let (_dir, vault, name) = linked_vault();
+        let out = vault
+            .wikilinks(&name, &LinkQuery::Orphans, None, None)
+            .unwrap();
+        assert_eq!(out.notes, vec!["a.md", "b.md", "lonely.md"]);
+    }
+
+    #[test]
+    fn wikilinks_backlinks_requires_a_filename() {
+        let (_dir, vault, name) = linked_vault();
+        assert!(
+            vault
+                .wikilinks(&name, &LinkQuery::Backlinks, None, None)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn wikilinks_blocks_traversal() {
+        let (_dir, vault, name) = linked_vault();
+        assert!(
+            vault
+                .wikilinks(
+                    &name,
+                    &LinkQuery::Backlinks,
+                    Some("../../../etc/hosts"),
+                    None
+                )
+                .is_err()
+        );
     }
 
     #[test]

@@ -4,7 +4,7 @@
 
 ## What it does
 
-- Exposes 11 MCP tools for full note lifecycle management: create, read, edit, delete, move, search, tag
+- Exposes 12 MCP tools for full note lifecycle management: create, read, edit, delete, move, search, tag
 - Supports multiple vaults simultaneously via CLI arguments
 - Ships as a single static binary — no runtime required
 - Distributed as an npm package (`obsidian-mcp-rs`) with platform-specific binaries via optional dependencies
@@ -15,10 +15,11 @@
 - `create-note` — create a new markdown note with content
 - `edit-note` — append, prepend, replace, or find-and-replace in a note
 - `delete-note` — delete a note
-- `move-note` — move or rename a note within a vault
+- `move-note` — move or rename a note, rewriting inbound `[[wikilinks]]` so they follow it
 - `create-directory` — create a directory inside a vault
-- `search-vault` — search notes by content, filename, or tag (`tag:` prefix)
+- `search-vault` — BM25-ranked search by content, filename, or tag (`tag:` prefix); paged via `limit`/`offset`
 - `list-available-vaults` — list all configured vaults
+- `wikilinks` — link graph: `backlinks`, `outgoing`, `broken`, `orphans`
 - `add-tags` — add tags to frontmatter and/or content
 - `remove-tags` — remove tags from a note
 - `rename-tag` — rename a tag across all notes in a vault
