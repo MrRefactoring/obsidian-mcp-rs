@@ -22,6 +22,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --check
       - run: cargo clippy -- -D warnings
+      # The `http` feature is off by default, so nothing else in CI compiles it —
+      # without this it would rot unnoticed.
+      - run: cargo clippy --features http --all-targets -- -D warnings
 
   test:
     name: Test (${{ matrix.os }})
@@ -37,6 +40,8 @@ jobs:
         with:
           key: ${{ matrix.os }}
       - run: cargo test
+      - name: Test the optional HTTP transport
+        run: cargo test --features http
       - name: Compile benchmarks (no run)
         if: matrix.os == 'ubuntu-latest'
         run: cargo bench --no-run

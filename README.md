@@ -111,6 +111,7 @@ npx obsidian-mcp-rs uninstall claude --dry-run  # preview changes without writin
 - **Cross-platform** — macOS (ARM64 + x64), Linux (x64 + ARM64 + musl), Windows (x64 + ARM64)
 - **Tag search** via `tag:` prefix in queries
 - **YAML frontmatter** tag management
+- **Streamable HTTP** (optional) — `cargo install obsidian-mcp-rs --features http`, then `--http` serves several clients from one long-lived server. Validates the `Origin` header, as the MCP spec requires of local servers. stdio remains the default.
 - **`npx` compatible** — runs instantly via npm
 
 ### Search

@@ -25,11 +25,26 @@ struct Cli {
     #[arg(value_name = "VAULT_PATH")]
     vaults: Vec<PathBuf>,
 
-    /// Disable all write tools. Only read-note, search-vault, and
-    /// list-available-vaults remain available. Any attempt to call a write
-    /// tool returns an error.
+    /// Disable all write tools. The read tools remain; the write tools are
+    /// removed from tools/list entirely, so the server describes itself as
+    /// read-only rather than advertising tools it will refuse.
     #[arg(long, default_value_t = false)]
     no_edit: bool,
+
+    /// Serve MCP over Streamable HTTP instead of stdio. The endpoint is
+    /// http://<host>:<port>/mcp.
+    #[arg(long, default_value_t = false)]
+    http: bool,
+
+    /// Address to bind when using --http. Defaults to loopback: this server has
+    /// no authentication, so anyone who can reach the port can read and rewrite
+    /// your notes.
+    #[arg(long, default_value = "127.0.0.1", value_name = "HOST")]
+    host: String,
+
+    /// Port to bind when using --http.
+    #[arg(long, default_value_t = 3000)]
+    port: u16,
 
     /// Enable verbose (debug-level) logging to stderr.
     #[arg(short = 'v', long, default_value_t = false)]
@@ -281,11 +296,66 @@ async fn main() -> anyhow::Result<()> {
                 );
                 std::process::exit(1);
             }
-            run_server(cli.vaults, cli.no_edit).await?;
+            if cli.http {
+                run_http(cli.vaults, cli.no_edit, &cli.host, cli.port).await?;
+            } else {
+                run_server(cli.vaults, cli.no_edit).await?;
+            }
         }
     }
 
     Ok(())
+}
+
+/// Serve over Streamable HTTP. Only compiled with the `http` feature — the npm
+/// packages ship prebuilt binaries for seven platforms, so the HTTP stack is not
+/// weight everyone should carry.
+#[cfg(feature = "http")]
+async fn run_http(
+    vaults: Vec<PathBuf>,
+    no_edit: bool,
+    host: &str,
+    port: u16,
+) -> anyhow::Result<()> {
+    use std::net::ToSocketAddrs;
+
+    let addr = (host, port)
+        .to_socket_addrs()?
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("'{host}' does not resolve to an address"))?;
+
+    tracing::info!(
+        version = env!("CARGO_PKG_VERSION"),
+        pid = std::process::id(),
+        no_edit,
+        %addr,
+        "obsidian-mcp-rs starting (http)"
+    );
+    register_vaults(&vaults);
+
+    obsidian_mcp_rs::http::serve(VaultManager::new(vaults), no_edit, addr).await
+}
+
+#[cfg(not(feature = "http"))]
+async fn run_http(_: Vec<PathBuf>, _: bool, _: &str, _: u16) -> anyhow::Result<()> {
+    anyhow::bail!(
+        "this build has no HTTP transport. Rebuild with `cargo install obsidian-mcp-rs --features http`, \
+         or drop --http to use stdio."
+    )
+}
+
+/// Log which vaults we're serving, and warn about the ones that aren't there —
+/// a typo'd path is otherwise a silent "vault not found" on every tool call.
+fn register_vaults(vaults: &[PathBuf]) {
+    for path in vaults {
+        if !path.exists() {
+            tracing::warn!(path = %path.display(), "vault path does not exist");
+            eprintln!("Warning: vault path '{}' does not exist", path.display());
+        } else {
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+            tracing::info!(vault = name, path = %path.display(), "vault registered");
+        }
+    }
 }
 
 async fn run_server(vaults: Vec<PathBuf>, no_edit: bool) -> anyhow::Result<()> {
@@ -296,15 +366,7 @@ async fn run_server(vaults: Vec<PathBuf>, no_edit: bool) -> anyhow::Result<()> {
         "obsidian-mcp-rs starting"
     );
 
-    for path in &vaults {
-        if !path.exists() {
-            tracing::warn!(path = %path.display(), "vault path does not exist");
-            eprintln!("Warning: vault path '{}' does not exist", path.display());
-        } else {
-            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
-            tracing::info!(vault = name, path = %path.display(), "vault registered");
-        }
-    }
+    register_vaults(&vaults);
 
     let manager = VaultManager::new(vaults);
     let handler = ObsidianHandler::with_options(manager, no_edit);
