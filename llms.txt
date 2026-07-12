@@ -18,7 +18,7 @@
 - `delete-note` — move a note to the vault's `.trash/` (recoverable); `permanent: true` erases it
 - `move-note` — move or rename a note, rewriting inbound `[[wikilinks]]` so they follow it
 - `create-directory` — create a directory inside a vault
-- `search-vault` — BM25-ranked search by content, filename, or tag (`tag:` prefix); paged via `limit`/`offset`
+- `search-vault` — BM25-ranked search by content, filename, or tag (`tag:` prefix); paged via `limit`/`offset`. `regex: true` matches a pattern instead of words; `frontmatter: {"status": "active"}` keeps only notes carrying those fields (a list field matches when it contains the value), and works alone with an empty query
 - `list-available-vaults` — list all configured vaults
 - `wikilinks` — link graph: `backlinks`, `outgoing`, `broken`, `orphans`
 - `frontmatter` — read or write any YAML frontmatter key (`get`/`set`/`remove`), preserving the rest of the block

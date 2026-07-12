@@ -1,11 +1,13 @@
 use std::{collections::HashMap, fs, path::Path};
 
 use rayon::prelude::*;
+use regex::RegexBuilder;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::frontmatter::{content_has_tag, extract_frontmatter, find_closing_fm};
 use super::walk::md_files;
+use crate::error::VaultError;
 
 /// BM25 saturation and length-normalisation constants — the standard defaults.
 const K1: f32 = 1.2;
@@ -71,6 +73,47 @@ pub enum SearchType {
     Content,
     Filename,
     Both,
+}
+
+/// Required frontmatter fields. A note has to carry every one of them.
+pub type MetaFilter = std::collections::BTreeMap<String, serde_json::Value>;
+
+/// Everything about *what* to look for. Grouped so the arity of `search` doesn't
+/// grow every time the query language does.
+pub struct SearchQuery<'a> {
+    pub query: &'a str,
+    pub case_sensitive: bool,
+    pub search_type: &'a SearchType,
+    /// Read `query` as a regular expression instead of a bag of words.
+    pub regex: bool,
+    /// Frontmatter fields the note must carry. Usable on its own, with an empty
+    /// `query`, as a pure metadata filter.
+    pub frontmatter: &'a MetaFilter,
+}
+
+/// Does the note carry every field the filter asks for?
+fn matches_meta(content: &str, filter: &MetaFilter) -> bool {
+    if filter.is_empty() {
+        return true;
+    }
+    let Ok(fields) = super::frontmatter::parse_fields(content) else {
+        // Malformed frontmatter carries nothing, so it satisfies nothing.
+        return false;
+    };
+    filter
+        .iter()
+        .all(|(key, want)| fields.get(key).is_some_and(|got| value_matches(got, want)))
+}
+
+/// A field matches when it equals the wanted value — or, when it's a list, when
+/// it *contains* it. That's what makes `{"tags": "work"}` find a note whose
+/// frontmatter says `tags: [work, urgent]`, which is what anyone would expect.
+fn value_matches(got: &serde_json::Value, want: &serde_json::Value) -> bool {
+    match got {
+        _ if got == want => true,
+        serde_json::Value::Array(items) => items.contains(want),
+        _ => false,
+    }
 }
 
 /// How many results to return, and how much of each.
@@ -147,17 +190,20 @@ fn bm25(cand: &Candidate, idf: &[f32], avgdl: f32) -> f32 {
 pub(crate) fn search(
     root: &Path,
     search_root: &Path,
-    query: &str,
-    case_sensitive: bool,
-    search_type: &SearchType,
+    q: &SearchQuery<'_>,
     limits: &SearchLimits,
-) -> SearchOutput {
+) -> Result<SearchOutput, VaultError> {
     let files = md_files(search_root);
+    let (query, case_sensitive, search_type) = (q.query, q.case_sensitive, q.search_type);
+
+    if q.regex {
+        return regex_search(root, &files, q, limits);
+    }
 
     // `tag:` is a filter, not a ranked query — a note either carries the tag or
     // it doesn't, so there is nothing to score.
     if let Some(tag) = query.strip_prefix("tag:") {
-        return tag_search(root, &files, tag, limits);
+        return Ok(tag_search(root, &files, tag, q.frontmatter, limits));
     }
 
     let fold = |s: &str| {
@@ -169,7 +215,12 @@ pub(crate) fn search(
     };
     let terms: Vec<String> = tokenize(&fold(query)).map(String::from).collect();
     if terms.is_empty() {
-        return empty(limits);
+        // No words to rank by. With a frontmatter filter that's still a real
+        // question — "every note where status is active" — so answer it.
+        if !q.frontmatter.is_empty() {
+            return Ok(filter_only(root, &files, q.frontmatter, limits));
+        }
+        return Ok(empty(limits));
     }
     let index: HashMap<&str, usize> = terms
         .iter()
@@ -187,6 +238,13 @@ pub(crate) fn search(
         .filter_map(|path| {
             let content = fs::read_to_string(path).ok()?;
             let len = content.len() as f32;
+
+            // A note the filter excludes is not a candidate — but it still counts
+            // towards the corpus statistics, so scores don't shift when a filter
+            // is added.
+            if !matches_meta(&content, q.frontmatter) {
+                return Some((len, None));
+            }
 
             let filename = path.file_name()?.to_str()?.to_string();
             let haystack = fold(&content);
@@ -287,7 +345,7 @@ pub(crate) fn search(
 
     let n = scanned.len() as f32;
     if n == 0.0 {
-        return empty(limits);
+        return Ok(empty(limits));
     }
     let avgdl = (scanned.iter().map(|(len, _)| *len).sum::<f32>() / n).max(1.0);
 
@@ -322,6 +380,117 @@ pub(crate) fn search(
             .then_with(|| a.path.cmp(&b.path))
     });
 
+    Ok(paginate(results, limits))
+}
+
+/// Search by regular expression.
+///
+/// BM25 has nothing to say here: a pattern is not a bag of words, and there are
+/// no terms whose rarity could be weighed. Ranking is by how many lines matched,
+/// which is the only signal a pattern gives us.
+fn regex_search(
+    root: &Path,
+    files: &[std::path::PathBuf],
+    q: &SearchQuery<'_>,
+    limits: &SearchLimits,
+) -> Result<SearchOutput, VaultError> {
+    let re = RegexBuilder::new(q.query)
+        .case_insensitive(!q.case_sensitive)
+        // A pathological pattern must not hang the server. The regex crate has no
+        // backtracking, but a large enough compiled program can still eat memory.
+        .size_limit(1 << 20)
+        .build()
+        .map_err(|e| VaultError::InvalidRegex(q.query.to_string(), e.to_string()))?;
+
+    let match_filename = matches!(q.search_type, SearchType::Filename | SearchType::Both);
+    let match_content = matches!(q.search_type, SearchType::Content | SearchType::Both);
+
+    let mut results: Vec<SearchResult> = files
+        .par_iter()
+        .filter_map(|path| {
+            let content = fs::read_to_string(path).ok()?;
+            if !matches_meta(&content, q.frontmatter) {
+                return None;
+            }
+            let filename = path.file_name()?.to_str()?.to_string();
+
+            let mut snippets = Vec::new();
+            let mut match_count = 0;
+
+            if match_content {
+                for (i, line) in content.lines().enumerate() {
+                    if re.is_match(line) {
+                        match_count += 1;
+                        if snippets.len() < limits.max_matches_per_file {
+                            snippets.push(Snippet {
+                                line: i + 1,
+                                text: clip(line.trim()),
+                            });
+                        }
+                    }
+                }
+            }
+            if match_filename && re.is_match(&filename) {
+                match_count = match_count.max(1);
+                if snippets.is_empty() {
+                    snippets.push(Snippet {
+                        line: 0,
+                        text: format!("filename: {}", filename),
+                    });
+                }
+            }
+            if match_count == 0 {
+                return None;
+            }
+
+            Some(SearchResult {
+                path: super::rel_path(root, path),
+                filename: filename.trim_end_matches(".md").to_string(),
+                score: match_count as f32,
+                match_count,
+                truncated: match_count > snippets.len(),
+                snippets,
+            })
+        })
+        .collect();
+
+    results.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.path.cmp(&b.path))
+    });
+    Ok(paginate(results, limits))
+}
+
+/// Notes matching a frontmatter filter and nothing else — "every note where
+/// status is active". Unranked: there is no query to be relevant to.
+fn filter_only(
+    root: &Path,
+    files: &[std::path::PathBuf],
+    filter: &MetaFilter,
+    limits: &SearchLimits,
+) -> SearchOutput {
+    let mut results: Vec<SearchResult> = files
+        .par_iter()
+        .filter_map(|path| {
+            let content = fs::read_to_string(path).ok()?;
+            if !matches_meta(&content, filter) {
+                return None;
+            }
+            let filename = path.file_name()?.to_str()?.to_string();
+            Some(SearchResult {
+                path: super::rel_path(root, path),
+                filename: filename.trim_end_matches(".md").to_string(),
+                score: 1.0,
+                match_count: 1,
+                truncated: false,
+                snippets: Vec::new(),
+            })
+        })
+        .collect();
+
+    results.sort_by(|a, b| a.path.cmp(&b.path));
     paginate(results, limits)
 }
 
@@ -330,22 +499,19 @@ fn tag_search(
     root: &Path,
     files: &[std::path::PathBuf],
     tag: &str,
+    filter: &MetaFilter,
     limits: &SearchLimits,
 ) -> SearchOutput {
     let mut results: Vec<SearchResult> = files
         .par_iter()
         .filter_map(|path| {
             let content = fs::read_to_string(path).ok()?;
-            if !content_has_tag(&content, tag) {
+            if !content_has_tag(&content, tag) || !matches_meta(&content, filter) {
                 return None;
             }
             let filename = path.file_name()?.to_str()?.to_string();
             Some(SearchResult {
-                path: path
-                    .strip_prefix(root)
-                    .unwrap_or(path)
-                    .display()
-                    .to_string(),
+                path: super::rel_path(root, path),
                 filename: filename.trim_end_matches(".md").to_string(),
                 score: 1.0,
                 match_count: 1,
@@ -399,6 +565,7 @@ fn clip(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use std::fs;
     use tempfile::TempDir;
 
@@ -418,11 +585,143 @@ mod tests {
         search(
             dir.path(),
             dir.path(),
-            query,
-            false,
-            &SearchType::Both,
+            &SearchQuery {
+                query,
+                case_sensitive: false,
+                search_type: &SearchType::Both,
+                regex: false,
+                frontmatter: &MetaFilter::new(),
+            },
             &limits,
         )
+        .expect("a plain query cannot fail")
+    }
+
+    /// Run a regex query.
+    fn run_regex(dir: &TempDir, pattern: &str) -> Result<SearchOutput, VaultError> {
+        search(
+            dir.path(),
+            dir.path(),
+            &SearchQuery {
+                query: pattern,
+                case_sensitive: false,
+                search_type: &SearchType::Content,
+                regex: true,
+                frontmatter: &MetaFilter::new(),
+            },
+            &SearchLimits::default(),
+        )
+    }
+
+    /// Run a frontmatter filter, optionally alongside a query.
+    fn run_filter(dir: &TempDir, query: &str, filter: MetaFilter) -> SearchOutput {
+        search(
+            dir.path(),
+            dir.path(),
+            &SearchQuery {
+                query,
+                case_sensitive: false,
+                search_type: &SearchType::Content,
+                regex: false,
+                frontmatter: &filter,
+            },
+            &SearchLimits::default(),
+        )
+        .expect("a plain query cannot fail")
+    }
+
+    fn filter(pairs: &[(&str, serde_json::Value)]) -> MetaFilter {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.clone()))
+            .collect()
+    }
+
+    fn paths(out: &SearchOutput) -> Vec<&str> {
+        out.results.iter().map(|r| r.path.as_str()).collect()
+    }
+
+    // ── Regex ────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn regex_matches_a_pattern_not_a_word() {
+        let dir = vault(&[
+            ("a.md", "call me on 555-1234 today\n"),
+            ("b.md", "no digits here\n"),
+        ]);
+        let out = run_regex(&dir, r"\d{3}-\d{4}").unwrap();
+        assert_eq!(paths(&out), vec!["a.md"]);
+        assert_eq!(out.results[0].snippets[0].text, "call me on 555-1234 today");
+    }
+
+    #[test]
+    fn regex_ranks_by_how_many_lines_matched() {
+        let dir = vault(&[
+            ("few.md", "TODO one\nplain\n"),
+            ("many.md", "TODO one\nTODO two\nTODO three\n"),
+        ]);
+        let out = run_regex(&dir, "^TODO").unwrap();
+        assert_eq!(paths(&out), vec!["many.md", "few.md"]);
+    }
+
+    #[test]
+    fn an_invalid_regex_is_reported_not_swallowed() {
+        let dir = vault(&[("a.md", "x\n")]);
+        let err = run_regex(&dir, "([unclosed").unwrap_err();
+        // The message hands the pattern back, so the model can see what it got
+        // wrong instead of just "search failed".
+        assert!(err.to_string().contains("([unclosed"), "{err}");
+        assert!(matches!(err, VaultError::InvalidRegex(..)), "{err}");
+    }
+
+    // ── Frontmatter filter ───────────────────────────────────────────────────
+
+    #[test]
+    fn a_filter_alone_answers_which_notes_carry_a_field() {
+        let dir = vault(&[
+            ("a.md", "---\nstatus: active\n---\nbody\n"),
+            ("b.md", "---\nstatus: done\n---\nbody\n"),
+            ("c.md", "no frontmatter\n"),
+        ]);
+        let out = run_filter(&dir, "", filter(&[("status", json!("active"))]));
+        assert_eq!(paths(&out), vec!["a.md"]);
+    }
+
+    #[test]
+    fn a_list_field_matches_when_it_contains_the_value() {
+        let dir = vault(&[
+            ("a.md", "---\ntags: [work, urgent]\n---\nbody\n"),
+            ("b.md", "---\ntags: [home]\n---\nbody\n"),
+        ]);
+        let out = run_filter(&dir, "", filter(&[("tags", json!("work"))]));
+        assert_eq!(paths(&out), vec!["a.md"]);
+    }
+
+    #[test]
+    fn a_filter_narrows_a_ranked_query() {
+        let dir = vault(&[
+            ("a.md", "---\nstatus: active\n---\nthe needle\n"),
+            ("b.md", "---\nstatus: done\n---\nthe needle\n"),
+        ]);
+        let all = run_filter(&dir, "needle", MetaFilter::new());
+        assert_eq!(all.results.len(), 2);
+
+        let narrowed = run_filter(&dir, "needle", filter(&[("status", json!("active"))]));
+        assert_eq!(paths(&narrowed), vec!["a.md"]);
+    }
+
+    #[test]
+    fn every_field_in_the_filter_must_match() {
+        let dir = vault(&[
+            ("a.md", "---\nstatus: active\nowner: me\n---\nx\n"),
+            ("b.md", "---\nstatus: active\nowner: you\n---\nx\n"),
+        ]);
+        let out = run_filter(
+            &dir,
+            "",
+            filter(&[("status", json!("active")), ("owner", json!("me"))]),
+        );
+        assert_eq!(paths(&out), vec!["a.md"]);
     }
 
     #[test]
@@ -571,11 +870,16 @@ mod tests {
         let out = search(
             dir.path(),
             dir.path(),
-            "report",
-            false,
-            &SearchType::Filename,
+            &SearchQuery {
+                query: "report",
+                case_sensitive: false,
+                search_type: &SearchType::Filename,
+                regex: false,
+                frontmatter: &MetaFilter::new(),
+            },
             &SearchLimits::default(),
-        );
+        )
+        .unwrap();
         assert_eq!(out.total, 1);
         assert_eq!(out.results[0].path, "report.md");
     }
@@ -586,11 +890,16 @@ mod tests {
         let out = search(
             dir.path(),
             dir.path(),
-            "report",
-            false,
-            &SearchType::Content,
+            &SearchQuery {
+                query: "report",
+                case_sensitive: false,
+                search_type: &SearchType::Content,
+                regex: false,
+                frontmatter: &MetaFilter::new(),
+            },
             &SearchLimits::default(),
-        );
+        )
+        .unwrap();
         assert_eq!(out.total, 1);
         assert_eq!(out.results[0].path, "other.md");
     }
@@ -601,11 +910,16 @@ mod tests {
         let out = search(
             dir.path(),
             dir.path(),
-            "Needle",
-            true,
-            &SearchType::Content,
+            &SearchQuery {
+                query: "Needle",
+                case_sensitive: true,
+                search_type: &SearchType::Content,
+                regex: false,
+                frontmatter: &MetaFilter::new(),
+            },
             &SearchLimits::default(),
-        );
+        )
+        .unwrap();
         assert_eq!(out.total, 1);
         assert_eq!(out.results[0].path, "a.md");
     }

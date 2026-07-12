@@ -960,6 +960,7 @@ dependencies = [
  "dirs",
  "ignore",
  "rayon",
+ "regex",
  "rmcp",
  "schemars",
  "serde",

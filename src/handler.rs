@@ -22,8 +22,8 @@ use crate::{
     },
     vault::{
         DEFAULT_RECENT, DeleteOutcome, Edit, FrontmatterAction, FrontmatterOutput, InfoOutput,
-        LinkOutput, PeriodicAction, PeriodicOutput, PeriodicRequest, SearchOutput, Target,
-        VaultManager,
+        LinkOutput, PeriodicAction, PeriodicOutput, PeriodicRequest, SearchOutput, SearchQuery,
+        Target, VaultManager,
     },
 };
 
@@ -445,7 +445,8 @@ impl ObsidianHandler {
     ) -> Result<Json<SearchOutput>, McpError> {
         tracing::debug!(tool = "search-vault", vault = %params.vault, query = %params.query);
         let limits = params.limits();
-        let st = params.search_type.unwrap_or_default();
+        let search_type = params.search_type.unwrap_or_default();
+        let frontmatter = params.frontmatter.unwrap_or_default();
 
         // Returning `Json<T>` lets rmcp derive the tool's `outputSchema` from
         // `SearchOutput` and emit both `structuredContent` and a JSON text block.
@@ -453,10 +454,14 @@ impl ObsidianHandler {
             .vault
             .search_vault(
                 &params.vault,
-                &params.query,
                 params.path.as_deref(),
-                params.case_sensitive.unwrap_or(false),
-                &st,
+                &SearchQuery {
+                    query: &params.query,
+                    case_sensitive: params.case_sensitive.unwrap_or(false),
+                    search_type: &search_type,
+                    regex: params.regex.unwrap_or(false),
+                    frontmatter: &frontmatter,
+                },
                 &limits,
             )
             .map_err(err)?;
@@ -1060,6 +1065,8 @@ mod tests {
             limit: None,
             offset: None,
             max_matches_per_file: None,
+            regex: None,
+            frontmatter: None,
         }));
         let out = r.unwrap().0;
         assert_eq!(out.results.len(), 1);
@@ -1078,6 +1085,8 @@ mod tests {
             limit: None,
             offset: None,
             max_matches_per_file: None,
+            regex: None,
+            frontmatter: None,
         }));
         assert!(r.unwrap().0.results.is_empty());
     }
@@ -1095,6 +1104,8 @@ mod tests {
             limit: None,
             offset: None,
             max_matches_per_file: None,
+            regex: None,
+            frontmatter: None,
         }));
         let out = r.unwrap().0;
         assert_eq!(out.results.len(), 1);
@@ -1115,6 +1126,8 @@ mod tests {
             limit: None,
             offset: None,
             max_matches_per_file: None,
+            regex: None,
+            frontmatter: None,
         }));
         assert!(r.unwrap().0.results.is_empty());
     }
@@ -1132,6 +1145,8 @@ mod tests {
             limit: None,
             offset: None,
             max_matches_per_file: None,
+            regex: None,
+            frontmatter: None,
         }));
         assert!(r.is_ok());
     }
@@ -1149,6 +1164,8 @@ mod tests {
             limit: None,
             offset: None,
             max_matches_per_file: None,
+            regex: None,
+            frontmatter: None,
         }));
         assert!(r.is_ok());
     }
@@ -1452,6 +1469,8 @@ mod tests {
             limit: None,
             offset: None,
             max_matches_per_file: None,
+            regex: None,
+            frontmatter: None,
         }));
         assert!(r.is_ok());
     }

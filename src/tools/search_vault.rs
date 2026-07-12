@@ -1,12 +1,14 @@
 use serde::Deserialize;
 
-use crate::vault::{SearchLimits, SearchType};
+use crate::vault::{MetaFilter, SearchLimits, SearchType};
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SearchVaultParams {
     /// Name of the vault to search in
     pub vault: String,
-    /// Search query. For text search use the term directly; for tag search use "tag:" prefix (e.g. "tag:status/active")
+    /// Search query. Plain terms are ranked by relevance; "tag:" searches a tag
+    /// (e.g. "tag:status/active"); with `regex: true` the query is a regular
+    /// expression. May be empty when filtering by `frontmatter` alone.
     pub query: String,
     /// Optional subfolder path within the vault to limit the search scope
     pub path: Option<String>,
@@ -23,6 +25,14 @@ pub struct SearchVaultParams {
     /// Maximum matching lines to quote per file (default: 3)
     #[serde(rename = "maxMatchesPerFile")]
     pub max_matches_per_file: Option<usize>,
+    /// Read `query` as a regular expression instead of words (default: false).
+    /// Results are then ranked by how many lines matched, not by relevance.
+    pub regex: Option<bool>,
+    /// Only notes whose frontmatter carries these fields, e.g.
+    /// {"status": "active"}. A list field matches when it *contains* the value,
+    /// so {"tags": "work"} finds a note with `tags: [work, urgent]`. Combine
+    /// with a query, or use on its own with an empty query as a pure filter.
+    pub frontmatter: Option<MetaFilter>,
 }
 
 impl SearchVaultParams {
