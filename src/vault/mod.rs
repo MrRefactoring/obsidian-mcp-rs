@@ -3,6 +3,7 @@ mod info;
 mod links;
 mod patch;
 mod path;
+mod periodic;
 mod search;
 mod tags;
 mod walk;
@@ -31,6 +32,7 @@ use write::atomic_write;
 pub use info::{DEFAULT_RECENT, InfoOutput, InfoQuery, RecentNote, Stats, TagCount};
 pub use links::{LinkKind, LinkRef};
 pub use patch::TargetKind;
+pub use periodic::{Period, PeriodicAction, PeriodicOutput};
 pub use search::{
     DEFAULT_LIMIT, DEFAULT_MAX_MATCHES_PER_FILE, SearchLimits, SearchOutput, SearchResult,
     SearchType, Snippet,
@@ -65,6 +67,19 @@ pub struct Edit<'a> {
     /// The needle for `find_and_replace`.
     pub search: Option<&'a str>,
     pub target: Option<Target<'a>>,
+}
+
+/// One `periodic` call.
+pub struct PeriodicRequest<'a> {
+    pub period: Period,
+    pub action: PeriodicAction,
+    /// `YYYY-MM-DD`. Defaults to today, in the machine's own timezone.
+    pub date: Option<&'a str>,
+    /// Text for a note `create` brings into existence. Without it, the note is
+    /// seeded from the template Obsidian is configured to use, if any.
+    pub content: Option<&'a str>,
+    /// How many notes `list` returns.
+    pub limit: usize,
 }
 
 /// How much of a note to return.
@@ -205,6 +220,10 @@ impl VaultManager {
     ///
     /// One lock for all writes, rather than one per note: vault mutations are
     /// short, tool calls are not a hot loop, and a single lock cannot deadlock.
+    ///
+    /// It is **not** reentrant: a guarded method must never call another guarded
+    /// method. `periodic` therefore delegates its write to `create_note` and takes
+    /// no guard of its own.
     fn write_guard(&self) -> std::sync::MutexGuard<'_, ()> {
         // A poisoned lock means some earlier call panicked mid-edit. Refusing
         // every write from then on is worse than carrying on.
@@ -681,6 +700,62 @@ impl VaultManager {
             links,
             notes,
             total,
+        })
+    }
+
+    /// Read, create or list a periodic note — today's daily note and its
+    /// weekly/monthly/quarterly/yearly siblings.
+    ///
+    /// The note's name and folder come from Obsidian's own settings, so we write
+    /// to the note the user actually keeps. Guessing would create a stray note
+    /// alongside the real one, which is worse than failing.
+    ///
+    /// Takes no write guard of its own: it delegates the write to `create_note`,
+    /// and the guard is not reentrant.
+    pub fn periodic(
+        &self,
+        vault: &str,
+        req: &PeriodicRequest<'_>,
+    ) -> Result<PeriodicOutput, VaultError> {
+        let root = self.resolve_vault(vault)?.to_path_buf();
+
+        if req.action == PeriodicAction::List {
+            return Ok(PeriodicOutput {
+                path: None,
+                content: None,
+                created: false,
+                notes: periodic::list(
+                    &root,
+                    req.period,
+                    req.limit,
+                    periodic::lookback(req.period),
+                )?,
+            });
+        }
+
+        let date = match req.date {
+            Some(given) => periodic::parse_date(given)?,
+            None => periodic::today(),
+        };
+        let resolved = periodic::resolve(&root, req.period, date)?;
+        let folder = periodic::folder_of(&resolved);
+        let path = self.note_path(vault, &resolved.filename, folder)?;
+        let rel = rel_path(&root, &path);
+
+        // `create` is idempotent: an agent asking for today's note wants the note,
+        // not an error because it already exists.
+        let created = req.action == PeriodicAction::Create && !path.exists();
+        if created {
+            let seed = req.content.unwrap_or(&resolved.seed);
+            self.create_note(vault, &resolved.filename, seed, folder)?;
+        }
+
+        let content = self.note_content(vault, &resolved.filename, folder)?;
+        Ok(PeriodicOutput {
+            path: Some(rel),
+            content: Some(content),
+            created,
+            notes: Vec::new(),
         })
     }
 
@@ -1450,6 +1525,123 @@ mod tests {
             .frontmatter(&name, "note", None, &FrontmatterAction::Get, None, None)
             .unwrap_err();
         assert!(err.to_string().contains("frontmatter"), "{err}");
+    }
+
+    // ── periodic ──────────────────────────────────────────────────────────────
+
+    fn periodic_req<'a>(action: PeriodicAction, date: Option<&'a str>) -> PeriodicRequest<'a> {
+        PeriodicRequest {
+            period: Period::Daily,
+            action,
+            date,
+            content: None,
+            limit: 10,
+        }
+    }
+
+    #[test]
+    fn periodic_create_makes_the_note_where_obsidian_would() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        fs::create_dir_all(dir.path().join(".obsidian")).unwrap();
+        fs::write(
+            dir.path().join(".obsidian/daily-notes.json"),
+            r#"{"folder": "Journal", "format": "YYYY-MM-DD"}"#,
+        )
+        .unwrap();
+
+        let out = vault
+            .periodic(
+                &name,
+                &periodic_req(PeriodicAction::Create, Some("2026-07-13")),
+            )
+            .unwrap();
+
+        assert!(out.created);
+        assert_eq!(out.path.as_deref(), Some("Journal/2026-07-13.md"));
+        assert!(dir.path().join("Journal/2026-07-13.md").exists());
+    }
+
+    #[test]
+    fn periodic_create_is_idempotent() {
+        // An agent asking for today's note wants the note, not an error because
+        // the note is already there.
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        vault
+            .periodic(
+                &name,
+                &periodic_req(PeriodicAction::Create, Some("2026-07-13")),
+            )
+            .unwrap();
+        fs::write(dir.path().join("2026-07-13.md"), "written by the user").unwrap();
+
+        let out = vault
+            .periodic(
+                &name,
+                &periodic_req(PeriodicAction::Create, Some("2026-07-13")),
+            )
+            .unwrap();
+
+        assert!(!out.created, "the second call must not report a creation");
+        assert_eq!(
+            out.content.as_deref(),
+            Some("written by the user"),
+            "and must not have overwritten what was there"
+        );
+    }
+
+    #[test]
+    fn periodic_get_fails_when_the_note_is_not_there_yet() {
+        let (_dir, vault) = make_vault();
+        let name = vault_name(&_dir);
+        assert!(
+            vault
+                .periodic(
+                    &name,
+                    &periodic_req(PeriodicAction::Get, Some("2026-07-13"))
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn periodic_list_finds_the_notes_that_exist() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        let today = chrono::Local::now().date_naive();
+        let yesterday = today.pred_opt().unwrap();
+        for date in [today, yesterday] {
+            write_note(&dir, &format!("{}.md", date.format("%Y-%m-%d")), "x");
+        }
+        write_note(&dir, "not-a-daily-note.md", "x");
+
+        let out = vault
+            .periodic(&name, &periodic_req(PeriodicAction::List, None))
+            .unwrap();
+
+        assert_eq!(
+            out.notes,
+            vec![
+                format!("{}.md", today.format("%Y-%m-%d")),
+                format!("{}.md", yesterday.format("%Y-%m-%d")),
+            ],
+            "most recent first, and nothing that isn't a daily note"
+        );
+    }
+
+    #[test]
+    fn periodic_rejects_a_date_it_cannot_parse() {
+        let (_dir, vault) = make_vault();
+        let name = vault_name(&_dir);
+        assert!(
+            vault
+                .periodic(
+                    &name,
+                    &periodic_req(PeriodicAction::Create, Some("yesterday"))
+                )
+                .is_err()
+        );
     }
 
     // ── VaultManager basics ───────────────────────────────────────────────────
