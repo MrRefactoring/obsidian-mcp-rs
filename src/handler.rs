@@ -8,6 +8,8 @@ use rmcp::{
 };
 use similar::TextDiff;
 
+#[cfg(test)]
+use crate::vault::SearchType;
 use crate::{
     error::VaultError,
     tools::{
@@ -17,7 +19,7 @@ use crate::{
         remove_tags::RemoveTagsParams, rename_tag::RenameTagParams,
         search_vault::SearchVaultParams,
     },
-    vault::{SearchOutput, SearchType, VaultManager},
+    vault::{SearchOutput, VaultManager},
 };
 
 #[derive(Clone)]
@@ -286,11 +288,7 @@ impl ObsidianHandler {
         }): rmcp::handler::server::wrapper::Parameters<SearchVaultParams>,
     ) -> Result<Json<SearchOutput>, McpError> {
         tracing::debug!(tool = "search-vault", %vault, %query);
-        let st = match search_type.as_deref() {
-            Some("filename") => SearchType::Filename,
-            Some("both") => SearchType::Both,
-            _ => SearchType::Content,
-        };
+        let st = search_type.unwrap_or_default();
 
         // Returning `Json<T>` lets rmcp derive the tool's `outputSchema` from
         // `SearchOutput` and emit both `structuredContent` and a JSON text block.
@@ -751,7 +749,7 @@ mod tests {
             query: "matchme".into(),
             path: None,
             case_sensitive: None,
-            search_type: Some("filename".into()),
+            search_type: Some(SearchType::Filename),
         }));
         assert!(r.is_ok());
     }
@@ -765,7 +763,7 @@ mod tests {
             query: "note".into(),
             path: None,
             case_sensitive: None,
-            search_type: Some("both".into()),
+            search_type: Some(SearchType::Both),
         }));
         assert!(r.is_ok());
     }
