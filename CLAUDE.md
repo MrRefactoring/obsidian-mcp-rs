@@ -34,7 +34,7 @@ cargo check --target <triple>
 npm install && npm run build && npm test   # TS build + vitest
 ```
 
-Toolchain is pinned to **stable** (`rust-toolchain.toml`); MSRV is **1.94**. `rustfmt`: 100-col, 4-space, edition 2021. `clippy.toml` sets `msrv = "1.94.0"`.
+Toolchain is pinned to **stable** (`rust-toolchain.toml`); MSRV is **1.88**. `rustfmt`: 100-col, 4-space, edition 2024. `clippy.toml` sets `msrv = "1.88.0"`.
 
 ## Architecture
 

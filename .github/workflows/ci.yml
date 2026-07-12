@@ -145,11 +145,11 @@ jobs:
         working-directory: npm/obsidian-mcp-rs
 
   msrv:
-    name: MSRV (1.94)
+    name: MSRV (1.88)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.94.0
+      - uses: dtolnay/rust-toolchain@1.88.0
       - uses: Swatinem/rust-cache@v2
         with:
           key: msrv
