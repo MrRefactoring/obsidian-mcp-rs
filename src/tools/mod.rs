@@ -3,6 +3,7 @@ pub mod create_directory;
 pub mod create_note;
 pub mod delete_note;
 pub mod edit_note;
+pub mod frontmatter;
 pub mod list_vaults;
 pub mod move_note;
 pub mod read_note;

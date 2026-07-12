@@ -1,5 +1,6 @@
 mod frontmatter;
 mod links;
+mod patch;
 mod path;
 mod search;
 mod tags;
@@ -26,10 +27,80 @@ use walk::md_files;
 use write::atomic_write;
 
 pub use links::{LinkKind, LinkRef};
+pub use patch::TargetKind;
 pub use search::{
     DEFAULT_LIMIT, DEFAULT_MAX_MATCHES_PER_FILE, SearchLimits, SearchOutput, SearchResult,
     SearchType, Snippet,
 };
+
+/// What an edit does to the note — or, with a `Target`, to that part of it.
+#[derive(Debug, Clone, PartialEq, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum EditOperation {
+    /// Add to the end.
+    Append,
+    /// Add to the start.
+    Prepend,
+    /// Overwrite entirely.
+    Replace,
+    /// Replace the first occurrence of `search`.
+    FindAndReplace,
+}
+
+/// The part of a note an edit is confined to.
+pub struct Target<'a> {
+    pub kind: &'a TargetKind,
+    /// A heading (with or without its `#`) or a block id (with or without `^`).
+    pub name: &'a str,
+}
+
+/// One edit to one note. Without a `target` the operation applies to the whole
+/// note, which is what `edit-note` did before patching existed.
+pub struct Edit<'a> {
+    pub operation: EditOperation,
+    pub content: &'a str,
+    /// The needle for `find_and_replace`.
+    pub search: Option<&'a str>,
+    pub target: Option<Target<'a>>,
+}
+
+/// How much of a note to return.
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum NoteView {
+    /// The note's full text.
+    #[default]
+    Content,
+    /// Only what an edit can be aimed at — headings, block references and
+    /// frontmatter keys. Cheap to read, and it saves the model from guessing a
+    /// target and missing.
+    Outline,
+}
+
+/// What the `frontmatter` tool should do with a note's YAML frontmatter.
+#[derive(Debug, Clone, PartialEq, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum FrontmatterAction {
+    /// Read the frontmatter — all of it, or one `key`.
+    Get,
+    /// Write `value` to `key`, leaving every other line of the note alone.
+    Set,
+    /// Delete `key`.
+    Remove,
+}
+
+/// A note's frontmatter, after the requested action.
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
+pub struct FrontmatterOutput {
+    /// Vault-relative path of the note.
+    pub path: String,
+    /// The frontmatter as it now stands — or, for a `get` naming a key, that
+    /// key's value alone (`null` when the note doesn't carry it).
+    pub frontmatter: serde_json::Value,
+    /// Whether the note was rewritten. `false` for `get`, and for a write that
+    /// changed nothing.
+    pub changed: bool,
+}
 
 /// What `move-note` did. `relinked` names the notes whose links were updated to
 /// follow the moved note — empty when nothing pointed at it, or when the links
@@ -136,6 +207,22 @@ impl VaultManager {
         vault: &str,
         filename: &str,
         folder: Option<&str>,
+        view: &NoteView,
+    ) -> Result<String, VaultError> {
+        let content = self.note_content(vault, filename, folder)?;
+        Ok(match view {
+            NoteView::Content => content,
+            NoteView::Outline => patch::outline(&content),
+        })
+    }
+
+    /// A note's text, or `NoteNotFound`. The read every note-scoped tool starts
+    /// from.
+    fn note_content(
+        &self,
+        vault: &str,
+        filename: &str,
+        folder: Option<&str>,
     ) -> Result<String, VaultError> {
         let path = self.note_path(vault, filename, folder)?;
         if !path.exists() {
@@ -169,48 +256,128 @@ impl VaultManager {
         Ok(path)
     }
 
+    /// Apply `edit` to a note, returning its text before and after so the caller
+    /// can show a diff.
+    ///
+    /// With `edit.target` set, only the bytes that target covers are rewritten —
+    /// the rest of the note is passed through untouched. That is the point: a
+    /// whole-note `replace` silently loses anything the model failed to
+    /// reproduce, and on a long note it usually fails to reproduce something.
     pub fn edit_note(
         &self,
         vault: &str,
         filename: &str,
-        operation: &str,
-        content: &str,
         folder: Option<&str>,
-        search: Option<&str>,
+        edit: &Edit<'_>,
     ) -> Result<(String, String), VaultError> {
         let path = self.note_path(vault, filename, folder)?;
-        if !path.exists() {
-            return Err(VaultError::NoteNotFound(
-                path.display().to_string(),
-                vault.to_string(),
-            ));
-        }
-        let old =
-            fs::read_to_string(&path).map_err(|e| VaultError::io(path.display().to_string(), e))?;
-        let new = match operation {
-            "append" => format!("{}\n{}", old.trim_end(), content),
-            "prepend" => format!("{}\n{}", content, old.trim_start()),
-            "replace" => content.to_string(),
-            "find_and_replace" => {
-                let needle = search.ok_or_else(|| {
-                    VaultError::InvalidPath(
-                        "find_and_replace requires a 'search' parameter".to_string(),
-                    )
-                })?;
-                if !old.contains(needle) {
-                    return Err(VaultError::SearchTextNotFound(filename.to_string()));
+        let old = self.note_content(vault, filename, folder)?;
+
+        let needle = || {
+            edit.search.ok_or_else(|| {
+                VaultError::InvalidPath(
+                    "find_and_replace requires a 'search' parameter".to_string(),
+                )
+            })
+        };
+
+        let new = match &edit.target {
+            None => match edit.operation {
+                EditOperation::Append => format!("{}\n{}", old.trim_end(), edit.content),
+                EditOperation::Prepend => format!("{}\n{}", edit.content, old.trim_start()),
+                EditOperation::Replace => edit.content.to_string(),
+                EditOperation::FindAndReplace => {
+                    let needle = needle()?;
+                    if !old.contains(needle) {
+                        return Err(VaultError::SearchTextNotFound(filename.to_string()));
+                    }
+                    old.replacen(needle, edit.content, 1)
                 }
-                old.replacen(needle, content, 1)
-            }
-            op => {
-                return Err(VaultError::InvalidPath(format!(
-                    "Unknown operation '{}'. Use: append, prepend, replace, find_and_replace",
-                    op
-                )));
+            },
+            Some(target) => {
+                let region =
+                    patch::find_region(&old, target.kind, target.name).ok_or_else(|| {
+                        VaultError::TargetNotFound(target.name.to_string(), filename.to_string())
+                    })?;
+                match edit.operation {
+                    EditOperation::Append => patch::append(&old, &region, edit.content),
+                    EditOperation::Prepend => patch::prepend(&old, &region, edit.content),
+                    EditOperation::Replace => patch::replace(&old, &region, edit.content),
+                    EditOperation::FindAndReplace => {
+                        patch::find_and_replace(&old, &region, needle()?, edit.content)
+                            .ok_or_else(|| VaultError::SearchTextNotFound(filename.to_string()))?
+                    }
+                }
             }
         };
+
         atomic_write(&path, new.as_bytes())?;
         Ok((old, new))
+    }
+
+    /// Read or rewrite a note's YAML frontmatter.
+    ///
+    /// A write is line surgery on the one key named — every other line, comment
+    /// and key ordering survives byte-for-byte. A YAML round-trip would be far
+    /// less code and would reformat the user's whole block.
+    pub fn frontmatter(
+        &self,
+        vault: &str,
+        filename: &str,
+        folder: Option<&str>,
+        action: &FrontmatterAction,
+        key: Option<&str>,
+        value: Option<&serde_json::Value>,
+    ) -> Result<FrontmatterOutput, VaultError> {
+        let root = self.resolve_vault(vault)?.to_path_buf();
+        let path = self.note_path(vault, filename, folder)?;
+        let content = self.note_content(vault, filename, folder)?;
+        let rel = rel_path(&root, &path);
+
+        let key = || {
+            key.filter(|k| !k.is_empty()).ok_or_else(|| {
+                VaultError::InvalidPath(format!("the '{:?}' action needs a 'key'", action))
+            })
+        };
+        let invalid = |e: String| VaultError::InvalidFrontmatter(rel.clone(), e);
+
+        let updated = match action {
+            FrontmatterAction::Get => None,
+            FrontmatterAction::Set => {
+                let value = value.ok_or_else(|| {
+                    VaultError::InvalidPath("the 'set' action needs a 'value'".to_string())
+                })?;
+                Some(frontmatter::set_field(&content, key()?, value).map_err(invalid)?)
+            }
+            FrontmatterAction::Remove => Some(frontmatter::remove_field(&content, key()?)),
+        };
+
+        // Setting a key to what it already says isn't a write.
+        let changed = updated.as_deref().is_some_and(|new| new != content);
+        if changed {
+            atomic_write(&path, updated.as_deref().unwrap_or_default().as_bytes())?;
+        }
+        let current = if changed {
+            updated.unwrap_or_default()
+        } else {
+            content
+        };
+
+        let fields = frontmatter::parse_fields(&current).map_err(invalid)?;
+        let frontmatter = match action {
+            // `get` naming a key answers with that key, not the whole block.
+            FrontmatterAction::Get if key().is_ok() => fields
+                .get(key()?)
+                .cloned()
+                .unwrap_or(serde_json::Value::Null),
+            _ => serde_json::Value::Object(fields),
+        };
+
+        Ok(FrontmatterOutput {
+            path: rel,
+            frontmatter,
+            changed,
+        })
     }
 
     pub fn delete_note(
@@ -552,6 +719,15 @@ impl VaultManager {
     }
 }
 
+/// A note's path as the vault refers to it: relative to the root, `/`-separated
+/// on every platform.
+fn rel_path(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
 /// Remove `note`'s parent directory if the just-completed operation left it
 /// empty — but never the vault `root`. Best-effort: a failed cleanup is logged,
 /// not propagated, so it can't fail the move/delete that triggered it.
@@ -603,6 +779,31 @@ mod tests {
         fs::write(dir.path().join(filename), content).unwrap();
     }
 
+    /// A whole-note edit — the shape every pre-patch caller used.
+    fn edit<'a>(operation: EditOperation, content: &'a str, search: Option<&'a str>) -> Edit<'a> {
+        Edit {
+            operation,
+            content,
+            search,
+            target: None,
+        }
+    }
+
+    /// An edit aimed at one heading or block.
+    fn patch<'a>(
+        operation: EditOperation,
+        content: &'a str,
+        kind: &'a TargetKind,
+        name: &'a str,
+    ) -> Edit<'a> {
+        Edit {
+            operation,
+            content,
+            search: None,
+            target: Some(Target { kind, name }),
+        }
+    }
+
     #[test]
     fn append_adds_content_to_end() {
         let (dir, vault) = make_vault();
@@ -610,7 +811,12 @@ mod tests {
         write_note(&dir, "note.md", "hello");
 
         let (old, new) = vault
-            .edit_note(&name, "note", "append", " world", None, None)
+            .edit_note(
+                &name,
+                "note",
+                None,
+                &edit(EditOperation::Append, " world", None),
+            )
             .unwrap();
 
         assert_eq!(old, "hello");
@@ -624,7 +830,12 @@ mod tests {
         write_note(&dir, "note.md", "world");
 
         let (old, new) = vault
-            .edit_note(&name, "note", "prepend", "hello\n", None, None)
+            .edit_note(
+                &name,
+                "note",
+                None,
+                &edit(EditOperation::Prepend, "hello\n", None),
+            )
             .unwrap();
 
         assert_eq!(old, "world");
@@ -638,7 +849,12 @@ mod tests {
         write_note(&dir, "note.md", "old content");
 
         let (old, new) = vault
-            .edit_note(&name, "note", "replace", "new content", None, None)
+            .edit_note(
+                &name,
+                "note",
+                None,
+                &edit(EditOperation::Replace, "new content", None),
+            )
             .unwrap();
 
         assert_eq!(old, "old content");
@@ -656,7 +872,12 @@ mod tests {
         write_note(&dir, "note.md", "foo bar foo");
 
         let (old, new) = vault
-            .edit_note(&name, "note", "find_and_replace", "baz", None, Some("foo"))
+            .edit_note(
+                &name,
+                "note",
+                None,
+                &edit(EditOperation::FindAndReplace, "baz", Some("foo")),
+            )
             .unwrap();
 
         assert_eq!(old, "foo bar foo");
@@ -676,10 +897,12 @@ mod tests {
         let result = vault.edit_note(
             &name,
             "note",
-            "find_and_replace",
-            "replacement",
             None,
-            Some("missing"),
+            &edit(
+                EditOperation::FindAndReplace,
+                "replacement",
+                Some("missing"),
+            ),
         );
 
         assert!(result.is_err());
@@ -697,35 +920,32 @@ mod tests {
         let name = vault_name(&dir);
         write_note(&dir, "note.md", "hello");
 
-        let result = vault.edit_note(&name, "note", "find_and_replace", "replacement", None, None);
+        let result = vault.edit_note(
+            &name,
+            "note",
+            None,
+            &edit(EditOperation::FindAndReplace, "replacement", None),
+        );
 
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("search"));
     }
 
-    #[test]
-    fn unknown_operation_returns_error() {
-        let (dir, vault) = make_vault();
-        let name = vault_name(&dir);
-        write_note(&dir, "note.md", "hello");
-
-        let result = vault.edit_note(&name, "note", "invalid_op", "content", None, None);
-
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("Unknown operation")
-        );
-    }
+    // An unknown operation can no longer reach the domain: `EditOperation` is a
+    // typed enum, so serde rejects it as INVALID_PARAMS at the tool boundary.
+    // That rejection is covered in `tools::edit_note`.
 
     #[test]
     fn edit_returns_error_for_missing_note() {
         let (dir, vault) = make_vault();
         let name = vault_name(&dir);
 
-        let result = vault.edit_note(&name, "nonexistent", "append", "data", None, None);
+        let result = vault.edit_note(
+            &name,
+            "nonexistent",
+            None,
+            &edit(EditOperation::Append, "data", None),
+        );
 
         assert!(result.is_err());
     }
@@ -737,13 +957,307 @@ mod tests {
         write_note(&dir, "note.md", "line1");
 
         vault
-            .edit_note(&name, "note", "append", "line2", None, None)
+            .edit_note(
+                &name,
+                "note",
+                None,
+                &edit(EditOperation::Append, "line2", None),
+            )
             .unwrap();
 
         assert_eq!(
             fs::read_to_string(dir.path().join("note.md")).unwrap(),
             "line1\nline2"
         );
+    }
+
+    // ── edit_note: patch targets ──────────────────────────────────────────────
+
+    const SECTIONED: &str =
+        "---\ntitle: T\n---\n# Top\n\nintro\n\n## Log\n\nfirst\n\n## Notes\n\nkeep me ^n1\n";
+
+    #[test]
+    fn patching_a_section_leaves_the_rest_of_the_note_byte_for_byte() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(&dir, "note.md", SECTIONED);
+
+        vault
+            .edit_note(
+                &name,
+                "note",
+                None,
+                &patch(
+                    EditOperation::Append,
+                    "second",
+                    &TargetKind::Heading,
+                    "## Log",
+                ),
+            )
+            .unwrap();
+
+        let out = fs::read_to_string(dir.path().join("note.md")).unwrap();
+        assert_eq!(
+            out,
+            "---\ntitle: T\n---\n# Top\n\nintro\n\n## Log\n\nfirst\nsecond\n\n## Notes\n\nkeep me ^n1\n"
+        );
+    }
+
+    #[test]
+    fn replacing_a_section_keeps_its_heading_and_its_siblings() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(&dir, "note.md", SECTIONED);
+
+        vault
+            .edit_note(
+                &name,
+                "note",
+                None,
+                &patch(
+                    EditOperation::Replace,
+                    "rewritten",
+                    &TargetKind::Heading,
+                    "Log",
+                ),
+            )
+            .unwrap();
+
+        let out = fs::read_to_string(dir.path().join("note.md")).unwrap();
+        assert!(out.contains("## Log\nrewritten\n\n## Notes"), "{out}");
+        assert!(
+            out.contains("intro"),
+            "the other sections must survive: {out}"
+        );
+        assert!(out.contains("keep me ^n1"));
+    }
+
+    #[test]
+    fn patching_a_block_touches_only_that_block() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(&dir, "note.md", SECTIONED);
+
+        vault
+            .edit_note(
+                &name,
+                "note",
+                None,
+                &patch(
+                    EditOperation::Replace,
+                    "swapped ^n1",
+                    &TargetKind::Block,
+                    "n1",
+                ),
+            )
+            .unwrap();
+
+        let out = fs::read_to_string(dir.path().join("note.md")).unwrap();
+        assert!(out.contains("swapped ^n1"), "{out}");
+        assert!(!out.contains("keep me"), "{out}");
+        assert!(
+            out.contains("## Log\n\nfirst"),
+            "other sections untouched: {out}"
+        );
+    }
+
+    #[test]
+    fn a_missing_target_is_an_error_not_a_whole_note_overwrite() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(&dir, "note.md", SECTIONED);
+
+        let err = vault
+            .edit_note(
+                &name,
+                "note",
+                None,
+                &patch(EditOperation::Replace, "x", &TargetKind::Heading, "Ghost"),
+            )
+            .unwrap_err();
+
+        assert!(err.to_string().contains("Ghost"));
+        assert_eq!(
+            fs::read_to_string(dir.path().join("note.md")).unwrap(),
+            SECTIONED,
+            "a missed target must not have rewritten the note"
+        );
+    }
+
+    // ── read_note: outline ────────────────────────────────────────────────────
+
+    #[test]
+    fn outline_lists_the_targets_an_edit_can_aim_at() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(&dir, "note.md", SECTIONED);
+
+        let out = vault
+            .read_note(&name, "note", None, &NoteView::Outline)
+            .unwrap();
+
+        assert!(out.contains("frontmatter keys: title"), "{out}");
+        assert!(out.contains("# Top"), "{out}");
+        assert!(out.contains("## Log"), "{out}");
+        assert!(out.contains("^n1"), "{out}");
+        assert!(
+            !out.contains("intro"),
+            "an outline is not the note body: {out}"
+        );
+    }
+
+    // ── frontmatter ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn frontmatter_get_reads_every_key() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(&dir, "note.md", "---\ntitle: T\ncount: 3\n---\nbody\n");
+
+        let out = vault
+            .frontmatter(&name, "note", None, &FrontmatterAction::Get, None, None)
+            .unwrap();
+
+        assert_eq!(out.frontmatter["title"], serde_json::json!("T"));
+        assert_eq!(out.frontmatter["count"], serde_json::json!(3));
+        assert!(!out.changed);
+    }
+
+    #[test]
+    fn frontmatter_get_with_a_key_answers_with_just_that_key() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(&dir, "note.md", "---\ntitle: T\ncount: 3\n---\nbody\n");
+
+        let out = vault
+            .frontmatter(
+                &name,
+                "note",
+                None,
+                &FrontmatterAction::Get,
+                Some("title"),
+                None,
+            )
+            .unwrap();
+
+        assert_eq!(out.frontmatter, serde_json::json!("T"));
+    }
+
+    #[test]
+    fn frontmatter_set_writes_one_key_and_preserves_the_rest() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(
+            &dir,
+            "note.md",
+            "---\n# a comment\ntitle: T\ntags:\n  - a\n---\nbody\n",
+        );
+
+        let out = vault
+            .frontmatter(
+                &name,
+                "note",
+                None,
+                &FrontmatterAction::Set,
+                Some("status"),
+                Some(&serde_json::json!("draft")),
+            )
+            .unwrap();
+
+        assert!(out.changed);
+        assert_eq!(
+            fs::read_to_string(dir.path().join("note.md")).unwrap(),
+            "---\n# a comment\ntitle: T\ntags:\n  - a\nstatus: draft\n---\nbody\n",
+            "the comment, the key order and the tag list must all survive"
+        );
+    }
+
+    #[test]
+    fn frontmatter_set_to_the_same_value_is_not_a_write() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(&dir, "note.md", "---\ntitle: T\n---\nbody\n");
+
+        let out = vault
+            .frontmatter(
+                &name,
+                "note",
+                None,
+                &FrontmatterAction::Set,
+                Some("title"),
+                Some(&serde_json::json!("T")),
+            )
+            .unwrap();
+
+        assert!(!out.changed);
+    }
+
+    #[test]
+    fn frontmatter_remove_drops_the_key() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(&dir, "note.md", "---\ntitle: T\ndraft: true\n---\nbody\n");
+
+        let out = vault
+            .frontmatter(
+                &name,
+                "note",
+                None,
+                &FrontmatterAction::Remove,
+                Some("draft"),
+                None,
+            )
+            .unwrap();
+
+        assert!(out.changed);
+        assert_eq!(
+            fs::read_to_string(dir.path().join("note.md")).unwrap(),
+            "---\ntitle: T\n---\nbody\n"
+        );
+    }
+
+    #[test]
+    fn frontmatter_set_needs_a_key_and_a_value() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(&dir, "note.md", "---\ntitle: T\n---\nbody\n");
+
+        assert!(
+            vault
+                .frontmatter(
+                    &name,
+                    "note",
+                    None,
+                    &FrontmatterAction::Set,
+                    None,
+                    Some(&serde_json::json!("x"))
+                )
+                .is_err()
+        );
+        assert!(
+            vault
+                .frontmatter(
+                    &name,
+                    "note",
+                    None,
+                    &FrontmatterAction::Set,
+                    Some("k"),
+                    None
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn frontmatter_reports_malformed_yaml_rather_than_silently_reading_nothing() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(&dir, "note.md", "---\nkey: [unclosed\n---\nbody\n");
+
+        let err = vault
+            .frontmatter(&name, "note", None, &FrontmatterAction::Get, None, None)
+            .unwrap_err();
+        assert!(err.to_string().contains("frontmatter"), "{err}");
     }
 
     // ── VaultManager basics ───────────────────────────────────────────────────
@@ -871,7 +1385,12 @@ mod tests {
         let (dir, vault) = make_vault();
         let name = vault_name(&dir);
         write_note(&dir, "note.md", "hello");
-        assert_eq!(vault.read_note(&name, "note", None).unwrap(), "hello");
+        assert_eq!(
+            vault
+                .read_note(&name, "note", None, &NoteView::Content)
+                .unwrap(),
+            "hello"
+        );
     }
 
     #[test]
@@ -879,14 +1398,23 @@ mod tests {
         let (dir, vault) = make_vault();
         let name = vault_name(&dir);
         write_note(&dir, "note.md", "content");
-        assert_eq!(vault.read_note(&name, "note.md", None).unwrap(), "content");
+        assert_eq!(
+            vault
+                .read_note(&name, "note.md", None, &NoteView::Content)
+                .unwrap(),
+            "content"
+        );
     }
 
     #[test]
     fn read_note_error_if_not_found() {
         let (dir, vault) = make_vault();
         let name = vault_name(&dir);
-        assert!(vault.read_note(&name, "ghost", None).is_err());
+        assert!(
+            vault
+                .read_note(&name, "ghost", None, &NoteView::Content)
+                .is_err()
+        );
     }
 
     #[test]
@@ -895,7 +1423,12 @@ mod tests {
         let name = vault_name(&dir);
         fs::create_dir_all(dir.path().join("sub")).unwrap();
         fs::write(dir.path().join("sub/note.md"), "deep").unwrap();
-        assert_eq!(vault.read_note(&name, "note", Some("sub")).unwrap(), "deep");
+        assert_eq!(
+            vault
+                .read_note(&name, "note", Some("sub"), &NoteView::Content)
+                .unwrap(),
+            "deep"
+        );
     }
 
     // ── delete_note ───────────────────────────────────────────────────────────
@@ -1796,6 +2329,32 @@ mod tests {
     }
 
     #[test]
+    fn frontmatter_blocks_traversal() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        let outside = dir.path().parent().unwrap().join("sibling-fm.md");
+        fs::write(&outside, "---\ntitle: private\n---\n").unwrap();
+
+        let result = vault.frontmatter(
+            &name,
+            "../sibling-fm",
+            None,
+            &FrontmatterAction::Set,
+            Some("pwned"),
+            Some(&serde_json::json!(true)),
+        );
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("escapes vault"));
+        assert_eq!(
+            fs::read_to_string(&outside).unwrap(),
+            "---\ntitle: private\n---\n",
+            "the outside note must be byte-identical"
+        );
+        fs::remove_file(&outside).ok();
+    }
+
+    #[test]
     fn remove_tags_blocks_traversal() {
         let (dir, vault) = make_vault();
         let name = vault_name(&dir);
@@ -1820,7 +2379,7 @@ mod tests {
         // symlink inside the vault pointing to a directory outside
         symlink(outer.path(), vault_dir.path().join("escape")).unwrap();
 
-        let result = vault.read_note(&name, "secret", Some("escape"));
+        let result = vault.read_note(&name, "secret", Some("escape"), &NoteView::Content);
         assert!(
             result.is_err(),
             "symlink escape must be rejected, got {:?}",
@@ -1839,7 +2398,9 @@ mod tests {
         fs::write(dir.path().join("real/note.md"), "hello").unwrap();
         symlink(dir.path().join("real"), dir.path().join("link")).unwrap();
 
-        let content = vault.read_note(&name, "note", Some("link")).unwrap();
+        let content = vault
+            .read_note(&name, "note", Some("link"), &NoteView::Content)
+            .unwrap();
         assert_eq!(content, "hello");
     }
 }

@@ -20,6 +20,11 @@ pub enum VaultError {
     #[error("Search text not found in note '{0}'")]
     SearchTextNotFound(String),
 
+    #[error(
+        "Target '{0}' not found in note '{1}'. Read the note with view=\"outline\" to list its headings and block references."
+    )]
+    TargetNotFound(String, String),
+
     #[error("Invalid frontmatter in '{0}': {1}")]
     InvalidFrontmatter(String, String),
 
@@ -47,6 +52,7 @@ impl VaultError {
                 | VaultError::NoteAlreadyExists(..)
                 | VaultError::DirectoryAlreadyExists(..)
                 | VaultError::SearchTextNotFound(..)
+                | VaultError::TargetNotFound(..)
         )
     }
 }
@@ -63,6 +69,7 @@ impl From<VaultError> for rmcp::ErrorData {
             | VaultError::DirectoryAlreadyExists(..)
             | VaultError::InvalidPath(..)
             | VaultError::SearchTextNotFound(..)
+            | VaultError::TargetNotFound(..)
             | VaultError::InvalidFrontmatter(..) => ErrorCode::INVALID_PARAMS,
             VaultError::Io(..) | VaultError::Search(..) => ErrorCode::INTERNAL_ERROR,
         };
@@ -154,6 +161,11 @@ mod tests {
         assert!(VaultError::NoteAlreadyExists("n".into(), "v".into()).is_tool_execution_error());
         assert!(VaultError::DirectoryAlreadyExists("d".into()).is_tool_execution_error());
         assert!(VaultError::SearchTextNotFound("n".into()).is_tool_execution_error());
+        // A missing patch target is self-correctable: the message tells the model
+        // to read the outline and pick a real one.
+        let target = VaultError::TargetNotFound("## Log".into(), "n.md".into());
+        assert!(target.is_tool_execution_error());
+        assert!(target.to_string().contains("outline"));
         // Malformed-request / server faults → protocol errors, not isError.
         assert!(!VaultError::VaultNotFound("v".into(), "".into()).is_tool_execution_error());
         assert!(!VaultError::InvalidPath("bad".into()).is_tool_execution_error());

@@ -3,7 +3,7 @@
 //! Spawns the built binary against a temp vault, drives a full JSON-RPC
 //! handshake over stdin/stdout (`initialize` → `initialized` → `tools/list` →
 //! `tools/call read-note`), and asserts the server speaks the protocol and
-//! exposes all 12 tools. Closing stdin gives the server EOF, which shuts it
+//! exposes all 13 tools. Closing stdin gives the server EOF, which shuts it
 //! down cleanly — so the test never blocks.
 
 use std::collections::HashMap;
@@ -84,7 +84,7 @@ fn stdio_handshake_lists_tools_and_reads_a_note() {
     let init = by_id.get(&1).expect("no response to initialize");
     assert!(init.get("result").is_some(), "initialize errored: {init}");
 
-    // tools/list exposes exactly the 12 documented tools
+    // tools/list exposes exactly the 13 documented tools
     let tools = by_id
         .get(&2)
         .and_then(|r| r.pointer("/result/tools"))
@@ -94,7 +94,7 @@ fn stdio_handshake_lists_tools_and_reads_a_note() {
         .iter()
         .filter_map(|t| t.get("name").and_then(Value::as_str))
         .collect();
-    assert_eq!(names.len(), 12, "expected 12 tools, got {names:?}");
+    assert_eq!(names.len(), 13, "expected 13 tools, got {names:?}");
     for expected in [
         "read-note",
         "create-note",
@@ -108,6 +108,7 @@ fn stdio_handshake_lists_tools_and_reads_a_note() {
         "rename-tag",
         "list-available-vaults",
         "wikilinks",
+        "frontmatter",
     ] {
         assert!(names.contains(&expected), "missing tool {expected}");
     }

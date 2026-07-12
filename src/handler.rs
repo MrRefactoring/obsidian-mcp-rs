@@ -15,11 +15,13 @@ use crate::{
     tools::{
         add_tags::AddTagsParams, create_directory::CreateDirectoryParams,
         create_note::CreateNoteParams, delete_note::DeleteNoteParams, edit_note::EditNoteParams,
-        list_vaults::ListVaultsParams, move_note::MoveNoteParams, read_note::ReadNoteParams,
-        remove_tags::RemoveTagsParams, rename_tag::RenameTagParams,
+        frontmatter::FrontmatterParams, list_vaults::ListVaultsParams, move_note::MoveNoteParams,
+        read_note::ReadNoteParams, remove_tags::RemoveTagsParams, rename_tag::RenameTagParams,
         search_vault::SearchVaultParams, wikilinks::WikilinksParams,
     },
-    vault::{LinkOutput, SearchOutput, VaultManager},
+    vault::{
+        Edit, FrontmatterAction, FrontmatterOutput, LinkOutput, SearchOutput, Target, VaultManager,
+    },
 };
 
 #[derive(Clone)]
@@ -86,7 +88,9 @@ impl ObsidianHandler {
         }
     }
 
-    /// Read the content of an existing note in the vault.
+    /// Read a note. `view: "outline"` returns just its headings, block
+    /// references and frontmatter keys — what `edit-note` can be aimed at —
+    /// instead of the whole text.
     #[tool(
         name = "read-note",
         annotations(title = "Read note", read_only_hint = true, open_world_hint = false)
@@ -97,10 +101,16 @@ impl ObsidianHandler {
             vault,
             filename,
             folder,
+            view,
         }): rmcp::handler::server::wrapper::Parameters<ReadNoteParams>,
     ) -> Result<CallToolResult, McpError> {
-        tracing::debug!(tool = "read-note", %vault, %filename);
-        match self.vault.read_note(&vault, &filename, folder.as_deref()) {
+        tracing::debug!(tool = "read-note", %vault, %filename, ?view);
+        match self.vault.read_note(
+            &vault,
+            &filename,
+            folder.as_deref(),
+            &view.unwrap_or_default(),
+        ) {
             Ok(content) => ok(content),
             Err(e) => tool_error(e),
         }
@@ -136,7 +146,9 @@ impl ObsidianHandler {
         }
     }
 
-    /// Edit an existing note. Operations: append, prepend, replace, find_and_replace.
+    /// Edit a note: append, prepend, replace, or find_and_replace. Set
+    /// `targetType`/`target` to edit one heading's section or one `^block-id`
+    /// instead of the whole note — the rest of the file is then left untouched.
     #[tool(
         name = "edit-note",
         annotations(
@@ -155,21 +167,40 @@ impl ObsidianHandler {
             content,
             folder,
             search,
+            target_type,
+            target,
         }): rmcp::handler::server::wrapper::Parameters<EditNoteParams>,
     ) -> Result<CallToolResult, McpError> {
-        tracing::debug!(tool = "edit-note", %vault, %filename, %operation);
+        tracing::debug!(tool = "edit-note", %vault, %filename, ?operation, ?target);
         self.check_write()?;
-        let (old, new) = match self.vault.edit_note(
-            &vault,
-            &filename,
-            &operation,
-            &content,
-            folder.as_deref(),
-            search.as_deref(),
-        ) {
+
+        // Half a target is a mistake we must not guess our way through: editing
+        // the whole note when the model meant one section would clobber it.
+        let target = match (&target_type, &target) {
+            (Some(kind), Some(name)) => Some(Target { kind, name }),
+            (None, None) => None,
+            _ => {
+                return Err(McpError::invalid_params(
+                    "'targetType' and 'target' must be given together",
+                    None,
+                ));
+            }
+        };
+
+        let edit = Edit {
+            operation: operation.clone(),
+            content: &content,
+            search: search.as_deref(),
+            target,
+        };
+        let (old, new) = match self
+            .vault
+            .edit_note(&vault, &filename, folder.as_deref(), &edit)
+        {
             Ok(v) => v,
             Err(e) => return tool_error(e),
         };
+
         let diff = TextDiff::from_lines(&old, &new);
         let unified = diff
             .unified_diff()
@@ -177,9 +208,51 @@ impl ObsidianHandler {
             .header(&filename, &filename)
             .to_string();
         ok(format!(
-            "Note '{}' updated with operation '{}'\n\n```diff\n{}```",
+            "Note '{}' updated with operation '{:?}'\n\n```diff\n{}```",
             filename, operation, unified
         ))
+    }
+
+    /// Read or write a note's YAML frontmatter. "get" returns the whole
+    /// frontmatter (or one `key`); "set" writes `key` = `value`; "remove"
+    /// deletes `key`. Writes touch only that key — every other line, comment and
+    /// key order in the note is preserved.
+    #[tool(
+        name = "frontmatter",
+        annotations(
+            title = "Read or write frontmatter",
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    fn frontmatter(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(FrontmatterParams {
+            vault,
+            filename,
+            action,
+            key,
+            value,
+            folder,
+        }): rmcp::handler::server::wrapper::Parameters<FrontmatterParams>,
+    ) -> Result<Json<FrontmatterOutput>, McpError> {
+        tracing::debug!(tool = "frontmatter", %vault, %filename, ?action, ?key);
+        if action != FrontmatterAction::Get {
+            self.check_write()?;
+        }
+        let out = self
+            .vault
+            .frontmatter(
+                &vault,
+                &filename,
+                folder.as_deref(),
+                &action,
+                key.as_deref(),
+                value.as_ref(),
+            )
+            .map_err(err)?;
+        Ok(Json(out))
     }
 
     /// Delete a note from the vault. If this empties its containing folder,
@@ -494,10 +567,11 @@ mod tests {
     use crate::tools::{
         add_tags::AddTagsParams, create_directory::CreateDirectoryParams,
         create_note::CreateNoteParams, delete_note::DeleteNoteParams, edit_note::EditNoteParams,
-        list_vaults::ListVaultsParams, move_note::MoveNoteParams, read_note::ReadNoteParams,
-        remove_tags::RemoveTagsParams, rename_tag::RenameTagParams,
+        frontmatter::FrontmatterParams, list_vaults::ListVaultsParams, move_note::MoveNoteParams,
+        read_note::ReadNoteParams, remove_tags::RemoveTagsParams, rename_tag::RenameTagParams,
         search_vault::SearchVaultParams,
     };
+    use crate::vault::{EditOperation, NoteView, TargetKind};
 
     fn setup() -> (TempDir, ObsidianHandler, String) {
         let dir = TempDir::new().unwrap();
@@ -534,6 +608,7 @@ mod tests {
             vault,
             filename: "n.md".into(),
             folder: None,
+            view: None,
         }));
         assert!(r.is_ok());
     }
@@ -545,6 +620,7 @@ mod tests {
             vault,
             filename: "ghost".into(),
             folder: None,
+            view: None,
         }));
         assert_is_error(r);
     }
@@ -556,6 +632,7 @@ mod tests {
             vault: "no-such-vault".into(),
             filename: "n".into(),
             folder: None,
+            view: None,
         }));
         // A bad vault name is a malformed request → JSON-RPC protocol error, not isError.
         assert!(r.is_err());
@@ -598,10 +675,12 @@ mod tests {
         let r = h.edit_note(Parameters(EditNoteParams {
             vault,
             filename: "e.md".into(),
-            operation: "append".into(),
+            operation: EditOperation::Append,
             content: "b".into(),
             folder: None,
             search: None,
+            target_type: None,
+            target: None,
         }));
         assert!(r.is_ok());
     }
@@ -612,10 +691,12 @@ mod tests {
         let r = h.edit_note(Parameters(EditNoteParams {
             vault,
             filename: "ghost".into(),
-            operation: "append".into(),
+            operation: EditOperation::Append,
             content: "x".into(),
             folder: None,
             search: None,
+            target_type: None,
+            target: None,
         }));
         assert_is_error(r);
     }
@@ -627,12 +708,137 @@ mod tests {
         let r = h.edit_note(Parameters(EditNoteParams {
             vault,
             filename: "e.md".into(),
-            operation: "find_and_replace".into(),
+            operation: EditOperation::FindAndReplace,
             content: "x".into(),
             folder: None,
             search: Some("missing".into()),
+            target_type: None,
+            target: None,
         }));
         assert_is_error(r);
+    }
+
+    // ── edit-note: patch targets ──────────────────────────────────────────────
+
+    const SECTIONED: &str = "# Top\n\nintro\n\n## Log\n\nfirst\n";
+
+    #[test]
+    fn edit_note_can_target_one_section() {
+        let (dir, h, vault) = setup();
+        write(&dir, "e.md", SECTIONED);
+        let r = h.edit_note(Parameters(EditNoteParams {
+            vault,
+            filename: "e.md".into(),
+            operation: EditOperation::Append,
+            content: "second".into(),
+            folder: None,
+            search: None,
+            target_type: Some(TargetKind::Heading),
+            target: Some("## Log".into()),
+        }));
+        assert!(r.is_ok());
+        let out = fs::read_to_string(dir.path().join("e.md")).unwrap();
+        assert_eq!(out, "# Top\n\nintro\n\n## Log\n\nfirst\nsecond\n");
+    }
+
+    #[test]
+    fn edit_note_missing_target_is_tool_error() {
+        let (dir, h, vault) = setup();
+        write(&dir, "e.md", SECTIONED);
+        let r = h.edit_note(Parameters(EditNoteParams {
+            vault,
+            filename: "e.md".into(),
+            operation: EditOperation::Replace,
+            content: "x".into(),
+            folder: None,
+            search: None,
+            target_type: Some(TargetKind::Heading),
+            target: Some("Ghost".into()),
+        }));
+        assert_is_error(r);
+        assert_eq!(
+            fs::read_to_string(dir.path().join("e.md")).unwrap(),
+            SECTIONED,
+            "a missed target must not have rewritten the note"
+        );
+    }
+
+    #[test]
+    fn edit_note_rejects_half_a_target() {
+        // Silently falling back to a whole-note edit here would clobber the note.
+        let (dir, h, vault) = setup();
+        write(&dir, "e.md", SECTIONED);
+        let r = h.edit_note(Parameters(EditNoteParams {
+            vault,
+            filename: "e.md".into(),
+            operation: EditOperation::Replace,
+            content: "x".into(),
+            folder: None,
+            search: None,
+            target_type: Some(TargetKind::Heading),
+            target: None,
+        }));
+        assert!(r.is_err());
+        assert_eq!(
+            fs::read_to_string(dir.path().join("e.md")).unwrap(),
+            SECTIONED
+        );
+    }
+
+    // ── read-note: outline ────────────────────────────────────────────────────
+
+    #[test]
+    fn read_note_outline_returns_targets_not_prose() {
+        let (dir, h, vault) = setup();
+        write(&dir, "e.md", SECTIONED);
+        let r = h.read_note(Parameters(ReadNoteParams {
+            vault,
+            filename: "e.md".into(),
+            folder: None,
+            view: Some(NoteView::Outline),
+        }));
+        let text = r.unwrap().content[0].as_text().unwrap().text.clone();
+        assert!(text.contains("## Log"), "{text}");
+        assert!(!text.contains("intro"), "{text}");
+    }
+
+    // ── frontmatter ───────────────────────────────────────────────────────────
+
+    fn fm(vault: String, filename: &str, action: FrontmatterAction) -> FrontmatterParams {
+        FrontmatterParams {
+            vault,
+            filename: filename.into(),
+            action,
+            key: None,
+            value: None,
+            folder: None,
+        }
+    }
+
+    #[test]
+    fn frontmatter_get_returns_structured_content() {
+        let (dir, h, vault) = setup();
+        write(&dir, "n.md", "---\ntitle: T\n---\nbody\n");
+        let r = h.frontmatter(Parameters(fm(vault, "n", FrontmatterAction::Get)));
+        let out = r.unwrap().0;
+        assert_eq!(out.frontmatter["title"], serde_json::json!("T"));
+        assert!(!out.changed);
+    }
+
+    #[test]
+    fn frontmatter_set_writes_the_key() {
+        let (dir, h, vault) = setup();
+        write(&dir, "n.md", "---\ntitle: T\n---\nbody\n");
+        let r = h.frontmatter(Parameters(FrontmatterParams {
+            key: Some("status".into()),
+            value: Some(serde_json::json!("draft")),
+            ..fm(vault, "n", FrontmatterAction::Set)
+        }));
+        assert!(r.unwrap().0.changed);
+        assert_eq!(
+            fs::read_to_string(dir.path().join("n.md")).unwrap(),
+            "---\ntitle: T\nstatus: draft\n---\nbody\n"
+        );
     }
 
     // ── delete-note ───────────────────────────────────────────────────────────
@@ -925,10 +1131,12 @@ mod tests {
         let r = h.edit_note(Parameters(EditNoteParams {
             vault,
             filename: "e.md".into(),
-            operation: "append".into(),
+            operation: EditOperation::Append,
             content: "b".into(),
             folder: None,
             search: None,
+            target_type: None,
+            target: None,
         }));
         assert!(r.is_err());
         assert!(r.unwrap_err().message.contains("--no-edit"));
@@ -1017,6 +1225,45 @@ mod tests {
     }
 
     #[test]
+    fn no_edit_blocks_frontmatter_set() {
+        let (dir, h, vault) = setup_readonly();
+        write(&dir, "n.md", "---\ntitle: T\n---\n");
+        let r = h.frontmatter(Parameters(FrontmatterParams {
+            key: Some("title".into()),
+            value: Some(serde_json::json!("hacked")),
+            ..fm(vault, "n", FrontmatterAction::Set)
+        }));
+        let e = r.err().expect("a write in --no-edit mode must be refused");
+        assert!(e.message.contains("--no-edit"));
+        assert_eq!(
+            fs::read_to_string(dir.path().join("n.md")).unwrap(),
+            "---\ntitle: T\n---\n"
+        );
+    }
+
+    #[test]
+    fn no_edit_blocks_frontmatter_remove() {
+        let (dir, h, vault) = setup_readonly();
+        write(&dir, "n.md", "---\ntitle: T\n---\n");
+        let r = h.frontmatter(Parameters(FrontmatterParams {
+            key: Some("title".into()),
+            ..fm(vault, "n", FrontmatterAction::Remove)
+        }));
+        let e = r.err().expect("a write in --no-edit mode must be refused");
+        assert!(e.message.contains("--no-edit"));
+    }
+
+    #[test]
+    fn no_edit_allows_frontmatter_get() {
+        // `frontmatter` is the one tool that both reads and writes, so the gate
+        // is per-action: reading must still work in a read-only server.
+        let (dir, h, vault) = setup_readonly();
+        write(&dir, "n.md", "---\ntitle: T\n---\n");
+        let r = h.frontmatter(Parameters(fm(vault, "n", FrontmatterAction::Get)));
+        assert_eq!(r.unwrap().0.frontmatter["title"], serde_json::json!("T"));
+    }
+
+    #[test]
     fn no_edit_allows_read_note() {
         let (dir, h, vault) = setup_readonly();
         write(&dir, "n.md", "body");
@@ -1024,6 +1271,7 @@ mod tests {
             vault,
             filename: "n.md".into(),
             folder: None,
+            view: None,
         }));
         assert!(r.is_ok());
     }

@@ -1,4 +1,7 @@
-use super::frontmatter::{extract_tags, find_closing_fm};
+use super::frontmatter::{
+    Style, edit_frontmatter, extract_tags, find_closing_fm, find_field, inline_items, item_indent,
+    render_inline, scalar_value,
+};
 
 pub(crate) fn normalize_tag(tag: &str) -> String {
     tag.to_lowercase()
@@ -10,135 +13,15 @@ pub(crate) fn normalize_tag(tag: &str) -> String {
 
 // ── Frontmatter editing ──────────────────────────────────────────────────────
 //
-// Every frontmatter rewrite goes through `edit_frontmatter`, which splits the
-// note once, hands the frontmatter's lines to a closure, and reassembles. Doing
-// the split/reassemble in exactly one place is what keeps the closing `---`
-// marker correct — three hand-rolled reassemblies previously disagreed and two
-// of them glued the marker onto the last frontmatter line.
-//
-// Edits are confined to the `tags:` field: only the key line and its own block
-// items are ever touched, so unrelated keys (and other block lists such as
-// `aliases:`) survive byte-for-byte, comments and all.
+// The mechanics — splitting the block, locating a key, rewriting one field —
+// live in `frontmatter`, which is what a `tags:` edit and a generic
+// `frontmatter set` have in common. What's left here is only what makes a tag a
+// tag. Edits stay confined to the `tags:` field, so unrelated keys (and other
+// block lists such as `aliases:`) survive byte-for-byte, comments and all.
 
-/// Split `content` into its frontmatter lines and body, apply `edit` to those
-/// lines, and reassemble. Returns `None` when the note has no well-formed
-/// frontmatter block, in which case the caller leaves the note alone.
-fn edit_frontmatter<F>(content: &str, edit: F) -> Option<String>
-where
-    F: FnOnce(&mut Vec<String>),
-{
-    let after = content.strip_prefix("---")?;
-    let end = find_closing_fm(after)?;
-    // `find_closing_fm` returns the offset of the `\n` that precedes the closing
-    // `---`, so the marker itself spans `end..end + 4`.
-    let rest = &after[end + 4..];
-
-    let mut lines: Vec<String> = after[..end].lines().map(String::from).collect();
-    edit(&mut lines);
-
-    Some(format!("---{}\n---{}", lines.join("\n"), rest))
-}
-
-/// How the `tags:` value is written in the frontmatter.
-enum TagsStyle {
-    /// `tags:` followed by `- item` lines (possibly none yet).
-    Block,
-    /// `tags: [a, b]`
-    Inline,
-    /// `tags: solo`
-    Scalar,
-}
-
-/// The `tags:` field located within a frontmatter body's lines.
-struct TagsField {
-    /// Index of the `tags:` key line.
-    key: usize,
-    /// Indices of the block-list item lines below the key. Empty for the inline
-    /// and scalar styles.
-    items: std::ops::Range<usize>,
-    style: TagsStyle,
-}
-
-/// Locate the top-level `tags:` key. Top-level keys are unindented, so a leading
-/// space means it belongs to some nested mapping and is not the tags we manage.
-fn find_tags_field(lines: &[String]) -> Option<TagsField> {
-    let key = lines.iter().position(|l| l.starts_with("tags:"))?;
-
-    let value = lines[key]["tags:".len()..].trim();
-    let style = if value.is_empty() || value.starts_with('#') {
-        TagsStyle::Block
-    } else if value.starts_with('[') {
-        TagsStyle::Inline
-    } else {
-        TagsStyle::Scalar
-    };
-
-    // Only the block style owns the lines beneath the key.
-    let mut end = key + 1;
-    if matches!(style, TagsStyle::Block) {
-        while end < lines.len() && lines[end].trim().starts_with("- ") {
-            end += 1;
-        }
-    }
-
-    Some(TagsField {
-        key,
-        items: (key + 1)..end,
-        style,
-    })
-}
-
-/// Byte offsets of the `[` and `]` delimiting an inline sequence on `line`.
-fn inline_bounds(line: &str) -> Option<(usize, usize)> {
-    let open = line.find('[')?;
-    let close = line[open..].find(']')? + open;
-    Some((open, close))
-}
-
-/// Read an inline sequence's items. Tags never contain commas, so a plain split
-/// is sufficient.
-fn inline_items(line: &str) -> Vec<String> {
-    let Some((open, close)) = inline_bounds(line) else {
-        return Vec::new();
-    };
-    line[open + 1..close]
-        .split(',')
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect()
-}
-
-/// Rewrite an inline sequence's items, preserving anything around it on the line
-/// (indentation, a trailing comment).
-fn render_inline(line: &str, items: &[String]) -> String {
-    let Some((open, close)) = inline_bounds(line) else {
-        return line.to_string();
-    };
-    format!(
-        "{}[{}]{}",
-        &line[..open],
-        items.join(", "),
-        &line[close + 1..]
-    )
-}
-
-/// The value of a scalar `tags:` line, with any trailing comment dropped.
-fn scalar_value(line: &str) -> String {
-    line["tags:".len()..]
-        .split(" #")
-        .next()
-        .unwrap_or("")
-        .trim()
-        .to_string()
-}
-
-/// Indentation to use for new block items — copied from the existing items so we
-/// don't mix indentation styles within one list.
-fn item_indent(lines: &[String], items: &std::ops::Range<usize>) -> String {
-    lines
-        .get(items.start)
-        .map(|l| l.chars().take_while(|c| c.is_whitespace()).collect())
-        .unwrap_or_else(|| "  ".to_string())
+/// Locate the `tags:` field within a frontmatter body's lines.
+fn find_tags_field(lines: &[String]) -> Option<super::frontmatter::Field> {
+    find_field(lines, "tags")
 }
 
 pub(crate) fn add_tags_to_frontmatter(content: &str, tags: &[String]) -> String {
@@ -177,20 +60,20 @@ pub(crate) fn add_tags_to_frontmatter(content: &str, tags: &[String]) -> String 
         };
 
         match field.style {
-            TagsStyle::Block => {
+            Style::Block => {
                 let indent = item_indent(lines, &field.items);
                 for (i, tag) in new_tags.iter().enumerate() {
                     lines.insert(field.items.end + i, format!("{}- {}", indent, tag));
                 }
             }
-            TagsStyle::Inline => {
+            Style::Inline => {
                 let mut items = inline_items(&lines[field.key]);
                 items.extend(new_tags.iter().cloned());
                 lines[field.key] = render_inline(&lines[field.key], &items);
             }
-            TagsStyle::Scalar => {
+            Style::Scalar => {
                 // A scalar can't hold a second tag — promote it to a block list.
-                let existing = scalar_value(&lines[field.key]);
+                let existing = scalar_value(&lines[field.key], "tags");
                 lines[field.key] = "tags:".to_string();
                 let items = std::iter::once(&existing)
                     .chain(new_tags.iter())
@@ -236,7 +119,7 @@ pub(crate) fn remove_tags_from_note(content: &str, tags: &[String]) -> String {
             return;
         };
         match field.style {
-            TagsStyle::Block => {
+            Style::Block => {
                 // Confined to this field's own items, so a matching entry in an
                 // unrelated list (`aliases:`) is not collaterally deleted.
                 for i in field.items.rev() {
@@ -246,15 +129,15 @@ pub(crate) fn remove_tags_from_note(content: &str, tags: &[String]) -> String {
                     }
                 }
             }
-            TagsStyle::Inline => {
+            Style::Inline => {
                 let items: Vec<String> = inline_items(&lines[field.key])
                     .into_iter()
                     .filter(|t| !matches(t))
                     .collect();
                 lines[field.key] = render_inline(&lines[field.key], &items);
             }
-            TagsStyle::Scalar => {
-                if matches(&scalar_value(&lines[field.key])) {
+            Style::Scalar => {
+                if matches(&scalar_value(&lines[field.key], "tags")) {
                     lines[field.key] = "tags: []".to_string();
                 }
             }
@@ -277,7 +160,7 @@ pub(crate) fn rename_tag_in_note(content: &str, old_tag: &str, new_tag: &str) ->
             return;
         };
         match field.style {
-            TagsStyle::Block => {
+            Style::Block => {
                 for i in field.items {
                     let value = lines[i].trim().trim_start_matches("- ");
                     if matches(value) {
@@ -287,15 +170,15 @@ pub(crate) fn rename_tag_in_note(content: &str, old_tag: &str, new_tag: &str) ->
                     }
                 }
             }
-            TagsStyle::Inline => {
+            Style::Inline => {
                 let items: Vec<String> = inline_items(&lines[field.key])
                     .into_iter()
                     .map(|t| if matches(&t) { new_tag.to_string() } else { t })
                     .collect();
                 lines[field.key] = render_inline(&lines[field.key], &items);
             }
-            TagsStyle::Scalar => {
-                if matches(&scalar_value(&lines[field.key])) {
+            Style::Scalar => {
+                if matches(&scalar_value(&lines[field.key], "tags")) {
                     lines[field.key] = format!("tags: {}", new_tag);
                 }
             }
