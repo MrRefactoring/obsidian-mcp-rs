@@ -50,8 +50,8 @@ The server uses `(stdin, stdout)` for the MCP JSON-RPC stream (`main.rs::run_ser
 |--------------|----------------------------------------------------------------------------------------------------------------------|
 | `lib.rs`     | crate root — re-exports `error`/`handler`/`install`/`tools`/`vault` as the public library surface                    |
 | `main.rs`    | thin bin over the lib: clap CLI, log setup, dispatches to `install`/`uninstall`/`list`/`logs` subcommands or starts the MCP server |
-| `handler.rs` | `ObsidianHandler` with `#[tool_router]` macro — 13 MCP tools, thin wrappers over `vault`                             |
-| `vault/`     | `VaultManager` (`mod.rs`) + submodules: `path` (**`safe_join` sandbox**), `frontmatter` (parse + line-surgery edits), `tags`, `patch` (heading/block targets + outline), `links`, `search`, `walk` (`md_files` via `ignore`). Vault walks run in parallel with `rayon` |
+| `handler.rs` | `ObsidianHandler` with `#[tool_router]` macro — 15 MCP tools, thin wrappers over `vault`                             |
+| `vault/`     | `VaultManager` (`mod.rs`) + submodules: `path` (**`safe_join` sandbox**), `frontmatter` (parse + line-surgery edits), `tags`, `patch` (heading/block targets + outline), `links`, `search`, `info` (tags/recent/stats), `periodic` (Obsidian's daily-note settings), `walk` (`md_files` via `ignore`). Vault walks run in parallel with `rayon` |
 | `tools/*.rs` | `serde` + `schemars::JsonSchema` param structs only — one per tool                                                   |
 | `install/`   | Writes/removes MCP-server entries in 14 AI-client configs (JSON / TOML for Codex / YAML for Goose)                   |
 | `error.rs`   | `VaultError` + `From<VaultError> for rmcp::ErrorData`                                                                |
