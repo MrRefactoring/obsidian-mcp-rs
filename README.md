@@ -97,6 +97,7 @@ npx obsidian-mcp-rs uninstall claude --dry-run  # preview changes without writin
 ## Features
 
 - **11 tools** covering note CRUD, search, directory management, and tag operations
+- **Ranked search** — BM25 relevance with field boosts (a term in the title outranks the same term buried in a paragraph), returned best-first and capped so a common word can't flood the model's context
 - **Multi-vault** support — pass multiple vault paths as arguments
 - **Read-only mode** — `--no-edit` flag disables all write tools at the server level
 - **Zero runtime dependencies** — single static binary, no Node.js required for execution
@@ -105,13 +106,21 @@ npx obsidian-mcp-rs uninstall claude --dry-run  # preview changes without writin
 - **YAML frontmatter** tag management
 - **`npx` compatible** — runs instantly via npm
 
+### Search
+
+`search-vault` ranks hits with **BM25**, the same scoring family a full-text engine uses — but computed straight from the parallel vault walk, so there is no index to build, no watcher to keep in sync, and nothing to go stale when you edit a note in Obsidian.
+
+Terms are weighted by where they occur: filename ×5, tags ×4, headings ×3, frontmatter ×2, body ×1. Rare terms count for more than common ones, so a query like `the kafka` ranks the note *about* Kafka above the note that merely says "the" a lot.
+
+Results are paged (`limit`, default 20; `offset`) and each file quotes at most `maxMatchesPerFile` lines (default 3). Every response carries `total` and `truncated`, so the model can see that more matches exist without you paying for them in context.
+
 ## Performance
 
 Vault-wide operations (`search-vault`, `rename-tag`) walk the vault with the [`ignore`](https://crates.io/crates/ignore) crate and process files in parallel via [`rayon`](https://crates.io/crates/rayon). Measured with the criterion suite in [`benches/`](benches/vault_bench.rs) on a synthetic vault, Apple Silicon (10 logical cores); "serial" is the same code pinned to one thread (`RAYON_NUM_THREADS=1`):
 
 | Operation                  | Serial (1 thread) | Parallel  | Speedup |
 | -------------------------- | ----------------- | --------- | ------- |
-| Content search (2000 notes)| 52.8 ms           | 26.3 ms   | ~2.0×   |
+| Ranked search (2000 notes) | 52.8 ms           | 26.2 ms   | ~2.0×   |
 | Tag search (2000 notes)    | 45.6 ms           | 24.4 ms   | ~1.9×   |
 | Tag rename (500 notes)     | 84.3 ms           | 60.0 ms   | ~1.4×   |
 

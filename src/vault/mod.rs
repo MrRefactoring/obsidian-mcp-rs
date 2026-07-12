@@ -24,7 +24,10 @@ use tags::{
 use walk::md_files;
 use write::atomic_write;
 
-pub use search::{SearchOutput, SearchResult, SearchType};
+pub use search::{
+    DEFAULT_LIMIT, DEFAULT_MAX_MATCHES_PER_FILE, SearchLimits, SearchOutput, SearchResult,
+    SearchType, Snippet,
+};
 
 #[derive(Debug, Clone)]
 pub struct VaultManager {
@@ -249,7 +252,8 @@ impl VaultManager {
         search_path: Option<&str>,
         case_sensitive: bool,
         search_type: &SearchType,
-    ) -> Result<Vec<SearchResult>, VaultError> {
+        limits: &SearchLimits,
+    ) -> Result<SearchOutput, VaultError> {
         let root = self.resolve_vault(vault)?;
         let search_root = match search_path {
             Some(p) if !p.is_empty() => safe_join(root, None, p)?,
@@ -261,6 +265,7 @@ impl VaultManager {
             query,
             case_sensitive,
             search_type,
+            limits,
         ))
     }
 
@@ -890,10 +895,17 @@ mod tests {
         write_note(&dir, "a.md", "the quick brown fox");
         write_note(&dir, "b.md", "no match here");
         let results = vault
-            .search_vault(&name, "quick", None, false, &SearchType::Content)
+            .search_vault(
+                &name,
+                "quick",
+                None,
+                false,
+                &SearchType::Content,
+                &SearchLimits::default(),
+            )
             .unwrap();
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].filename, "a");
+        assert_eq!(results.results.len(), 1);
+        assert_eq!(results.results[0].filename, "a");
     }
 
     #[test]
@@ -903,9 +915,16 @@ mod tests {
         write_note(&dir, "journal_2024.md", "");
         write_note(&dir, "other.md", "");
         let results = vault
-            .search_vault(&name, "journal", None, false, &SearchType::Filename)
+            .search_vault(
+                &name,
+                "journal",
+                None,
+                false,
+                &SearchType::Filename,
+                &SearchLimits::default(),
+            )
             .unwrap();
-        assert_eq!(results.len(), 1);
+        assert_eq!(results.results.len(), 1);
     }
 
     #[test]
@@ -915,9 +934,16 @@ mod tests {
         write_note(&dir, "target.md", "nothing special");
         write_note(&dir, "other.md", "has target word inside");
         let results = vault
-            .search_vault(&name, "target", None, false, &SearchType::Both)
+            .search_vault(
+                &name,
+                "target",
+                None,
+                false,
+                &SearchType::Both,
+                &SearchLimits::default(),
+            )
             .unwrap();
-        assert_eq!(results.len(), 2);
+        assert_eq!(results.results.len(), 2);
     }
 
     #[test]
@@ -927,10 +953,17 @@ mod tests {
         write_note(&dir, "tagged.md", "---\ntags:\n  - work\n---\ncontent");
         write_note(&dir, "other.md", "no tags");
         let results = vault
-            .search_vault(&name, "tag:work", None, false, &SearchType::Content)
+            .search_vault(
+                &name,
+                "tag:work",
+                None,
+                false,
+                &SearchType::Content,
+                &SearchLimits::default(),
+            )
             .unwrap();
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].filename, "tagged");
+        assert_eq!(results.results.len(), 1);
+        assert_eq!(results.results[0].filename, "tagged");
     }
 
     #[test]
@@ -939,9 +972,16 @@ mod tests {
         let name = vault_name(&dir);
         write_note(&dir, "inline.md", "some text #urgent here");
         let results = vault
-            .search_vault(&name, "tag:urgent", None, false, &SearchType::Content)
+            .search_vault(
+                &name,
+                "tag:urgent",
+                None,
+                false,
+                &SearchType::Content,
+                &SearchLimits::default(),
+            )
             .unwrap();
-        assert_eq!(results.len(), 1);
+        assert_eq!(results.results.len(), 1);
     }
 
     #[test]
@@ -950,13 +990,27 @@ mod tests {
         let name = vault_name(&dir);
         write_note(&dir, "note.md", "Hello World");
         let insensitive = vault
-            .search_vault(&name, "hello", None, false, &SearchType::Content)
+            .search_vault(
+                &name,
+                "hello",
+                None,
+                false,
+                &SearchType::Content,
+                &SearchLimits::default(),
+            )
             .unwrap();
         let sensitive = vault
-            .search_vault(&name, "hello", None, true, &SearchType::Content)
+            .search_vault(
+                &name,
+                "hello",
+                None,
+                true,
+                &SearchType::Content,
+                &SearchLimits::default(),
+            )
             .unwrap();
-        assert_eq!(insensitive.len(), 1);
-        assert_eq!(sensitive.len(), 0);
+        assert_eq!(insensitive.results.len(), 1);
+        assert_eq!(sensitive.results.len(), 0);
     }
 
     #[test]
@@ -967,10 +1021,17 @@ mod tests {
         fs::write(dir.path().join("sub/inner.md"), "needle").unwrap();
         write_note(&dir, "root.md", "needle");
         let results = vault
-            .search_vault(&name, "needle", Some("sub"), false, &SearchType::Content)
+            .search_vault(
+                &name,
+                "needle",
+                Some("sub"),
+                false,
+                &SearchType::Content,
+                &SearchLimits::default(),
+            )
             .unwrap();
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].filename, "inner");
+        assert_eq!(results.results.len(), 1);
+        assert_eq!(results.results[0].filename, "inner");
     }
 
     #[test]
@@ -979,9 +1040,16 @@ mod tests {
         let name = vault_name(&dir);
         write_note(&dir, "note.md", "content");
         let results = vault
-            .search_vault(&name, "zzz_not_here", None, false, &SearchType::Content)
+            .search_vault(
+                &name,
+                "zzz_not_here",
+                None,
+                false,
+                &SearchType::Content,
+                &SearchLimits::default(),
+            )
             .unwrap();
-        assert!(results.is_empty());
+        assert!(results.results.is_empty());
     }
 
     // ── add_tags ──────────────────────────────────────────────────────────────
@@ -1372,7 +1440,14 @@ mod tests {
     fn search_vault_blocks_traversal_in_path() {
         let (dir, vault) = make_vault();
         let name = vault_name(&dir);
-        let result = vault.search_vault(&name, "x", Some("../.."), false, &SearchType::Content);
+        let result = vault.search_vault(
+            &name,
+            "x",
+            Some("../.."),
+            false,
+            &SearchType::Content,
+            &SearchLimits::default(),
+        );
         assert!(result.is_err());
     }
 
