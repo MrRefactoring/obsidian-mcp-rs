@@ -222,6 +222,45 @@ fn closes_tag(content: &str, end: usize, nested: bool) -> bool {
     }
 }
 
+/// Every inline `#tag` in the note, in document order and with duplicates — the
+/// caller counts.
+///
+/// Uses the same boundary rules as search and rewrite, and skips code (a `#tag`
+/// in a shell snippet is a comment, not a tag). A heading is not a tag either:
+/// `## Log` has no tag character after the hashes. Nor is `#2024` — Obsidian
+/// requires a tag to contain at least one letter, or every issue number in the
+/// vault would become one.
+pub(crate) fn inline_tags(content: &str) -> Vec<String> {
+    let code = super::links::code_spans(content);
+    let mut found = Vec::new();
+    let mut cursor = 0;
+
+    while let Some(rel) = content[cursor..].find('#') {
+        let hash = cursor + rel;
+        cursor = hash + 1;
+
+        if super::links::in_code(&code, hash) || !opens_tag(content, hash) {
+            continue;
+        }
+        let rest = &content[hash + 1..];
+        let len: usize = rest
+            .chars()
+            .take_while(|c| is_tag_char(*c))
+            .map(char::len_utf8)
+            .sum();
+        if len == 0 {
+            continue;
+        }
+
+        let tag = &rest[..len];
+        if tag.chars().any(char::is_alphabetic) {
+            found.push(tag.to_string());
+        }
+        cursor = hash + 1 + len;
+    }
+    found
+}
+
 /// Does `content` carry `#tag` as a complete inline tag?
 pub(crate) fn contains_inline_tag(content: &str, tag: &str, nested: bool) -> bool {
     let haystack = content.to_lowercase();

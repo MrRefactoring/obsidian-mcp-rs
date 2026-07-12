@@ -1,4 +1,5 @@
 mod frontmatter;
+mod info;
 mod links;
 mod patch;
 mod path;
@@ -27,6 +28,7 @@ use tags::{
 use walk::md_files;
 use write::atomic_write;
 
+pub use info::{DEFAULT_RECENT, InfoOutput, InfoQuery, RecentNote, Stats, TagCount};
 pub use links::{LinkKind, LinkRef};
 pub use patch::TargetKind;
 pub use search::{
@@ -680,6 +682,20 @@ impl VaultManager {
             notes,
             total,
         })
+    }
+
+    /// Describe the vault: its tags, its recently touched notes, or its size.
+    ///
+    /// A read-only orientation step — a model that has just been pointed at a
+    /// vault can't search it usefully until it knows what's in there.
+    pub fn vault_info(
+        &self,
+        vault: &str,
+        query: &InfoQuery,
+        limit: usize,
+    ) -> Result<InfoOutput, VaultError> {
+        let root = self.resolve_vault(vault)?;
+        Ok(info::info(root, query, limit))
     }
 
     pub fn add_tags(
