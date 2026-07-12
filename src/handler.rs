@@ -17,11 +17,11 @@ use crate::{
         create_note::CreateNoteParams, delete_note::DeleteNoteParams, edit_note::EditNoteParams,
         frontmatter::FrontmatterParams, list_vaults::ListVaultsParams, move_note::MoveNoteParams,
         read_note::ReadNoteParams, remove_tags::RemoveTagsParams, rename_tag::RenameTagParams,
-        search_vault::SearchVaultParams, wikilinks::WikilinksParams,
+        search_vault::SearchVaultParams, vault_info::VaultInfoParams, wikilinks::WikilinksParams,
     },
     vault::{
-        DeleteOutcome, Edit, FrontmatterAction, FrontmatterOutput, LinkOutput, SearchOutput,
-        Target, VaultManager,
+        DEFAULT_RECENT, DeleteOutcome, Edit, FrontmatterAction, FrontmatterOutput, InfoOutput,
+        LinkOutput, SearchOutput, Target, VaultManager,
     },
 };
 
@@ -556,6 +556,34 @@ impl ObsidianHandler {
             )),
             Err(e) => tool_error(e),
         }
+    }
+
+    /// Describe a vault before searching it: `query: "tags"` lists every tag
+    /// with how many notes carry it, `"recent"` lists the notes touched most
+    /// recently, and `"stats"` gives its size and shape (notes, folders, links,
+    /// broken links).
+    #[tool(
+        name = "vault-info",
+        annotations(
+            title = "Describe vault",
+            read_only_hint = true,
+            open_world_hint = false
+        )
+    )]
+    fn vault_info(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(VaultInfoParams {
+            vault,
+            query,
+            limit,
+        }): rmcp::handler::server::wrapper::Parameters<VaultInfoParams>,
+    ) -> Result<Json<InfoOutput>, McpError> {
+        tracing::debug!(tool = "vault-info", %vault, ?query);
+        let out = self
+            .vault
+            .vault_info(&vault, &query, limit.unwrap_or(DEFAULT_RECENT))
+            .map_err(err)?;
+        Ok(Json(out))
     }
 
     /// List all available vaults configured for this server.
@@ -1305,7 +1333,7 @@ mod tests {
     #[test]
     fn every_tool_is_listed_when_writes_are_allowed() {
         let (_dir, h, _) = setup();
-        assert_eq!(h.tool_router.list_all().len(), 13);
+        assert_eq!(h.tool_router.list_all().len(), 14);
     }
 
     #[test]

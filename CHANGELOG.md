@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`vault-info` tool — what's actually in this vault?** A model pointed at an unfamiliar vault could search it, but only for words it already knew; it had no way to ask what tags exist, what was worked on recently, or how big the place is — the questions you ask *before* you know what to search for. `query: "tags"` lists every tag with how many notes carry it (frontmatter and inline `#tags` both count, deduplicated per note, commonest first); `"recent"` lists notes by last modified, newest first; `"stats"` gives notes, folders, bytes, distinct tags, links and broken links. Computed from the same parallel walk as everything else, so nothing is cached and nothing can go stale. A `#tag` inside a code fence is not counted — it's a comment. Tests: `tags_counts_notes_not_occurrences`, `a_tag_inside_a_code_block_is_not_a_tag`, `stats_describe_the_vault`, `recent_lists_newest_first`.
+
 ### Changed
 
 - **`delete-note` now moves the note to the vault's `.trash/` instead of erasing it.** An agent deleting the wrong note is a plausible mistake and, until now, an unrecoverable one. `.trash` is hidden and `md_files` skips hidden directories, so a trashed note vanishes from search, the link graph and `rename-tag` exactly as if it were gone — but the user can still get it back. This is what Obsidian itself does. Pass `permanent: true` to erase; deleting a note that is *already* in the trash erases it, so emptying the trash still works. The note's folder is mirrored inside the trash (`a/note.md` and `b/note.md` don't collide) and a repeat delete of the same path becomes `note-2.md` rather than overwriting the first. Tests: `delete_moves_the_note_to_the_trash_by_default`, `a_trashed_note_is_invisible_to_search`, `trashing_the_same_path_twice_does_not_overwrite_the_first`, `deleting_from_the_trash_erases_it`.

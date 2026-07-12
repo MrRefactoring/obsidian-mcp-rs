@@ -34,6 +34,7 @@ rayon = "1"
 # previous `serde_yml`/`libyml` crates, both RustSec-flagged unmaintained +
 # unsound (RUSTSEC-2025-0067/0068).
 serde_yml = { package = "serde_yaml_ng", version = "0.10" }
+chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 
 [dev-dependencies]
 criterion = { version = "0.8.2", features = ["html_reports"] }
