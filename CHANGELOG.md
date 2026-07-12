@@ -1,5 +1,17 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **`remove-tags` and `rename-tag` destroyed the frontmatter block.** Both rebuilt the note with the closing `---` glued onto the last frontmatter line (and a stray blank line after the opening marker), so `---\ntags:\n  - keep\n---` came back as `---\n\ntags:\n  - keep---`. Obsidian then stops recognising the frontmatter entirely and **every tag on the note reads back as absent** — and `rename-tag` did this to every matching note in the vault in a single call. The three hand-rolled split/reassemble routines are now one `edit_frontmatter` helper, so the marker can only be written in one place. Tests: `remove_tags_keeps_frontmatter_block_intact`, `rename_tag_keeps_frontmatter_block_intact`.
+- **Adding a tag to inline frontmatter (`tags: [a, b]`) produced invalid YAML.** The new tag was appended as a block item *below* the inline line (`tags: [a, b]\n  - c`), which fails to parse — silently dropping every tag on the note. Inline lists now stay inline (`tags: [a, b, c]`). Test: `add_tag_to_inline_list_stays_inline_and_parses`.
+- **`remove-tags` / `rename-tag` ignored inline and scalar frontmatter.** Only block-list items were rewritten, so `tags: [old]` and `tags: old` kept the old tag while the note was rewritten anyway. All three YAML shapes (block, inline, scalar) are now handled; a scalar gains a block list when a second tag is added, and removing the last tag leaves a valid empty list. Tests: `remove_tag_from_inline_list`, `rename_tag_in_inline_list`, `rename_scalar_tag`, `remove_scalar_tag`, `add_tag_to_scalar_promotes_it_to_a_block_list`.
+- **`remove-tags` / `rename-tag` collaterally edited unrelated frontmatter lists.** The line filter matched `- value` anywhere in the frontmatter, so removing tag `x` also deleted `- x` from `aliases:`. Edits are now confined to the `tags:` field's own lines; every other key — including comments, quoting, and dates — survives byte for byte. Tests: `remove_tags_does_not_touch_a_matching_alias`, `rename_tag_does_not_touch_a_matching_alias`, `unrelated_frontmatter_survives_byte_for_byte`.
+- **Tag search and tag rewrites disagreed on where a tag ends.** `search-vault`'s `tag:` query used a bare `contains("#tag")`, so `tag:foo` matched `#foobar`, while `rename-tag` (which does check the boundary) then declined to change the file. Both now share one boundary rule, which also gained a left boundary — `C#foo` and the fragment in `](http://x#foo)` no longer read as tags. Nested tags keep working as Obsidian defines them: searching `parent` finds `#parent/child`, but renaming `parent` does **not** rewrite `#parent/child`. Tests: `inline_tag_match_requires_a_right_boundary`, `inline_tag_match_requires_a_left_boundary`, `nested_tags_match_the_parent_when_searching_only`, `rename_leaves_nested_tags_alone`.
+- **An unrecognised `searchType` silently degraded to `content`**, so a typo returned the wrong kind of results with no indication of why. `searchType` is now a typed enum: unknown values are rejected as `INVALID_PARAMS`, and the tool's `inputSchema` advertises the legal values (`content` / `filename` / `both`) instead of burying them in prose. Tests: `unknown_search_type_is_rejected`, `known_search_types_parse`.
+- **Doc drift:** `add-tags`'s `normalize` parameter claimed `ProjectActive -> project-active`; `normalize_tag` does not split camelCase (it lowercases to `projectactive`). The description now states what the code does (`"My Tag" -> my-tag`).
+
 ## [0.3.0] - 2026-07-11
 
 ### Added

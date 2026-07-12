@@ -10,7 +10,7 @@ pub struct AddTagsParams {
     pub tags: Vec<String>,
     /// Where to add tags: "frontmatter", "content", or "both" (default: "both")
     pub location: Option<String>,
-    /// Normalize tag format (e.g. ProjectActive -> project-active). Default: true
+    /// Normalize tag format — lowercase, spaces to hyphens (e.g. "My Tag" -> my-tag). Default: true
     pub normalize: Option<bool>,
     /// Where to add inline tags in content: "start" or "end" (default: "end")
     pub position: Option<String>,

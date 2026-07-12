@@ -2,7 +2,7 @@ use std::{fs, path::Path};
 
 use rayon::prelude::*;
 use schemars::JsonSchema;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::frontmatter::content_has_tag;
 use super::walk::md_files;
@@ -24,8 +24,14 @@ pub struct SearchOutput {
     pub results: Vec<SearchResult>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+/// What a query is matched against. Deriving `Deserialize`/`JsonSchema` here (in
+/// the domain, which owns the vocabulary) means an unknown value is rejected as
+/// `INVALID_PARAMS` instead of silently degrading to `Content`, and the tool's
+/// `inputSchema` advertises the legal values rather than burying them in prose.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
 pub enum SearchType {
+    #[default]
     Content,
     Filename,
     Both,

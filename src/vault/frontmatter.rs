@@ -36,8 +36,10 @@ pub(crate) fn content_has_tag(content: &str, tag: &str) -> bool {
     {
         return true;
     }
-    let inline_pattern = format!("#{}", tag_lower);
-    content.to_lowercase().contains(&inline_pattern)
+    // Same boundary rule the rewrites use, so search can't report a note that
+    // `rename-tag` would then decline to touch. `nested` matches Obsidian: a
+    // search for `parent` finds `#parent/child`.
+    super::tags::contains_inline_tag(content, tag, true)
 }
 
 pub(crate) fn extract_frontmatter(content: &str) -> Option<Frontmatter> {
