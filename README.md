@@ -288,6 +288,11 @@ Read the content of an existing note.
 | `vault` | string | ✓ | Vault name |
 | `filename` | string | ✓ | Note filename (`.md` optional) |
 | `folder` | string | | Subfolder path within vault |
+| `view` | string | | `content` (default) or `outline` — headings, block refs and frontmatter keys |
+| `offset` | number | | First line to return, 1-based (default 1) |
+| `limit` | number | | Most lines to return (default 400) |
+
+Reads are capped so that one long note cannot consume the model's whole context. Past the limit the note is cut off with a marker saying which lines you got and what `offset` to pass for the rest; a note that fits comes back untouched. `offset` speaks the same line numbers `view: "outline"` prints, so one can be pasted straight into the other.
 
 ### `create-note`
 Create a new note with Markdown content.
@@ -328,8 +333,10 @@ Move or rename a note within the vault.
 | `vault` | string | ✓ | Vault name |
 | `filename` | string | ✓ | Source filename |
 | `folder` | string | | Source folder |
-| `newFolder` | string | | Destination folder |
+| `newFolder` | string | | Destination folder. **Omit to keep the note where it is** — that is how you rename in place. Pass `""` to move it to the vault root. |
 | `newFilename` | string | | New filename (same if omitted) |
+
+At least one of `newFolder` / `newFilename` is required — a move that carries neither is refused rather than guessed at. Inbound `[[wikilinks]]` are rewritten so they follow the note.
 
 ### `create-directory`
 Create a new directory in the vault.

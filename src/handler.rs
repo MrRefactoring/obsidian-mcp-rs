@@ -30,9 +30,9 @@ use crate::{
 #[derive(Clone)]
 pub struct ObsidianHandler {
     vault: Arc<VaultManager>,
-    // Populated for the rmcp #[tool_router] macro to dispatch through;
-    // dead-code analysis can't see the macro-generated reads.
-    #[allow(dead_code)]
+    /// The routes this server actually serves — `with_options` prunes the write
+    /// tools out of it under `--no-edit`. `#[tool_handler(router = ...)]` below
+    /// must name this field, or the macro quietly builds its own unpruned one.
     tool_router: ToolRouter<Self>,
     no_edit: bool,
 }
@@ -129,19 +129,18 @@ impl ObsidianHandler {
     )]
     fn read_note(
         &self,
-        rmcp::handler::server::wrapper::Parameters(ReadNoteParams {
-            vault,
-            filename,
-            folder,
-            view,
-        }): rmcp::handler::server::wrapper::Parameters<ReadNoteParams>,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<
+            ReadNoteParams,
+        >,
     ) -> Result<CallToolResult, McpError> {
-        tracing::debug!(tool = "read-note", %vault, %filename, ?view);
+        tracing::debug!(tool = "read-note", vault = %params.vault, filename = %params.filename, view = ?params.view);
+        let window = params.window();
         match self.vault.read_note(
-            &vault,
-            &filename,
-            folder.as_deref(),
-            &view.unwrap_or_default(),
+            &params.vault,
+            &params.filename,
+            params.folder.as_deref(),
+            &params.view.clone().unwrap_or_default(),
+            &window,
         ) {
             Ok(content) => ok(content),
             Err(e) => tool_error(e),
@@ -352,6 +351,18 @@ impl ObsidianHandler {
     ) -> Result<CallToolResult, McpError> {
         tracing::debug!(tool = "move-note", %vault, %filename);
         self.check_write()?;
+
+        // A move that names neither a new folder nor a new name carries nothing.
+        // Guessing what was meant is exactly what used to make a rename
+        // destructive, so say what's missing instead.
+        if new_folder.is_none() && new_filename.is_none() {
+            return Err(McpError::invalid_params(
+                "move-note needs 'newFolder' or 'newFilename' (or both). \
+                 Omit 'newFolder' to rename the note where it is; pass newFolder=\"\" to move it to the vault root.",
+                None,
+            ));
+        }
+
         match self.vault.move_note(
             &vault,
             &filename,
@@ -665,7 +676,12 @@ impl ObsidianHandler {
     }
 }
 
-#[tool_handler]
+// `router = self.tool_router` is load-bearing. Left to itself the macro expands
+// to `Self::tool_router()` — a *fresh* router, built from the `#[tool]`
+// attributes — so `tools/list` and `tools/call` would both go through a router
+// that has never seen `with_options`, and the write tools `--no-edit` removes
+// would be advertised anyway. This names the pruned field instead.
+#[tool_handler(router = self.tool_router)]
 impl ServerHandler for ObsidianHandler {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
@@ -736,6 +752,8 @@ mod tests {
             filename: "n.md".into(),
             folder: None,
             view: None,
+            offset: None,
+            limit: None,
         }));
         assert!(r.is_ok());
     }
@@ -748,6 +766,8 @@ mod tests {
             filename: "ghost".into(),
             folder: None,
             view: None,
+            offset: None,
+            limit: None,
         }));
         assert_is_error(r);
     }
@@ -760,6 +780,8 @@ mod tests {
             filename: "n".into(),
             folder: None,
             view: None,
+            offset: None,
+            limit: None,
         }));
         // A bad vault name is a malformed request → JSON-RPC protocol error, not isError.
         assert!(r.is_err());
@@ -923,6 +945,8 @@ mod tests {
             filename: "e.md".into(),
             folder: None,
             view: Some(NoteView::Outline),
+            offset: None,
+            limit: None,
         }));
         let text = r.unwrap().content[0].as_text().unwrap().text.clone();
         assert!(text.contains("## Log"), "{text}");
@@ -1019,9 +1043,28 @@ mod tests {
             filename: "ghost".into(),
             folder: None,
             new_folder: None,
-            new_filename: None,
+            new_filename: Some("renamed".into()),
         }));
         assert_is_error(r);
+    }
+
+    #[test]
+    fn a_move_that_moves_nothing_is_rejected() {
+        // Neither a new folder nor a new name: guessing what was meant is exactly
+        // what used to turn a rename into a relocation.
+        let (dir, h, vault) = setup();
+        write(&dir, "note.md", "body");
+        let e = h
+            .move_note(Parameters(MoveNoteParams {
+                vault,
+                filename: "note".into(),
+                folder: None,
+                new_folder: None,
+                new_filename: None,
+            }))
+            .expect_err("a move that carries nothing must be refused");
+        assert!(e.message.contains("newFolder"), "{}", e.message);
+        assert!(e.message.contains("newFilename"), "{}", e.message);
     }
 
     // ── create-directory ──────────────────────────────────────────────────────
@@ -1368,8 +1411,13 @@ mod tests {
 
     #[test]
     fn no_edit_hides_write_tools_from_the_tool_list() {
-        // A tool the model can see is a tool it will try. In a read-only server
-        // `tools/list` must describe a read-only server.
+        // Necessary but NOT sufficient: this only proves `with_options` prunes the
+        // router *field*. It passed for the whole of 0.5.0 while the server went
+        // on advertising every write tool, because `#[tool_handler]` was building
+        // its own router and never reading this field. The test that actually
+        // guards the client-visible surface is
+        // `no_edit_does_not_advertise_the_write_tools_over_the_wire`, in
+        // tests/mcp_stdio.rs — it asks a real server over a real transport.
         let (_dir, h, _) = setup_readonly();
         let listed: Vec<String> = h
             .tool_router
@@ -1452,6 +1500,8 @@ mod tests {
             filename: "n.md".into(),
             folder: None,
             view: None,
+            offset: None,
+            limit: None,
         }));
         assert!(r.is_ok());
     }
