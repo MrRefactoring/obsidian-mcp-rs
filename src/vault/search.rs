@@ -339,11 +339,11 @@ pub(crate) fn search(
             Some((
                 len,
                 Some(Candidate {
-                    path: path
-                        .strip_prefix(root)
-                        .unwrap_or(path)
-                        .display()
-                        .to_string(),
+                    // `rel_path`, not `display()`: paths go out with forward
+                    // slashes on every platform, the way the link graph and the
+                    // other search paths already emit them. On Windows this was
+                    // handing back `sub\deep.md` from ranked search alone.
+                    path: super::rel_path(root, path),
                     tf,
                     present,
                     len,
