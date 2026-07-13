@@ -188,3 +188,67 @@ fn no_edit_does_not_advertise_the_write_tools_over_the_wire() {
     // ...and the note is still there.
     assert!(vault.path().join("hello.md").exists());
 }
+
+/// The five tools that answer with structured content used to return `Json<T>`,
+/// which can only express success — so "that note does not exist" left the server
+/// as a JSON-RPC protocol error, a shape the spec reserves for a request the
+/// server could not process, and one a client may swallow instead of showing the
+/// model. They now build the result themselves, which means two things have to
+/// hold at once, and only a real client can see either: the `outputSchema` the
+/// return type used to derive is still advertised, and a missing note comes back
+/// as `isError`.
+#[test]
+fn the_structured_tools_keep_their_output_schema_and_can_report_is_error() {
+    let vault = tempfile::tempdir().unwrap();
+    std::fs::write(vault.path().join("hello.md"), "hi").unwrap();
+
+    let mut messages = handshake();
+    messages.push(json!({
+        "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+        "params": {
+            "name": "frontmatter",
+            "arguments": {
+                "vault": vault.path().file_name().unwrap().to_str().unwrap(),
+                "filename": "ghost",
+                "action": "get"
+            }
+        }
+    }));
+    let by_id = talk(&[], vault.path(), &messages);
+
+    let tools = by_id[&2]["result"]["tools"].as_array().unwrap();
+    for name in [
+        "frontmatter",
+        "wikilinks",
+        "search-vault",
+        "periodic",
+        "vault-info",
+    ] {
+        let tool = tools
+            .iter()
+            .find(|t| t["name"] == name)
+            .unwrap_or_else(|| panic!("{name} is not in tools/list"));
+        assert!(
+            tool["outputSchema"]["properties"].is_object(),
+            "{name} lost its outputSchema when it stopped returning Json<T>: {tool}"
+        );
+    }
+
+    // A missing note is an answer, not a protocol failure.
+    let call = &by_id[&3];
+    assert!(
+        call.get("error").is_none(),
+        "a missing note must not be a protocol error: {call}"
+    );
+    let result = &call["result"];
+    assert_eq!(
+        result["isError"],
+        json!(true),
+        "not flagged as an error: {result}"
+    );
+    let text = result["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.contains("ghost"),
+        "the model can only fix the name if we tell it the name: {text:?}"
+    );
+}

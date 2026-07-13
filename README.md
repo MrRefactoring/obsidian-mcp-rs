@@ -144,18 +144,6 @@ Vault-wide operations (`search-vault`, `rename-tag`) walk the vault with the [`i
 
 Single-note operations (`read-note`, `create-note`, `edit-note`, …) touch one file and are unaffected. Numbers vary with core count and disk; reproduce locally with `cargo bench`.
 
-## Installation
-
-```bash
-npm install -g obsidian-mcp-rs
-```
-
-Or use directly without installing (recommended):
-
-```bash
-npx obsidian-mcp-rs install   # wizard writes the config for you
-```
-
 ## Configuration
 
 > **Tip:** `npx obsidian-mcp-rs install` writes these configs automatically. The sections below are for manual setup or reference.
