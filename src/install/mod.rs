@@ -9,7 +9,9 @@ use dialoguer::{Confirm, Input, MultiSelect, theme::ColorfulTheme};
 
 use clap::ValueEnum as _;
 use clients::{InstallTarget, all_targets, display_path, expand_tilde};
-use writer::{InstallStatus, WriteOutcome, check_status, remove_entry, write_entry};
+use writer::{
+    InstallStatus, WriteOutcome, check_status, discard_backup, remove_entry, write_entry,
+};
 
 pub use clients::ClientKind;
 
@@ -73,18 +75,24 @@ pub fn run_install(args: InstallArgs) -> Result<()> {
                 );
             }
             let vaults = normalize_vaults(&args.vaults);
+            check_vaults(&vaults)?;
             let targets = resolve_targets(kind, args.global);
             if targets.is_empty() {
                 bail!("No config path found for this client on your system.");
             }
+            let mut wrote_any = false;
             for target in &targets {
-                install_one(target, &vaults, args.dry_run, args.force, args.no_edit)?;
+                wrote_any |= install_one(target, &vaults, args.dry_run, args.force, args.no_edit)?;
             }
-            println!();
-            println!(
-                "{} Restart your AI client(s) for changes to take effect.",
-                style("→").cyan()
-            );
+            // Telling the user to restart when we changed nothing is how someone
+            // re-running with --no-edit came away believing they were read-only.
+            if wrote_any {
+                println!();
+                println!(
+                    "{} Restart your AI client(s) for changes to take effect.",
+                    style("→").cyan()
+                );
+            }
             Ok(())
         }
     }
@@ -136,6 +144,13 @@ pub fn run_list() -> Result<()> {
                 style("○").dim().to_string(),
                 style("not found").dim().to_string(),
                 String::new(),
+            ),
+            // Saying "not set" here sent the user to `install`, which then failed
+            // on the very parse error we had just swallowed. Name the problem.
+            (InstallStatus::Unparseable, _) => (
+                style("!").red().bold().to_string(),
+                style("unreadable").red().to_string(),
+                format!("{} — cannot parse this file", display_path(&t.config_path)),
             ),
         };
         println!(
@@ -228,15 +243,25 @@ fn interactive_install(dry_run: bool, force: bool, no_edit: bool) -> Result<()> 
         }
 
         let path = expand_tilde(s);
+        // "will be configured anyway" was the old behaviour, and it is how a typo
+        // became a vault that is permanently, silently empty. We are still at a
+        // prompt — just ask again.
         if !path.exists() {
             println!(
-                "  {} Path does not exist: {} (will be configured anyway)",
-                style("⚠").yellow(),
+                "  {} No such directory: {} — check for typos and try again.",
+                style("✗").red(),
                 path.display()
             );
-        } else {
-            println!("  {} {}", style("→").dim(), path.display());
+            continue;
         }
+        if !path.join(".obsidian").is_dir() {
+            println!(
+                "  {} {} has no .obsidian/ folder — that is not a vault root. Using it anyway.",
+                style("!").yellow(),
+                path.display()
+            );
+        }
+        println!("  {} {}", style("→").dim(), path.display());
         raw.push(path);
     }
 
@@ -335,15 +360,32 @@ fn install_one(
         force,
         no_edit,
     )? {
-        WriteOutcome::AlreadyInstalled => {
+        WriteOutcome::AlreadyInstalled { differs } if differs => {
+            // The dangerous case, and the reason this branch exists: someone who
+            // gave the AI write access, thought better of it, and re-ran with
+            // --no-edit used to be told "already installed" and "restart your
+            // client" — and walked away believing they were read-only.
+            println!(
+                "  {} {}  {}",
+                style("!").yellow().bold(),
+                target.name,
+                style(format!(
+                    "already installed in {pd}, but with different settings than you asked for"
+                ))
+                .yellow()
+            );
+            println!(
+                "      {}",
+                style("nothing was changed — re-run with --force to replace that entry").dim()
+            );
+            Ok(false)
+        }
+        WriteOutcome::AlreadyInstalled { .. } => {
             println!(
                 "  {} {}  {}",
                 style("○").dim(),
                 target.name,
-                style(format!(
-                    "already installed in {pd} — use --force to overwrite"
-                ))
-                .dim()
+                style(format!("already installed in {pd} — nothing to do")).dim()
             );
             Ok(false)
         }
@@ -362,7 +404,7 @@ fn install_one(
             );
             Ok(false)
         }
-        WriteOutcome::Written { created } => {
+        WriteOutcome::Written { created, backup } => {
             let verb = if created { "created" } else { "updated" };
             println!(
                 "  {} {}  {} {}",
@@ -371,6 +413,15 @@ fn install_one(
                 style(verb).green(),
                 style(&pd).dim()
             );
+            // We just edited a file the user wrote. Saying where the original
+            // went is the cheapest trust we can buy — and it was being made all
+            // along, in silence.
+            if let Some(bak) = backup {
+                println!(
+                    "      {}",
+                    style(format!("previous config saved to {}", display_path(&bak))).dim()
+                );
+            }
             Ok(true)
         }
     }
@@ -401,13 +452,24 @@ fn uninstall_one(target: &InstallTarget, dry_run: bool, force: bool) -> Result<(
             style("would remove").yellow(),
             style(&pd).dim()
         ),
-        true => println!(
-            "  {} {}  {} {}",
-            style("✓").green().bold(),
-            target.name,
-            style("removed").green(),
-            style(&pd).dim()
-        ),
+        true => {
+            println!(
+                "  {} {}  {} {}",
+                style("✓").green().bold(),
+                target.name,
+                style("removed").green(),
+                style(&pd).dim()
+            );
+            // Our entry is gone, so the backup we took before writing it is of no
+            // further use — and in `.cursor/` or `.vscode/` it is a file sitting
+            // in the user's git repo. Uninstall should leave nothing behind.
+            if let Some(bak) = discard_backup(&target.config_path) {
+                println!(
+                    "      {}",
+                    style(format!("removed backup {}", display_path(&bak))).dim()
+                );
+            }
+        }
         false => println!(
             "  {} {}  {} {}",
             style("○").dim(),
@@ -467,6 +529,47 @@ fn normalize_vaults(paths: &[PathBuf]) -> Vec<PathBuf> {
             std::fs::canonicalize(&expanded).unwrap_or(expanded)
         })
         .collect()
+}
+
+/// Refuse to write a config pointing at a directory that isn't there, and say so
+/// if it doesn't look like an Obsidian vault.
+///
+/// This is where the mistake is actually made, and — crucially — the only place
+/// the user is still looking at a terminal. Once the path is in the config, the
+/// server starts fine, every search returns nothing, and the assistant cheerfully
+/// reports "I looked through your vault and found nothing there".
+fn check_vaults(paths: &[PathBuf]) -> Result<()> {
+    for path in paths {
+        if !path.exists() {
+            bail!(
+                "{} does not exist.\n\
+                 Check the path for typos — a config pointing at a directory that isn't there\n\
+                 produces a server that starts happily and finds nothing in it.",
+                path.display()
+            );
+        }
+        if !path.is_dir() {
+            bail!(
+                "{} is a file, not a directory. Point this at the vault folder itself.",
+                path.display()
+            );
+        }
+        if !path.join(".obsidian").is_dir() {
+            // Not fatal: pointing at one folder *inside* a vault is a legitimate
+            // way to narrow what the assistant can reach.
+            println!(
+                "  {} {}",
+                style("!").yellow().bold(),
+                style(format!(
+                    "{} has no .obsidian/ folder, so it is not an Obsidian vault root.\n      \
+                     Continuing — but if you meant the vault itself, check the path.",
+                    path.display()
+                ))
+                .yellow()
+            );
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

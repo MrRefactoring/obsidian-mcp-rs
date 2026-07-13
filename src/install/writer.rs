@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use jsonc_parser::ParseOptions;
+use jsonc_parser::cst::{CstInputValue, CstObject, CstRootNode};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -26,12 +28,28 @@ pub enum InstallStatus {
     NotInstalled,
     /// Config file does not exist at all
     FileNotFound,
+    /// The file is there but we cannot read it. Reporting this as `NotInstalled`
+    /// sent the user to `install`, which then failed on the same parse error —
+    /// a dead end. Say so instead.
+    Unparseable,
 }
 
 pub enum WriteOutcome {
-    AlreadyInstalled,
-    Written { created: bool },
-    DryRun { would_create: bool },
+    /// An entry is already there and `--force` was not given, so we left it
+    /// alone. `differs` says whether it is the entry the user just asked for:
+    /// re-running with `--no-edit` used to be a silent no-op that still printed
+    /// "restart your client", leaving people convinced they were read-only when
+    /// their config still granted full write access.
+    AlreadyInstalled {
+        differs: bool,
+    },
+    Written {
+        created: bool,
+        backup: Option<PathBuf>,
+    },
+    DryRun {
+        would_create: bool,
+    },
 }
 
 /// Check whether obsidian-mcp-rs is registered in the given config file
@@ -42,7 +60,7 @@ pub fn check_status(path: &Path, format: &ConfigFormat) -> InstallStatus {
 /// Add (or overwrite) the obsidian-mcp-rs entry in the config file.
 ///
 /// When `force` is true, an existing entry is replaced. When false,
-/// `WriteOutcome::AlreadyInstalled` is returned and the file is left untouched.
+/// `WriteOutcome::AlreadyInstalled { .. }` is returned and the file is left untouched.
 pub fn write_entry(
     path: &Path,
     format: &ConfigFormat,
@@ -58,6 +76,19 @@ pub fn write_entry(
 /// Returns `true` if an entry was found and removed.
 pub fn remove_entry(path: &Path, format: &ConfigFormat, dry_run: bool) -> Result<bool> {
     backend(format).remove_entry(path, dry_run)
+}
+
+/// Delete the backup taken alongside `path`, if there is one. Called after a
+/// successful uninstall: our entry is gone, so the backup of the file that had
+/// it is worthless, and in a project-local config it is litter in the user's
+/// repo. Returns where it was.
+pub fn discard_backup(path: &Path) -> Option<PathBuf> {
+    let bak = backup_path(path);
+    if bak.exists() && std::fs::remove_file(&bak).is_ok() {
+        Some(bak)
+    } else {
+        None
+    }
 }
 
 // ── Backend dispatch ──────────────────────────────────────────────────────────
@@ -110,10 +141,18 @@ fn backend(format: &ConfigFormat) -> Box<dyn ConfigBackend> {
 
 // ── Private helpers ───────────────────────────────────────────────────────────
 
-fn read_config(path: &Path) -> Result<Value> {
-    let content =
-        std::fs::read_to_string(path).with_context(|| format!("Cannot read {}", path.display()))?;
-    serde_json::from_str(&content).with_context(|| format!("Invalid JSON in {}", path.display()))
+/// Parse a config as JSONC, keeping every byte we don't mean to change.
+///
+/// Comments are legal here on purpose: VS Code's `mcp.json` officially permits
+/// them, and refusing to parse one turned a supported config into a dead end
+/// (`list` said "not set", `install` then failed on "line 2 column 3").
+fn parse_jsonc(path: &Path, text: &str) -> Result<CstRootNode> {
+    CstRootNode::parse(text, &ParseOptions::default())
+        .with_context(|| format!("Cannot parse {}", path.display()))
+}
+
+fn read_to_string(path: &Path) -> Result<String> {
+    std::fs::read_to_string(path).with_context(|| format!("Cannot read {}", path.display()))
 }
 
 // ── JSON backend (6 formats differ only by entry path + entry shape) ──────────
@@ -125,18 +164,44 @@ struct JsonBackend {
     build: fn(&[String], bool) -> Value,
 }
 
+/// Walk `path` down the CST, creating the intermediate objects that don't exist.
+/// Returns the object that should hold the entry, and the entry's key.
+fn descend<'a>(root: &CstRootNode, path: &'a [&'a str]) -> (CstObject, &'a str) {
+    let (last, parents) = path.split_last().expect("entry_path must be non-empty");
+    let mut obj = root.object_value_or_set();
+    for key in parents {
+        obj = obj.object_value_or_set(key);
+    }
+    (obj, last)
+}
+
 impl ConfigBackend for JsonBackend {
     fn check_status(&self, path: &Path) -> InstallStatus {
         if !path.exists() {
             return InstallStatus::FileNotFound;
         }
-        let Ok(cfg) = read_config(path) else {
+        let Ok(text) = read_to_string(path) else {
+            return InstallStatus::Unparseable;
+        };
+        let Ok(root) = CstRootNode::parse(&text, &ParseOptions::default()) else {
+            return InstallStatus::Unparseable;
+        };
+        let Some(mut obj) = root.object_value() else {
             return InstallStatus::NotInstalled;
         };
-        if json_has_object(&cfg, self.entry_path) {
-            InstallStatus::Installed
-        } else {
-            InstallStatus::NotInstalled
+        let (last, parents) = self
+            .entry_path
+            .split_last()
+            .expect("entry_path must be non-empty");
+        for key in parents {
+            match obj.object_value(key) {
+                Some(next) => obj = next,
+                None => return InstallStatus::NotInstalled,
+            }
+        }
+        match obj.object_value(last) {
+            Some(_) => InstallStatus::Installed,
+            None => InstallStatus::NotInstalled,
         }
     }
 
@@ -149,22 +214,44 @@ impl ConfigBackend for JsonBackend {
         no_edit: bool,
     ) -> Result<WriteOutcome> {
         let file_exists = path.exists();
-        let mut cfg = if file_exists {
-            read_config(path)?
+        let text = if file_exists {
+            read_to_string(path)?
         } else {
-            Value::Object(Default::default())
+            "{}\n".to_string()
         };
-
-        if json_has_object(&cfg, self.entry_path) && !force {
-            return Ok(WriteOutcome::AlreadyInstalled);
-        }
+        let root = parse_jsonc(path, &text)?;
+        let (obj, key) = descend(&root, self.entry_path);
 
         let vault_strings: Vec<String> = vaults
             .iter()
             .map(|p| p.to_string_lossy().into_owned())
             .collect();
-        let entry = (self.build)(&vault_strings, no_edit);
-        json_insert(&mut cfg, self.entry_path, entry);
+        let wanted = (self.build)(&vault_strings, no_edit);
+
+        let existing = obj.get(key);
+        if let Some(prop) = &existing
+            && !force
+        {
+            return Ok(WriteOutcome::AlreadyInstalled {
+                differs: prop.to_serde_value().as_ref() != Some(&wanted),
+            });
+        }
+
+        let entry = to_cst(&wanted);
+
+        // Only this key is touched. Every other line of the user's config —
+        // their other servers, their comments, their key order, their
+        // indentation — is carried through untouched. Rewriting the whole file
+        // through serde would have been a fraction of the code and would have
+        // reformatted a file the user did not ask us to reformat.
+        match existing {
+            Some(prop) => {
+                prop.replace_with(key, entry);
+            }
+            None => {
+                obj.append(key, entry);
+            }
+        }
 
         if dry_run {
             return Ok(WriteOutcome::DryRun {
@@ -172,9 +259,10 @@ impl ConfigBackend for JsonBackend {
             });
         }
 
-        write_with_backup(path, &(serde_json::to_string_pretty(&cfg)? + "\n"))?;
+        let backup = write_with_backup(path, &root.to_string())?;
         Ok(WriteOutcome::Written {
             created: !file_exists,
+            backup,
         })
     }
 
@@ -182,53 +270,56 @@ impl ConfigBackend for JsonBackend {
         if !path.exists() {
             return Ok(false);
         }
-        let mut cfg = read_config(path)?;
-        let removed = json_remove(&mut cfg, self.entry_path);
-        if removed && !dry_run {
-            write_with_backup(path, &(serde_json::to_string_pretty(&cfg)? + "\n"))?;
+        let text = read_to_string(path)?;
+        let root = parse_jsonc(path, &text)?;
+        let Some(mut obj) = root.object_value() else {
+            return Ok(false);
+        };
+        let (last, parents) = self
+            .entry_path
+            .split_last()
+            .expect("entry_path must be non-empty");
+        for key in parents {
+            match obj.object_value(key) {
+                Some(next) => obj = next,
+                None => return Ok(false),
+            }
         }
-        Ok(removed)
+        let Some(prop) = obj.get(last) else {
+            return Ok(false);
+        };
+        prop.remove();
+        if !dry_run {
+            write_with_backup(path, &root.to_string())?;
+        }
+        Ok(true)
     }
 }
 
-/// Navigate `path` and report whether the final node is a JSON object.
-fn json_has_object(cfg: &Value, path: &[&str]) -> bool {
-    let mut cur = cfg;
-    for key in path {
-        match cur.get(key) {
-            Some(v) => cur = v,
-            None => return false,
+/// A `serde_json::Value` as something the CST can splice in. The entry builders
+/// stay written in `json!`, which is far easier to read than a CST literal.
+fn to_cst(v: &Value) -> CstInputValue {
+    match v {
+        Value::Null => CstInputValue::Null,
+        Value::Bool(b) => CstInputValue::Bool(*b),
+        Value::Number(n) => CstInputValue::Number(n.to_string()),
+        Value::String(s) => CstInputValue::String(s.clone()),
+        Value::Array(a) => CstInputValue::Array(a.iter().map(to_cst).collect()),
+        Value::Object(o) => {
+            CstInputValue::Object(o.iter().map(|(k, v)| (k.clone(), to_cst(v))).collect())
         }
     }
-    cur.is_object()
 }
 
-/// Set `entry` at `path`, creating intermediate objects as needed.
-fn json_insert(cfg: &mut Value, path: &[&str], entry: Value) {
-    let (last, parents) = path.split_last().expect("entry_path must be non-empty");
-    let mut cur = cfg;
-    for key in parents {
-        if !cur[*key].is_object() {
-            cur[*key] = json!({});
-        }
-        cur = &mut cur[*key];
+/// The arguments `npx` is handed, in order. The single source of truth for what
+/// the installed entry runs — the JSON, TOML and YAML backends all encode this.
+fn npx_argv(vaults: &[PathBuf], no_edit: bool) -> Vec<String> {
+    let mut args = vec!["-y".to_string(), "obsidian-mcp-rs".to_string()];
+    if no_edit {
+        args.push("--no-edit".to_string());
     }
-    cur[*last] = entry;
-}
-
-/// Remove the key at `path`. Returns whether something was removed.
-fn json_remove(cfg: &mut Value, path: &[&str]) -> bool {
-    let (last, parents) = path.split_last().expect("entry_path must be non-empty");
-    let mut cur = cfg;
-    for key in parents {
-        match cur.get_mut(key) {
-            Some(v) => cur = v,
-            None => return false,
-        }
-    }
-    cur.as_object_mut()
-        .map(|o| o.remove(*last).is_some())
-        .unwrap_or(false)
+    args.extend(vaults.iter().map(|v| v.to_string_lossy().into_owned()));
+    args
 }
 
 fn npx_args(vaults: &[String], no_edit: bool) -> Vec<Value> {
@@ -268,37 +359,38 @@ fn build_opencode(vaults: &[String], no_edit: bool) -> Value {
 
 /// Create parent dirs, back up any existing file, then write `content`.
 /// Shared by every backend so the dir/backup/write dance lives in one place.
-fn write_with_backup(path: &Path, content: &str) -> Result<()> {
+///
+/// Returns where the previous contents were saved, if there were any. The caller
+/// is expected to *tell the user*: an installer that edits files you did not
+/// write earns its trust by saying what it did and where the original went.
+fn write_with_backup(path: &Path, content: &str) -> Result<Option<PathBuf>> {
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
     {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("Cannot create directory {}", parent.display()))?;
     }
-    if path.exists() {
+    let backup = if path.exists() {
         let bak = backup_path(path);
         std::fs::copy(path, &bak)
             .with_context(|| format!("Cannot write backup to {}", bak.display()))?;
-    }
+        Some(bak)
+    } else {
+        None
+    };
     std::fs::write(path, content).with_context(|| format!("Cannot write {}", path.display()))?;
-    Ok(())
+    Ok(backup)
 }
 
+/// Where the pre-edit contents go: `mcp.json` → `mcp.json.bak`.
+///
+/// One backup per config, overwritten each time. It used to hunt for a free
+/// `.bak.1`, `.bak.2`, … which meant every re-install left another file behind —
+/// inside `.cursor/` and `.vscode/`, that is litter in the user's git repo. The
+/// backup that matters is the most recent one.
 fn backup_path(path: &Path) -> PathBuf {
-    // Find a non-colliding backup name: file.json.bak / file.toml.bak / file.yaml.bak, then .bak.1, …
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("bak");
-    let bak_ext = format!("{ext}.bak");
-    let base = path.with_extension(&bak_ext);
-    if !base.exists() {
-        return base;
-    }
-    for i in 1u32.. {
-        let candidate = path.with_extension(format!("{bak_ext}.{i}"));
-        if !candidate.exists() {
-            return candidate;
-        }
-    }
-    base
+    path.with_extension(format!("{ext}.bak"))
 }
 
 // ── TOML backend (Codex CLI) ──────────────────────────────────────────────────
@@ -343,7 +435,22 @@ impl ConfigBackend for TomlBackend {
         };
 
         if toml_has_obsidian(&doc) && !force {
-            return Ok(WriteOutcome::AlreadyInstalled);
+            // Every backend encodes the same invocation, so comparing the argv is
+            // what answers "is this the entry you just asked for?" — including
+            // whether it carries --no-edit.
+            let installed = doc
+                .get("mcp_servers")
+                .and_then(|s| s.get("obsidian"))
+                .and_then(|o| o.get("args"))
+                .and_then(|a| a.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect::<Vec<_>>()
+                });
+            return Ok(WriteOutcome::AlreadyInstalled {
+                differs: installed.as_deref() != Some(&npx_argv(vaults, no_edit)),
+            });
         }
         if dry_run {
             return Ok(WriteOutcome::DryRun {
@@ -378,9 +485,10 @@ impl ConfigBackend for TomlBackend {
             servers.insert("obsidian", toml_edit::Item::Table(obsidian));
         }
 
-        write_with_backup(path, &doc.to_string())?;
+        let backup = write_with_backup(path, &doc.to_string())?;
         Ok(WriteOutcome::Written {
             created: !file_exists,
+            backup,
         })
     }
 
@@ -455,7 +563,23 @@ impl ConfigBackend for YamlBackend {
         };
 
         if yaml_has_obsidian(&doc) && !force {
-            return Ok(WriteOutcome::AlreadyInstalled);
+            let installed = doc
+                .get("extensions")
+                .and_then(|e| e.as_sequence())
+                .and_then(|seq| {
+                    seq.iter()
+                        .find(|i| i.get("name").and_then(|n| n.as_str()) == Some("obsidian"))
+                })
+                .and_then(|e| e.get("args"))
+                .and_then(|a| a.as_sequence())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect::<Vec<_>>()
+                });
+            return Ok(WriteOutcome::AlreadyInstalled {
+                differs: installed.as_deref() != Some(&npx_argv(vaults, no_edit)),
+            });
         }
         if dry_run {
             return Ok(WriteOutcome::DryRun {
@@ -494,9 +618,10 @@ impl ConfigBackend for YamlBackend {
             );
         }
 
-        write_with_backup(path, &serde_yml::to_string(&doc)?)?;
+        let backup = write_with_backup(path, &serde_yml::to_string(&doc)?)?;
         Ok(WriteOutcome::Written {
             created: !file_exists,
+            backup,
         })
     }
 
@@ -597,7 +722,10 @@ mod tests {
         let vaults = vec![std::path::PathBuf::from("/vault")];
         let outcome =
             write_entry(&path, &ConfigFormat::Standard, &vaults, false, false, false).unwrap();
-        assert!(matches!(outcome, WriteOutcome::Written { created: true }));
+        assert!(matches!(
+            outcome,
+            WriteOutcome::Written { created: true, .. }
+        ));
         assert!(path.exists());
         let content: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
@@ -610,7 +738,7 @@ mod tests {
         let vaults = vec![std::path::PathBuf::from("/vault")];
         let outcome =
             write_entry(&path, &ConfigFormat::Standard, &vaults, false, false, false).unwrap();
-        assert!(matches!(outcome, WriteOutcome::AlreadyInstalled));
+        assert!(matches!(outcome, WriteOutcome::AlreadyInstalled { .. }));
     }
 
     #[test]
@@ -619,7 +747,10 @@ mod tests {
         let vaults = vec![std::path::PathBuf::from("/vault")];
         let outcome =
             write_entry(&path, &ConfigFormat::Standard, &vaults, false, true, false).unwrap();
-        assert!(matches!(outcome, WriteOutcome::Written { created: false }));
+        assert!(matches!(
+            outcome,
+            WriteOutcome::Written { created: false, .. }
+        ));
     }
 
     #[test]
@@ -801,7 +932,10 @@ mod tests {
         let vaults = vec![std::path::PathBuf::from("/vault")];
         let outcome =
             write_entry(&path, &ConfigFormat::Codex, &vaults, false, false, false).unwrap();
-        assert!(matches!(outcome, WriteOutcome::Written { created: true }));
+        assert!(matches!(
+            outcome,
+            WriteOutcome::Written { created: true, .. }
+        ));
         assert!(path.exists());
         let content: toml_edit::DocumentMut =
             std::fs::read_to_string(&path).unwrap().parse().unwrap();
@@ -820,7 +954,7 @@ mod tests {
         let vaults = vec![std::path::PathBuf::from("/vault")];
         let outcome =
             write_entry(&path, &ConfigFormat::Codex, &vaults, false, false, false).unwrap();
-        assert!(matches!(outcome, WriteOutcome::AlreadyInstalled));
+        assert!(matches!(outcome, WriteOutcome::AlreadyInstalled { .. }));
     }
 
     #[test]
@@ -904,7 +1038,10 @@ mod tests {
         let vaults = vec![std::path::PathBuf::from("/vault")];
         let outcome =
             write_entry(&path, &ConfigFormat::Goose, &vaults, false, false, false).unwrap();
-        assert!(matches!(outcome, WriteOutcome::Written { created: true }));
+        assert!(matches!(
+            outcome,
+            WriteOutcome::Written { created: true, .. }
+        ));
         assert!(path.exists());
         let doc: serde_yml::Value =
             serde_yml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
@@ -927,7 +1064,7 @@ mod tests {
         let vaults = vec![std::path::PathBuf::from("/vault")];
         let outcome =
             write_entry(&path, &ConfigFormat::Goose, &vaults, false, false, false).unwrap();
-        assert!(matches!(outcome, WriteOutcome::AlreadyInstalled));
+        assert!(matches!(outcome, WriteOutcome::AlreadyInstalled { .. }));
     }
 
     #[test]
