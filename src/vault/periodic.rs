@@ -46,7 +46,9 @@ pub enum PeriodicAction {
 pub struct PeriodicOutput {
     /// Vault-relative path of the note. Absent for `list`.
     pub path: Option<String>,
-    /// The note's text. Absent for `list`.
+    /// The note's text, capped like `read-note`'s. If it was cut, the last line
+    /// says so and `path` is what you pass to `read-note` for the rest.
+    /// Absent for `list`.
     pub content: Option<String>,
     /// Whether this call is what brought the note into existence.
     pub created: bool,

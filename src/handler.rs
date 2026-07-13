@@ -1,8 +1,8 @@
-use std::sync::Arc;
+use std::{any::type_name, sync::Arc};
 
 use rmcp::{
     ErrorData as McpError, ServerHandler,
-    handler::server::{router::tool::ToolRouter, wrapper::Json},
+    handler::server::router::tool::ToolRouter,
     model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerInfo},
     tool, tool_handler, tool_router,
 };
@@ -81,6 +81,36 @@ fn tool_error(e: VaultError) -> Result<CallToolResult, McpError> {
     } else {
         Err(err(e))
     }
+}
+
+/// `tool_error`'s contract, for the tools whose answer is structured content.
+///
+/// `Json<T>` can only express success, so a tool returning it had to report "that
+/// note does not exist" as a JSON-RPC *protocol* error — which the spec reserves
+/// for calls the server could not process at all, and which a client is entitled
+/// to handle itself rather than hand to the model. The model saw nothing to
+/// correct, on exactly the errors it is best placed to correct.
+///
+/// `CallToolResult` carries `structuredContent` *and* `isError`, so these tools
+/// build it themselves. The success branch is byte for byte what `Json<T>`
+/// emitted, and `output_schema` on the `#[tool]` attribute keeps the
+/// `outputSchema` the return type used to derive.
+fn structured<T: serde::Serialize>(out: Result<T, VaultError>) -> Result<CallToolResult, McpError> {
+    let value = match out {
+        Ok(value) => value,
+        Err(e) => return tool_error(e),
+    };
+    let value = serde_json::to_value(value).map_err(|e| {
+        McpError::internal_error(format!("failed to serialize the result: {e}"), None)
+    })?;
+    Ok(CallToolResult::structured(value))
+}
+
+/// The `outputSchema` rmcp derives from a `Json<T>` return type, for the tools
+/// that no longer have one to derive it from. Same schema, named explicitly.
+fn output_schema<T: schemars::JsonSchema + std::any::Any>() -> Arc<rmcp::model::JsonObject> {
+    rmcp::handler::server::tool::schema_for_output::<T>()
+        .unwrap_or_else(|e| panic!("invalid output schema for {}: {e}", type_name::<T>()))
 }
 
 #[tool_router]
@@ -250,6 +280,7 @@ impl ObsidianHandler {
     /// key order in the note is preserved.
     #[tool(
         name = "frontmatter",
+        output_schema = output_schema::<FrontmatterOutput>(),
         annotations(
             title = "Read or write frontmatter",
             destructive_hint = true,
@@ -267,23 +298,19 @@ impl ObsidianHandler {
             value,
             folder,
         }): rmcp::handler::server::wrapper::Parameters<FrontmatterParams>,
-    ) -> Result<Json<FrontmatterOutput>, McpError> {
+    ) -> Result<CallToolResult, McpError> {
         tracing::debug!(tool = "frontmatter", %vault, %filename, ?action, ?key);
         if action != FrontmatterAction::Get {
             self.check_write()?;
         }
-        let out = self
-            .vault
-            .frontmatter(
-                &vault,
-                &filename,
-                folder.as_deref(),
-                &action,
-                key.as_deref(),
-                value.as_ref(),
-            )
-            .map_err(err)?;
-        Ok(Json(out))
+        structured(self.vault.frontmatter(
+            &vault,
+            &filename,
+            folder.as_deref(),
+            &action,
+            key.as_deref(),
+            value.as_ref(),
+        ))
     }
 
     /// Delete a note. By default it moves to the vault's `.trash/`, where the
@@ -390,6 +417,7 @@ impl ObsidianHandler {
     /// nothing links to (orphans).
     #[tool(
         name = "wikilinks",
+        output_schema = output_schema::<LinkOutput>(),
         annotations(
             title = "Explore links",
             read_only_hint = true,
@@ -401,20 +429,16 @@ impl ObsidianHandler {
         rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<
             WikilinksParams,
         >,
-    ) -> Result<Json<LinkOutput>, McpError> {
+    ) -> Result<CallToolResult, McpError> {
         tracing::debug!(tool = "wikilinks", vault = %params.vault, query = ?params.query);
         let limits = params.limits();
-        let out = self
-            .vault
-            .wikilinks(
-                &params.vault,
-                &params.query,
-                params.filename.as_deref(),
-                params.folder.as_deref(),
-                &limits,
-            )
-            .map_err(err)?;
-        Ok(Json(out))
+        structured(self.vault.wikilinks(
+            &params.vault,
+            &params.query,
+            params.filename.as_deref(),
+            params.folder.as_deref(),
+            &limits,
+        ))
     }
 
     /// Create a new directory in the vault.
@@ -450,6 +474,7 @@ impl ObsidianHandler {
     /// ranked best-first and capped — read `total` to see how many matched.
     #[tool(
         name = "search-vault",
+        output_schema = output_schema::<SearchOutput>(),
         annotations(title = "Search vault", read_only_hint = true, open_world_hint = false)
     )]
     fn search_vault(
@@ -457,30 +482,24 @@ impl ObsidianHandler {
         rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<
             SearchVaultParams,
         >,
-    ) -> Result<Json<SearchOutput>, McpError> {
+    ) -> Result<CallToolResult, McpError> {
         tracing::debug!(tool = "search-vault", vault = %params.vault, query = %params.query);
         let limits = params.limits();
         let search_type = params.search_type.unwrap_or_default();
         let frontmatter = params.frontmatter.unwrap_or_default();
 
-        // Returning `Json<T>` lets rmcp derive the tool's `outputSchema` from
-        // `SearchOutput` and emit both `structuredContent` and a JSON text block.
-        let out = self
-            .vault
-            .search_vault(
-                &params.vault,
-                params.path.as_deref(),
-                &SearchQuery {
-                    query: &params.query,
-                    case_sensitive: params.case_sensitive.unwrap_or(false),
-                    search_type: &search_type,
-                    regex: params.regex.unwrap_or(false),
-                    frontmatter: &frontmatter,
-                },
-                &limits,
-            )
-            .map_err(err)?;
-        Ok(Json(out))
+        structured(self.vault.search_vault(
+            &params.vault,
+            params.path.as_deref(),
+            &SearchQuery {
+                query: &params.query,
+                case_sensitive: params.case_sensitive.unwrap_or(false),
+                search_type: &search_type,
+                regex: params.regex.unwrap_or(false),
+                frontmatter: &frontmatter,
+            },
+            &limits,
+        ))
     }
 
     /// Add tags to notes in frontmatter and/or content.
@@ -591,6 +610,7 @@ impl ObsidianHandler {
     /// with the path it returns.
     #[tool(
         name = "periodic",
+        output_schema = output_schema::<PeriodicOutput>(),
         annotations(
             title = "Periodic note",
             destructive_hint = false,
@@ -608,25 +628,21 @@ impl ObsidianHandler {
             content,
             limit,
         }): rmcp::handler::server::wrapper::Parameters<PeriodicParams>,
-    ) -> Result<Json<PeriodicOutput>, McpError> {
+    ) -> Result<CallToolResult, McpError> {
         tracing::debug!(tool = "periodic", %vault, ?period, ?action, ?date);
         if action != PeriodicAction::Get && action != PeriodicAction::List {
             self.check_write()?;
         }
-        let out = self
-            .vault
-            .periodic(
-                &vault,
-                &PeriodicRequest {
-                    period,
-                    action,
-                    date: date.as_deref(),
-                    content: content.as_deref(),
-                    limit: limit.unwrap_or(DEFAULT_PERIODIC_LIST),
-                },
-            )
-            .map_err(err)?;
-        Ok(Json(out))
+        structured(self.vault.periodic(
+            &vault,
+            &PeriodicRequest {
+                period,
+                action,
+                date: date.as_deref(),
+                content: content.as_deref(),
+                limit: limit.unwrap_or(DEFAULT_PERIODIC_LIST),
+            },
+        ))
     }
 
     /// Describe a vault before searching it: `query: "tags"` lists every tag
@@ -635,6 +651,7 @@ impl ObsidianHandler {
     /// broken links).
     #[tool(
         name = "vault-info",
+        output_schema = output_schema::<InfoOutput>(),
         annotations(
             title = "Describe vault",
             read_only_hint = true,
@@ -648,13 +665,12 @@ impl ObsidianHandler {
             query,
             limit,
         }): rmcp::handler::server::wrapper::Parameters<VaultInfoParams>,
-    ) -> Result<Json<InfoOutput>, McpError> {
+    ) -> Result<CallToolResult, McpError> {
         tracing::debug!(tool = "vault-info", %vault, ?query);
-        let out = self
-            .vault
-            .vault_info(&vault, &query, limit.unwrap_or(DEFAULT_RECENT))
-            .map_err(err)?;
-        Ok(Json(out))
+        structured(
+            self.vault
+                .vault_info(&vault, &query, limit.unwrap_or(DEFAULT_RECENT)),
+        )
     }
 
     /// List all available vaults configured for this server.
@@ -761,7 +777,32 @@ mod tests {
         read_note::ReadNoteParams, remove_tags::RemoveTagsParams, rename_tag::RenameTagParams,
         search_vault::SearchVaultParams,
     };
-    use crate::vault::{EditOperation, NoteView, TargetKind};
+    use crate::vault::{EditOperation, NoteView, Period, TargetKind};
+
+    /// The `structuredContent` a client would actually receive. Asserting on this
+    /// rather than on a typed return value is deliberate: the `--no-edit` bug
+    /// hid behind a test that checked an internal field instead of the wire.
+    fn payload(r: Result<CallToolResult, McpError>) -> serde_json::Value {
+        let r = r.expect("protocol error, not a result");
+        assert_ne!(
+            r.is_error,
+            Some(true),
+            "expected success, got isError: {:?}",
+            r.content
+        );
+        r.structured_content.expect("no structuredContent")
+    }
+
+    /// The text of an `isError: true` result — a tool-execution error the model
+    /// is meant to see and act on, as opposed to a JSON-RPC protocol error.
+    fn error_text(r: Result<CallToolResult, McpError>) -> String {
+        let r = r.expect("this must be an isError *result*, not a protocol error");
+        assert_eq!(r.is_error, Some(true), "expected isError, got {r:?}");
+        r.content
+            .iter()
+            .filter_map(|c| c.as_text().map(|t| t.text.clone()))
+            .collect()
+    }
 
     fn setup() -> (TempDir, ObsidianHandler, String) {
         let dir = TempDir::new().unwrap();
@@ -1017,10 +1058,9 @@ mod tests {
     fn frontmatter_get_returns_structured_content() {
         let (dir, h, vault) = setup();
         write(&dir, "n.md", "---\ntitle: T\n---\nbody\n");
-        let r = h.frontmatter(Parameters(fm(vault, "n", FrontmatterAction::Get)));
-        let out = r.unwrap().0;
-        assert_eq!(out.frontmatter["title"], serde_json::json!("T"));
-        assert!(!out.changed);
+        let out = payload(h.frontmatter(Parameters(fm(vault, "n", FrontmatterAction::Get))));
+        assert_eq!(out["frontmatter"]["title"], serde_json::json!("T"));
+        assert_eq!(out["changed"], serde_json::json!(false));
     }
 
     #[test]
@@ -1032,7 +1072,7 @@ mod tests {
             value: Some(serde_json::json!("draft")),
             ..fm(vault, "n", FrontmatterAction::Set)
         }));
-        assert!(r.unwrap().0.changed);
+        assert_eq!(payload(r)["changed"], serde_json::json!(true));
         assert_eq!(
             fs::read_to_string(dir.path().join("n.md")).unwrap(),
             "---\ntitle: T\nstatus: draft\n---\nbody\n"
@@ -1158,8 +1198,7 @@ mod tests {
             regex: None,
             frontmatter: None,
         }));
-        let out = r.unwrap().0;
-        assert_eq!(out.results.len(), 1);
+        assert_eq!(payload(r)["results"].as_array().unwrap().len(), 1);
     }
 
     #[test]
@@ -1178,7 +1217,7 @@ mod tests {
             regex: None,
             frontmatter: None,
         }));
-        assert!(r.unwrap().0.results.is_empty());
+        assert!(payload(r)["results"].as_array().unwrap().is_empty());
     }
 
     #[test]
@@ -1197,10 +1236,10 @@ mod tests {
             regex: None,
             frontmatter: None,
         }));
-        let out = r.unwrap().0;
-        assert_eq!(out.results.len(), 1);
-        assert_eq!(out.results[0].path, "s.md");
-        assert!(!out.results[0].snippets.is_empty());
+        let out = payload(r);
+        assert_eq!(out["results"].as_array().unwrap().len(), 1);
+        assert_eq!(out["results"][0]["path"], serde_json::json!("s.md"));
+        assert!(!out["results"][0]["snippets"].as_array().unwrap().is_empty());
     }
 
     #[test]
@@ -1219,7 +1258,7 @@ mod tests {
             regex: None,
             frontmatter: None,
         }));
-        assert!(r.unwrap().0.results.is_empty());
+        assert!(payload(r)["results"].as_array().unwrap().is_empty());
     }
 
     #[test]
@@ -1508,7 +1547,7 @@ mod tests {
             value: Some(serde_json::json!("hacked")),
             ..fm(vault, "n", FrontmatterAction::Set)
         }));
-        let e = r.err().expect("a write in --no-edit mode must be refused");
+        let e = r.expect_err("a write in --no-edit mode must be refused");
         assert!(e.message.contains("--no-edit"));
         assert_eq!(
             fs::read_to_string(dir.path().join("n.md")).unwrap(),
@@ -1524,8 +1563,38 @@ mod tests {
             key: Some("title".into()),
             ..fm(vault, "n", FrontmatterAction::Remove)
         }));
-        let e = r.err().expect("a write in --no-edit mode must be refused");
+        let e = r.expect_err("a write in --no-edit mode must be refused");
         assert!(e.message.contains("--no-edit"));
+    }
+
+    #[test]
+    fn a_structured_tool_reports_a_missing_note_as_a_result_the_model_can_see() {
+        // These five tools returned `Json<T>`, which has no way to say `isError`,
+        // so "that note does not exist" left as a JSON-RPC protocol error — the
+        // shape the spec reserves for a call the server could not process, and one
+        // a client may handle itself rather than show the model. The model got
+        // back nothing to correct, on the very error it is best placed to correct.
+        let (_dir, h, vault) = setup();
+
+        let missing = h.frontmatter(Parameters(fm(
+            vault.clone(),
+            "ghost",
+            FrontmatterAction::Get,
+        )));
+        assert!(
+            error_text(missing).contains("ghost"),
+            "the error has to name the note the model got wrong"
+        );
+
+        let missing = h.periodic(Parameters(PeriodicParams {
+            vault,
+            period: Period::Daily,
+            action: PeriodicAction::Get,
+            date: Some("2026-07-13".into()),
+            content: None,
+            limit: None,
+        }));
+        assert!(error_text(missing).contains("2026-07-13"));
     }
 
     #[test]
@@ -1534,8 +1603,8 @@ mod tests {
         // is per-action: reading must still work in a read-only server.
         let (dir, h, vault) = setup_readonly();
         write(&dir, "n.md", "---\ntitle: T\n---\n");
-        let r = h.frontmatter(Parameters(fm(vault, "n", FrontmatterAction::Get)));
-        assert_eq!(r.unwrap().0.frontmatter["title"], serde_json::json!("T"));
+        let out = payload(h.frontmatter(Parameters(fm(vault, "n", FrontmatterAction::Get))));
+        assert_eq!(out["frontmatter"]["title"], serde_json::json!("T"));
     }
 
     #[test]

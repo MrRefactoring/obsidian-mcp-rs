@@ -956,10 +956,15 @@ impl VaultManager {
             self.create_note(vault, &resolved.filename, seed, folder)?;
         }
 
+        // Same cap `read-note` is under, for the same reason. A daily note is
+        // small, but a yearly one is a year of appends, and `periodic` was the
+        // one remaining way to pull a whole note into the context unbounded.
+        // The marker `clip` appends names `read-note` and an offset — and we
+        // hand back the `path` it needs, so the rest is one call away.
         let content = self.note_content(vault, &resolved.filename, folder)?;
         Ok(PeriodicOutput {
             path: Some(rel),
-            content: Some(content),
+            content: Some(clip(&content, &ReadWindow::default())),
             created,
             notes: Vec::new(),
         })
@@ -1893,6 +1898,35 @@ mod tests {
                     &periodic_req(PeriodicAction::Create, Some("yesterday"))
                 )
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn periodic_is_under_the_same_cap_as_read_note() {
+        // `read-note` was capped and `periodic` was not, so "open today's note"
+        // could still put an unbounded note into the context — and a yearly note
+        // is a year of appends. The cap is the same one, and the marker points at
+        // `read-note`, which is exactly the tool the returned `path` feeds.
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        let long = "a line\n".repeat(DEFAULT_READ_LINES + 100);
+        write_note(&dir, "2026-07-13.md", &long);
+
+        let out = vault
+            .periodic(
+                &name,
+                &periodic_req(PeriodicAction::Get, Some("2026-07-13")),
+            )
+            .unwrap();
+        let content = out.content.unwrap();
+
+        assert_eq!(
+            content.lines().filter(|l| *l == "a line").count(),
+            DEFAULT_READ_LINES
+        );
+        assert!(
+            content.contains("read-note again with offset=401"),
+            "the model has to be told how to get the rest: {content:?}"
         );
     }
 
