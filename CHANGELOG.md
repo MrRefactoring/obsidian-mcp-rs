@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **`move-note` turned a rename into a relocation, and deleted the folder the note came from.** Renaming `projects/old.md` to `new.md` — naming the note, its folder, and a new filename, but no `newFolder`, because the folder wasn't changing — moved the note to the **vault root** and then pruned the now-empty `projects/`. An omitted `newFolder` was read as "the vault root" rather than "leave it where it is". It now means the latter; pass `newFolder: ""` to ask for the root explicitly. A `move-note` that names neither a new folder nor a new name is refused outright rather than guessed at, the way `edit-note` already refuses half a target. Tests: `renaming_a_note_leaves_it_in_its_folder`, `an_empty_new_folder_moves_the_note_to_the_vault_root`, `a_move_that_moves_nothing_is_rejected`.
+- **`read-note` had no limit and could consume the model's entire context in one call.** `search-vault` has been capped since it was written — *"defaults chosen so a careless query can't flood the model's context"* — but the tool that returns note *bodies* was not: a 440 KB note came back as ~112,000 tokens, and the session was over. Reads now return the first 400 lines by default, with `offset`/`limit` to page (the offsets are the same line numbers `view: "outline"` prints, so one can be pasted straight into the other), and a marker saying which lines you got and how to ask for the rest. A byte ceiling applies on top, because a line cap is no guarantee on its own — a note can be a single 400 KB line. A note that fits comes back byte for byte, marker-free. Tests: `a_note_that_fits_comes_back_byte_for_byte`, `a_long_note_is_cut_and_says_how_to_get_the_rest`, `one_enormous_line_cannot_flood_the_context`, `a_multibyte_character_is_never_split_in_half`.
+- **`--no-edit` did not actually hide the write tools, though 0.5.0 said it did.** `with_options` pruned them out of the router, but `#[tool_handler]` defaults to `Self::tool_router()` — a *fresh* router built from the `#[tool]` attributes — so the pruned one was never consulted and `tools/list` advertised all eight write tools, `delete-note` included. Vaults were never at risk: `check_write` still refused every call. But a read-only server was describing itself as a read-write one, which is the whole thing the change was for. The unit test passed throughout because it asserted on the pruned *field* instead of the protocol; the guard is now an integration test that asks a real server over a real stdio transport (`no_edit_does_not_advertise_the_write_tools_over_the_wire`), and it fails without the fix.
+
 ## [0.5.0] - 2026-07-13
 
 ### Added

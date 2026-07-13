@@ -12,11 +12,11 @@
 
 ## Tools
 
-- `read-note` — read a note; `view: "outline"` returns just its headings, block refs and frontmatter keys
+- `read-note` — read a note; `view: "outline"` returns just its headings, block refs and frontmatter keys. Capped at 400 lines by default; page on with `offset`/`limit`
 - `create-note` — create a new markdown note with content
 - `edit-note` — append, prepend, replace, or find-and-replace — over the whole note, or scoped to one heading's section or one `^block-id`
 - `delete-note` — move a note to the vault's `.trash/` (recoverable); `permanent: true` erases it
-- `move-note` — move or rename a note, rewriting inbound `[[wikilinks]]` so they follow it
+- `move-note` — move or rename a note, rewriting inbound `[[wikilinks]]` so they follow it. Omit `newFolder` to rename in place; pass `""` to move to the vault root
 - `create-directory` — create a directory inside a vault
 - `search-vault` — BM25-ranked search by content, filename, or tag (`tag:` prefix); paged via `limit`/`offset`. `regex: true` matches a pattern instead of words; `frontmatter: {"status": "active"}` keeps only notes carrying those fields (a list field matches when it contains the value), and works alone with an empty query
 - `list-available-vaults` — list all configured vaults

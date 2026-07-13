@@ -1,10 +1,11 @@
-//! End-to-end test of the real MCP stdio transport.
+//! End-to-end tests of the real MCP stdio transport.
 //!
-//! Spawns the built binary against a temp vault, drives a full JSON-RPC
-//! handshake over stdin/stdout (`initialize` → `initialized` → `tools/list` →
-//! `tools/call read-note`), and asserts the server speaks the protocol and
-//! exposes all 15 tools. Closing stdin gives the server EOF, which shuts it
-//! down cleanly — so the test never blocks.
+//! These spawn the built binary against a temp vault and drive a full JSON-RPC
+//! handshake over stdin/stdout. That matters: they are the only tests that see
+//! what a *client* sees. A unit test can assert on `ObsidianHandler`'s fields and
+//! still miss the server advertising something else entirely over the wire —
+//! which is exactly how `--no-edit` shipped in 0.5.0 still listing every write
+//! tool. Closing stdin gives the server EOF, so the tests never block.
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -12,52 +13,33 @@ use std::process::{Command, Stdio};
 
 use serde_json::{Value, json};
 
-#[test]
-fn stdio_handshake_lists_tools_and_reads_a_note() {
-    let vault = tempfile::tempdir().unwrap();
-    std::fs::write(vault.path().join("hello.md"), "hi there").unwrap();
-    // VaultManager keys each vault by its directory basename.
-    let vault_name = vault
-        .path()
-        .file_name()
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .to_string();
+/// Tools that only ever write. `--no-edit` must not advertise any of them.
+const WRITE_TOOLS: [&str; 8] = [
+    "create-note",
+    "edit-note",
+    "delete-note",
+    "move-note",
+    "create-directory",
+    "add-tags",
+    "remove-tags",
+    "rename-tag",
+];
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_obsidian-mcp-rs"))
-        .arg("--log-file")
+/// Drive a real server over stdio and collect its responses by request id.
+fn talk(extra_args: &[&str], vault: &std::path::Path, messages: &[Value]) -> HashMap<i64, Value> {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_obsidian-mcp-rs"));
+    cmd.arg("--log-file")
         .arg("-") // disable file logging so we don't touch the user's log dir
-        .arg(vault.path())
+        .args(extra_args)
+        .arg(vault)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("failed to spawn server binary");
+        .stderr(Stdio::null());
 
-    let messages = [
-        json!({
-            "jsonrpc": "2.0", "id": 1, "method": "initialize",
-            "params": {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
-                "clientInfo": {"name": "mcp-stdio-it", "version": "0"}
-            }
-        }),
-        json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
-        json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}),
-        json!({
-            "jsonrpc": "2.0", "id": 3, "method": "tools/call",
-            "params": {
-                "name": "read-note",
-                "arguments": {"vault": vault_name, "filename": "hello"}
-            }
-        }),
-    ];
-
+    let mut child = cmd.spawn().expect("failed to spawn server binary");
     {
         let mut stdin = child.stdin.take().unwrap();
-        for m in &messages {
+        for m in messages {
             writeln!(stdin, "{}", serde_json::to_string(m).unwrap()).unwrap();
         }
         // Drop closes stdin → server sees EOF and exits.
@@ -71,29 +53,75 @@ fn stdio_handshake_lists_tools_and_reads_a_note() {
     );
 
     let stdout = String::from_utf8(output.stdout).unwrap();
-    let mut by_id: HashMap<i64, Value> = HashMap::new();
+    let mut by_id = HashMap::new();
     for line in stdout.lines().filter(|l| !l.trim().is_empty()) {
+        // Every line on stdout must be protocol. A stray `println!` anywhere in
+        // the server would corrupt the stream, and this is what proves none does.
         let v: Value = serde_json::from_str(line)
             .unwrap_or_else(|e| panic!("non-JSON line on stdout: {line:?} ({e})"));
         if let Some(id) = v.get("id").and_then(Value::as_i64) {
             by_id.insert(id, v);
         }
     }
+    by_id
+}
 
-    // initialize handshake succeeded
-    let init = by_id.get(&1).expect("no response to initialize");
-    assert!(init.get("result").is_some(), "initialize errored: {init}");
+fn handshake() -> Vec<Value> {
+    vec![
+        json!({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "mcp-stdio-it", "version": "0"}
+            }
+        }),
+        json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+        json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}),
+    ]
+}
 
-    // tools/list exposes exactly the 15 documented tools
-    let tools = by_id
+fn tool_names(by_id: &HashMap<i64, Value>) -> Vec<String> {
+    by_id
         .get(&2)
         .and_then(|r| r.pointer("/result/tools"))
         .and_then(Value::as_array)
-        .expect("no tools array in tools/list response");
-    let names: Vec<&str> = tools
+        .expect("no tools array in tools/list response")
         .iter()
         .filter_map(|t| t.get("name").and_then(Value::as_str))
-        .collect();
+        .map(str::to_string)
+        .collect()
+}
+
+fn vault_with_a_note() -> (tempfile::TempDir, String) {
+    let vault = tempfile::tempdir().unwrap();
+    std::fs::write(vault.path().join("hello.md"), "hi there").unwrap();
+    // VaultManager keys each vault by its directory basename.
+    let name = vault
+        .path()
+        .file_name()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    (vault, name)
+}
+
+#[test]
+fn stdio_handshake_lists_tools_and_reads_a_note() {
+    let (vault, vault_name) = vault_with_a_note();
+    let mut msgs = handshake();
+    msgs.push(json!({
+        "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+        "params": {"name": "read-note", "arguments": {"vault": vault_name, "filename": "hello"}}
+    }));
+
+    let by_id = talk(&[], vault.path(), &msgs);
+
+    let init = by_id.get(&1).expect("no response to initialize");
+    assert!(init.get("result").is_some(), "initialize errored: {init}");
+
+    let names = tool_names(&by_id);
     assert_eq!(names.len(), 15, "expected 15 tools, got {names:?}");
     for expected in [
         "read-note",
@@ -112,14 +140,51 @@ fn stdio_handshake_lists_tools_and_reads_a_note() {
         "vault-info",
         "periodic",
     ] {
-        assert!(names.contains(&expected), "missing tool {expected}");
+        assert!(names.iter().any(|n| n == expected), "missing {expected}");
     }
 
-    // read-note returned the note's content over the live transport
     let text = by_id
         .get(&3)
         .and_then(|r| r.pointer("/result/content/0/text"))
         .and_then(Value::as_str)
         .expect("no text content in read-note response");
     assert!(text.contains("hi there"), "unexpected note content: {text}");
+}
+
+#[test]
+fn no_edit_does_not_advertise_the_write_tools_over_the_wire() {
+    // The regression that shipped in 0.5.0: `with_options` pruned the write tools
+    // out of the router, but `#[tool_handler]` defaults to building a *fresh*
+    // one, so `tools/list` advertised all eight anyway. The unit test passed the
+    // whole time, because it asked the pruned field instead of the protocol.
+    // Only a real client can answer this question.
+    let (vault, vault_name) = vault_with_a_note();
+    let mut msgs = handshake();
+    msgs.push(json!({
+        "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+        "params": {"name": "delete-note", "arguments": {"vault": vault_name, "filename": "hello"}}
+    }));
+
+    let by_id = talk(&["--no-edit"], vault.path(), &msgs);
+    let names = tool_names(&by_id);
+
+    for write_tool in WRITE_TOOLS {
+        assert!(
+            !names.iter().any(|n| n == write_tool),
+            "--no-edit advertised '{write_tool}' to the client: {names:?}"
+        );
+    }
+    assert_eq!(names.len(), 7, "expected the 7 read tools, got {names:?}");
+    // `frontmatter` both reads and writes, so it stays listed — it is gated per
+    // action, and `get` is a read.
+    assert!(names.iter().any(|n| n == "frontmatter"));
+
+    // The route is genuinely gone, not merely hidden: calling it still fails...
+    let del = by_id.get(&3).expect("no response to delete-note");
+    assert!(
+        del.get("error").is_some(),
+        "delete-note must be unreachable under --no-edit, got: {del}"
+    );
+    // ...and the note is still there.
+    assert!(vault.path().join("hello.md").exists());
 }

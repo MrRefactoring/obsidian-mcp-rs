@@ -95,6 +95,114 @@ pub enum NoteView {
     Outline,
 }
 
+/// Lines returned by a `read-note` that doesn't say otherwise.
+pub const DEFAULT_READ_LINES: usize = 400;
+
+/// The most bytes one read may return, whatever `limit` says. A line cap is not
+/// a guarantee on its own — a note can be a single 400 KB line — and the whole
+/// point of these limits is that no one read can flood the model's context.
+const MAX_READ_BYTES: usize = 50_000;
+
+/// Which slice of a note to return.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReadWindow {
+    /// First line, 1-based — the same numbering `view: "outline"` prints, so a
+    /// line number from the outline can be pasted straight in.
+    pub offset: usize,
+    /// Most lines to return.
+    pub limit: usize,
+}
+
+impl Default for ReadWindow {
+    fn default() -> Self {
+        Self {
+            offset: 1,
+            limit: DEFAULT_READ_LINES,
+        }
+    }
+}
+
+/// Largest index `<= i` that doesn't split a UTF-8 character.
+fn floor_char_boundary(s: &str, mut i: usize) -> usize {
+    if i >= s.len() {
+        return s.len();
+    }
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
+/// The requested window of `content`, followed by a marker saying what was left
+/// out and how to ask for it. A note that fits comes back byte for byte.
+fn clip(content: &str, w: &ReadWindow) -> String {
+    let lines: Vec<&str> = content.lines().collect();
+    let total = lines.len();
+    if total == 0 {
+        return content.to_string();
+    }
+    let start = w.offset.saturating_sub(1);
+    if start >= total {
+        return format!(
+            "[this note has {total} line(s) — offset {} is past the end]\n",
+            w.offset
+        );
+    }
+
+    let mut out = String::new();
+    // Index of the last line emitted, 1-based.
+    let mut last = start;
+    // Set when one line alone was bigger than the whole byte budget.
+    let mut cut: Option<usize> = None;
+
+    for (i, line) in lines[start..].iter().enumerate().take(w.limit) {
+        let room = MAX_READ_BYTES.saturating_sub(out.len());
+        if line.len() + 1 > room {
+            // Emitting the line whole would break the promise. If it is the first
+            // one, there is nothing to fall back on, so cut it rather than return
+            // 400 KB; otherwise just stop here and let the caller page on.
+            if out.is_empty() {
+                let end = floor_char_boundary(line, room.saturating_sub(1));
+                out.push_str(&line[..end]);
+                out.push('\n');
+                last = start + i + 1;
+                cut = Some(last);
+            }
+            break;
+        }
+        out.push_str(line);
+        out.push('\n');
+        last = start + i + 1;
+    }
+
+    // Nothing was held back — hand the note over exactly as it is on disk.
+    if start == 0 && last == total && cut.is_none() {
+        return content.to_string();
+    }
+
+    let note = match cut {
+        Some(n) => format!(
+            "\n[truncated: line {n} on its own is over the {} KB read budget, so it was cut. \
+             Use search-vault to find what you need inside it.]\n",
+            MAX_READ_BYTES / 1000
+        ),
+        None if last < total => format!(
+            "\n[showed lines {}-{} of {total}. Call read-note again with offset={} for the rest, \
+             or view=\"outline\" for a map of the note.]\n",
+            start + 1,
+            last,
+            last + 1
+        ),
+        None => format!(
+            "\n[showed lines {}-{} of {total} — end of note.]\n",
+            start + 1,
+            last
+        ),
+    };
+    out.push_str(&note);
+    out
+}
+
 /// What the `frontmatter` tool should do with a note's YAML frontmatter.
 #[derive(Debug, Clone, PartialEq, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
@@ -266,11 +374,14 @@ impl VaultManager {
         filename: &str,
         folder: Option<&str>,
         view: &NoteView,
+        window: &ReadWindow,
     ) -> Result<String, VaultError> {
         let content = self.note_content(vault, filename, folder)?;
         Ok(match view {
-            NoteView::Content => content,
+            // The outline is a handful of lines by construction, so the window
+            // has nothing to protect against and would only get in the way.
             NoteView::Outline => patch::outline(&content),
+            NoteView::Content => clip(&content, window),
         })
     }
 
@@ -516,7 +627,12 @@ impl VaultManager {
             ));
         }
         let dest_filename = new_filename.unwrap_or(filename);
-        let dest = self.note_path(vault, dest_filename, new_folder)?;
+        // An omitted `new_folder` means "leave the note where it is", not "move it
+        // to the vault root". Reading it as the root silently turns a *rename*
+        // into a relocation, and `prune_empty_parent` then deletes the folder the
+        // note just left. An explicit `""` is how a caller asks for the root.
+        let dest_folder = new_folder.or(folder);
+        let dest = self.note_path(vault, dest_filename, dest_folder)?;
         if let Some(parent) = dest.parent() {
             fs::create_dir_all(parent)
                 .map_err(|e| VaultError::io(parent.display().to_string(), e))?;
@@ -1368,7 +1484,13 @@ mod tests {
         write_note(&dir, "note.md", SECTIONED);
 
         let out = vault
-            .read_note(&name, "note", None, &NoteView::Outline)
+            .read_note(
+                &name,
+                "note",
+                None,
+                &NoteView::Outline,
+                &ReadWindow::default(),
+            )
             .unwrap();
 
         assert!(out.contains("frontmatter keys: title"), "{out}");
@@ -1770,6 +1892,126 @@ mod tests {
         assert!(err.to_string().contains("already exists"));
     }
 
+    // ── read_note: the context-window budget ──────────────────────────────────
+
+    #[test]
+    fn a_note_that_fits_comes_back_byte_for_byte() {
+        // The cap must be invisible on the ordinary note. No marker, no trailing
+        // newline invented, nothing.
+        for text in ["hello", "hello\n", "a\nb\nc", "", "no trailing newline"] {
+            assert_eq!(clip(text, &ReadWindow::default()), text, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn a_long_note_is_cut_and_says_how_to_get_the_rest() {
+        let note: String = (1..=1000).map(|i| format!("line {i}\n")).collect();
+        let out = clip(&note, &ReadWindow::default());
+
+        assert!(out.starts_with("line 1\n"));
+        assert!(
+            out.contains("line 400\n"),
+            "the 400-line default must be met"
+        );
+        assert!(!out.contains("line 401\n"), "and not exceeded");
+        assert!(
+            out.contains("[showed lines 1-400 of 1000. Call read-note again with offset=401"),
+            "the model must be told what it missed and how to ask for it, got: {out:?}"
+        );
+    }
+
+    #[test]
+    fn offset_pages_through_the_note_and_the_last_page_says_so() {
+        let note: String = (1..=1000).map(|i| format!("line {i}\n")).collect();
+        let out = clip(
+            &note,
+            &ReadWindow {
+                offset: 401,
+                limit: 400,
+            },
+        );
+        assert!(out.starts_with("line 401\n"));
+        assert!(out.contains("offset=801"));
+
+        let last = clip(
+            &note,
+            &ReadWindow {
+                offset: 801,
+                limit: 400,
+            },
+        );
+        assert!(last.contains("line 1000\n"));
+        assert!(
+            last.contains("end of note"),
+            "the final page must not invite another call, got: {last:?}"
+        );
+    }
+
+    #[test]
+    fn one_enormous_line_cannot_flood_the_context() {
+        // The whole reason the byte budget exists on top of the line cap: a line
+        // cap alone would hand back this entire note in a single "line".
+        let note = format!("{}\n", "x".repeat(400_000));
+        let out = clip(&note, &ReadWindow::default());
+        assert!(
+            out.len() < MAX_READ_BYTES + 500,
+            "one line blew the budget: {} bytes",
+            out.len()
+        );
+        assert!(out.contains("was cut"), "and it must say so: {out:?}");
+    }
+
+    #[test]
+    fn a_multibyte_character_is_never_split_in_half() {
+        // Cutting mid-character would produce invalid UTF-8 — the slice would
+        // panic before it ever reached the model.
+        let note = format!("{}\n", "ё".repeat(200_000));
+        let out = clip(&note, &ReadWindow::default());
+        assert!(out.contains("was cut"));
+        assert!(out.len() < MAX_READ_BYTES + 500);
+    }
+
+    #[test]
+    fn an_offset_past_the_end_says_so_instead_of_returning_nothing() {
+        let out = clip(
+            "a\nb\n",
+            &ReadWindow {
+                offset: 99,
+                limit: 400,
+            },
+        );
+        assert!(out.contains("2 line(s)"), "{out:?}");
+        assert!(out.contains("past the end"), "{out:?}");
+    }
+
+    #[test]
+    fn the_outline_ignores_the_window() {
+        // The outline is a handful of lines by construction; paging it would only
+        // get between the model and the targets it came for.
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        let body: String = (1..=1000).map(|i| format!("## H{i}\ntext\n")).collect();
+        write_note(&dir, "note.md", &body);
+
+        let out = vault
+            .read_note(
+                &name,
+                "note",
+                None,
+                &NoteView::Outline,
+                &ReadWindow {
+                    offset: 500,
+                    limit: 1,
+                },
+            )
+            .unwrap();
+        assert!(
+            out.contains("## H1 (line 1)"),
+            "outline must start at the top"
+        );
+        assert!(out.contains("## H1000"), "and list every target");
+    }
+
     // ── read_note ─────────────────────────────────────────────────────────────
 
     #[test]
@@ -1779,7 +2021,13 @@ mod tests {
         write_note(&dir, "note.md", "hello");
         assert_eq!(
             vault
-                .read_note(&name, "note", None, &NoteView::Content)
+                .read_note(
+                    &name,
+                    "note",
+                    None,
+                    &NoteView::Content,
+                    &ReadWindow::default()
+                )
                 .unwrap(),
             "hello"
         );
@@ -1792,7 +2040,13 @@ mod tests {
         write_note(&dir, "note.md", "content");
         assert_eq!(
             vault
-                .read_note(&name, "note.md", None, &NoteView::Content)
+                .read_note(
+                    &name,
+                    "note.md",
+                    None,
+                    &NoteView::Content,
+                    &ReadWindow::default()
+                )
                 .unwrap(),
             "content"
         );
@@ -1804,7 +2058,13 @@ mod tests {
         let name = vault_name(&dir);
         assert!(
             vault
-                .read_note(&name, "ghost", None, &NoteView::Content)
+                .read_note(
+                    &name,
+                    "ghost",
+                    None,
+                    &NoteView::Content,
+                    &ReadWindow::default()
+                )
                 .is_err()
         );
     }
@@ -1817,7 +2077,13 @@ mod tests {
         fs::write(dir.path().join("sub/note.md"), "deep").unwrap();
         assert_eq!(
             vault
-                .read_note(&name, "note", Some("sub"), &NoteView::Content)
+                .read_note(
+                    &name,
+                    "note",
+                    Some("sub"),
+                    &NoteView::Content,
+                    &ReadWindow::default()
+                )
                 .unwrap(),
             "deep"
         );
@@ -2005,6 +2271,50 @@ mod tests {
             .unwrap();
         assert!(dest.path.exists());
         assert!(!dir.path().join("original.md").exists());
+    }
+
+    #[test]
+    fn renaming_a_note_leaves_it_in_its_folder() {
+        // A rename used to relocate the note to the vault root and then delete the
+        // folder it came from: `new_folder: None` was read as "the root" rather
+        // than "don't change the folder".
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        fs::create_dir_all(dir.path().join("projects")).unwrap();
+        fs::write(dir.path().join("projects/old.md"), "body").unwrap();
+
+        vault
+            .move_note(&name, "old", Some("projects"), None, Some("new"))
+            .unwrap();
+
+        assert!(
+            dir.path().join("projects/new.md").exists(),
+            "the renamed note must stay in projects/"
+        );
+        assert!(
+            !dir.path().join("new.md").exists(),
+            "it must not land in the vault root"
+        );
+        assert!(
+            dir.path().join("projects").exists(),
+            "and its folder must survive"
+        );
+    }
+
+    #[test]
+    fn an_empty_new_folder_moves_the_note_to_the_vault_root() {
+        // Omitting the folder means "leave it"; asking for the root is explicit.
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        fs::create_dir_all(dir.path().join("projects")).unwrap();
+        fs::write(dir.path().join("projects/note.md"), "body").unwrap();
+
+        vault
+            .move_note(&name, "note", Some("projects"), Some(""), None)
+            .unwrap();
+
+        assert!(dir.path().join("note.md").exists());
+        assert!(!dir.path().join("projects").exists());
     }
 
     #[test]
@@ -2864,7 +3174,13 @@ mod tests {
         // symlink inside the vault pointing to a directory outside
         symlink(outer.path(), vault_dir.path().join("escape")).unwrap();
 
-        let result = vault.read_note(&name, "secret", Some("escape"), &NoteView::Content);
+        let result = vault.read_note(
+            &name,
+            "secret",
+            Some("escape"),
+            &NoteView::Content,
+            &ReadWindow::default(),
+        );
         assert!(
             result.is_err(),
             "symlink escape must be rejected, got {:?}",
@@ -2884,7 +3200,13 @@ mod tests {
         symlink(dir.path().join("real"), dir.path().join("link")).unwrap();
 
         let content = vault
-            .read_note(&name, "note", Some("link"), &NoteView::Content)
+            .read_note(
+                &name,
+                "note",
+                Some("link"),
+                &NoteView::Content,
+                &ReadWindow::default(),
+            )
             .unwrap();
         assert_eq!(content, "hello");
     }
