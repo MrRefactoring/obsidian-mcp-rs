@@ -17,6 +17,12 @@ pub enum VaultError {
     )]
     NoteNotFound(String, String),
 
+    #[error(
+        "These notes do not exist in vault '{1}': {0}. Nothing was changed. \
+         Check the names — they are relative to the vault root and include the .md extension."
+    )]
+    NotesNotFound(String, String),
+
     #[error("Note '{0}' already exists in vault '{1}'")]
     NoteAlreadyExists(String, String),
 
@@ -26,8 +32,19 @@ pub enum VaultError {
     #[error("Invalid path: {0}")]
     InvalidPath(String),
 
-    #[error("Search text not found in note '{0}'")]
-    SearchTextNotFound(String),
+    /// A required argument was left out.
+    ///
+    /// These used to be reported as `InvalidPath`, so the model was told
+    /// *"Invalid path: the 'set' action needs a 'value'"* — and went off to fix
+    /// the `filename`, which was the one thing that had been right.
+    #[error("{0}")]
+    MissingArgument(String),
+
+    #[error(
+        "The text '{0}' does not occur in note '{1}'. `search` must match the note byte for byte, \
+         including whitespace and case — read the note first."
+    )]
+    SearchTextNotFound(String, String),
 
     #[error(
         "Target '{0}' not found in note '{1}'. Read the note with view=\"outline\" to list its headings and block references."
@@ -62,6 +79,7 @@ impl VaultError {
             self,
             VaultError::VaultUnavailable(..)
                 | VaultError::NoteNotFound(..)
+                | VaultError::NotesNotFound(..)
                 | VaultError::NoteAlreadyExists(..)
                 | VaultError::DirectoryAlreadyExists(..)
                 | VaultError::SearchTextNotFound(..)
@@ -79,9 +97,11 @@ impl From<VaultError> for rmcp::ErrorData {
             VaultError::VaultNotFound(..)
             | VaultError::VaultUnavailable(..)
             | VaultError::NoteNotFound(..)
+            | VaultError::NotesNotFound(..)
             | VaultError::NoteAlreadyExists(..)
             | VaultError::DirectoryAlreadyExists(..)
             | VaultError::InvalidPath(..)
+            | VaultError::MissingArgument(..)
             | VaultError::SearchTextNotFound(..)
             | VaultError::TargetNotFound(..)
             | VaultError::InvalidFrontmatter(..)
@@ -176,7 +196,15 @@ mod tests {
         assert!(VaultError::NoteNotFound("n".into(), "v".into()).is_tool_execution_error());
         assert!(VaultError::NoteAlreadyExists("n".into(), "v".into()).is_tool_execution_error());
         assert!(VaultError::DirectoryAlreadyExists("d".into()).is_tool_execution_error());
-        assert!(VaultError::SearchTextNotFound("n".into()).is_tool_execution_error());
+        // The needle is echoed back: "search text not found" without saying *what*
+        // was searched for left the model with nothing to correct.
+        let needle = VaultError::SearchTextNotFound("hello wolrd".into(), "n.md".into());
+        assert!(needle.is_tool_execution_error());
+        assert!(needle.to_string().contains("hello wolrd"), "{needle}");
+        // A missing argument is not a path problem — saying "Invalid path:" sent the
+        // model off to fix the filename, which was the one thing that was right.
+        let missing = VaultError::MissingArgument("edit-note also needs a 'search'".into());
+        assert!(!missing.to_string().contains("Invalid path"), "{missing}");
         // A missing patch target is self-correctable: the message tells the model
         // to read the outline and pick a real one.
         let target = VaultError::TargetNotFound("## Log".into(), "n.md".into());

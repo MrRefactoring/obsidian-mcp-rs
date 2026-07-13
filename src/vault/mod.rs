@@ -89,9 +89,8 @@ pub enum NoteView {
     /// The note's full text.
     #[default]
     Content,
-    /// Only what an edit can be aimed at — headings, block references and
-    /// frontmatter keys. Cheap to read, and it saves the model from guessing a
-    /// target and missing.
+    /// Only what an edit can be aimed at — the note's headings, block references
+    /// and frontmatter keys.
     Outline,
 }
 
@@ -232,6 +231,35 @@ pub struct FrontmatterOutput {
 /// link graph and `rename-tag` — never sees it again.
 const TRASH: &str = ".trash";
 
+// Typed, like every other vocabulary in this crate, so an unrecognised value is
+// rejected as INVALID_PARAMS naming the offending input rather than silently
+// falling through to a default: `location: "Frontmatter"` — one capital letter —
+// used to land in the catch-all and write the tag to *both* places.
+//
+// Doc comments here reach the model, via schemars → the tool's inputSchema, and
+// every conversation pays for them. Reasoning goes in `//` comments like this.
+/// Where `add-tags` writes a tag.
+#[derive(Debug, Clone, Copy, Default, PartialEq, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum TagLocation {
+    /// The YAML `tags:` list.
+    Frontmatter,
+    /// An inline `#tag` in the note's body.
+    Content,
+    /// Both — which means the tag appears in the note **twice**.
+    #[default]
+    Both,
+}
+
+/// Where an inline `#tag` goes in the body.
+#[derive(Debug, Clone, Copy, Default, PartialEq, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum TagPosition {
+    Start,
+    #[default]
+    End,
+}
+
 /// A directory's own name, e.g. `notes` for `~/work/notes`.
 fn basename(path: &Path) -> String {
     path.file_name()
@@ -277,7 +305,41 @@ pub struct LinkOutput {
     pub links: Vec<LinkRef>,
     /// Populated for `orphans` — vault-relative paths.
     pub notes: Vec<String>,
+    /// Matches before `offset`/`limit` were applied.
     pub total: usize,
+    pub offset: usize,
+    /// Whether more exist past this page.
+    pub truncated: bool,
+}
+
+/// How much of a link query to return. `broken` and `orphans` are unbounded by
+/// nature — a neglected vault has thousands of each — so they are paged like
+/// search results rather than shipped whole.
+#[derive(Debug, Clone)]
+pub struct LinkLimits {
+    pub limit: usize,
+    pub offset: usize,
+}
+
+/// Links returned by a `wikilinks` call that doesn't say otherwise.
+pub const DEFAULT_LINK_LIMIT: usize = 50;
+
+impl Default for LinkLimits {
+    fn default() -> Self {
+        Self {
+            limit: DEFAULT_LINK_LIMIT,
+            offset: 0,
+        }
+    }
+}
+
+/// One page of a sorted result set.
+fn page<T>(items: Vec<T>, limits: &LinkLimits) -> Vec<T> {
+    items
+        .into_iter()
+        .skip(limits.offset)
+        .take(limits.limit)
+        .collect()
 }
 
 #[derive(Debug)]
@@ -480,8 +542,9 @@ impl VaultManager {
 
         let needle = || {
             edit.search.ok_or_else(|| {
-                VaultError::InvalidPath(
-                    "find_and_replace requires a 'search' parameter".to_string(),
+                VaultError::MissingArgument(
+                    "edit-note with operation=\"find_and_replace\" also needs a 'search' parameter — the text to look for."
+                        .to_string(),
                 )
             })
         };
@@ -494,7 +557,10 @@ impl VaultManager {
                 EditOperation::FindAndReplace => {
                     let needle = needle()?;
                     if !old.contains(needle) {
-                        return Err(VaultError::SearchTextNotFound(filename.to_string()));
+                        return Err(VaultError::SearchTextNotFound(
+                            needle.to_string(),
+                            filename.to_string(),
+                        ));
                     }
                     old.replacen(needle, edit.content, 1)
                 }
@@ -509,8 +575,15 @@ impl VaultManager {
                     EditOperation::Prepend => patch::prepend(&old, &region, edit.content),
                     EditOperation::Replace => patch::replace(&old, &region, edit.content),
                     EditOperation::FindAndReplace => {
-                        patch::find_and_replace(&old, &region, needle()?, edit.content)
-                            .ok_or_else(|| VaultError::SearchTextNotFound(filename.to_string()))?
+                        let needle = needle()?;
+                        patch::find_and_replace(&old, &region, needle, edit.content).ok_or_else(
+                            || {
+                                VaultError::SearchTextNotFound(
+                                    needle.to_string(),
+                                    filename.to_string(),
+                                )
+                            },
+                        )?
                     }
                 }
             }
@@ -542,7 +615,9 @@ impl VaultManager {
 
         let key = || {
             key.filter(|k| !k.is_empty()).ok_or_else(|| {
-                VaultError::InvalidPath(format!("the '{:?}' action needs a 'key'", action))
+                VaultError::MissingArgument(format!(
+                    "the frontmatter '{action:?}' action also needs a 'key' — which field to act on."
+                ))
             })
         };
         let invalid = |e: String| VaultError::InvalidFrontmatter(rel.clone(), e);
@@ -551,7 +626,10 @@ impl VaultManager {
             FrontmatterAction::Get => None,
             FrontmatterAction::Set => {
                 let value = value.ok_or_else(|| {
-                    VaultError::InvalidPath("the 'set' action needs a 'value'".to_string())
+                    VaultError::MissingArgument(
+                        "the frontmatter 'set' action also needs a 'value' — what to write."
+                            .to_string(),
+                    )
                 })?;
                 Some(frontmatter::set_field(&content, key()?, value).map_err(invalid)?)
             }
@@ -763,6 +841,7 @@ impl VaultManager {
         query: &LinkQuery,
         filename: Option<&str>,
         folder: Option<&str>,
+        limits: &LinkLimits,
     ) -> Result<LinkOutput, VaultError> {
         let root = self.resolve_vault(vault)?.to_path_buf();
         let (files, _, refs) = links::link_graph(&root);
@@ -771,8 +850,8 @@ impl VaultManager {
         let note = match query {
             LinkQuery::Backlinks | LinkQuery::Outgoing => {
                 let filename = filename.ok_or_else(|| {
-                    VaultError::InvalidPath(format!(
-                        "the '{}' query needs a 'filename'",
+                    VaultError::MissingArgument(format!(
+                        "the wikilinks '{}' query also needs a 'filename' — the note to ask about.",
                         match query {
                             LinkQuery::Backlinks => "backlinks",
                             _ => "outgoing",
@@ -836,11 +915,17 @@ impl VaultManager {
             }
         };
 
+        // `broken` and `orphans` on a real vault are exactly the queries that
+        // return thousands of rows, and this tool had no cap at all — the same
+        // hole `search-vault` was built to avoid. Page it the same way.
         let total = links.len() + notes.len();
+        let truncated = total > limits.offset + limits.limit;
         Ok(LinkOutput {
-            links,
-            notes,
+            links: page(links, limits),
+            notes: page(notes, limits),
             total,
+            offset: limits.offset,
+            truncated,
         })
     }
 
@@ -919,45 +1004,41 @@ impl VaultManager {
         vault: &str,
         files: &[String],
         tags: &[String],
-        location: &str,
+        location: TagLocation,
         normalize: bool,
-        position: &str,
+        position: TagPosition,
     ) -> Result<Vec<String>, VaultError> {
         let _guard = self.write_guard();
         let root = self.resolve_vault(vault)?;
+        let targets = self.resolve_batch(root, vault, files)?;
+
+        let processed_tags: Vec<String> = tags
+            .iter()
+            .map(|t| {
+                if normalize {
+                    normalize_tag(t)
+                } else {
+                    t.clone()
+                }
+            })
+            .collect();
+
         let mut modified = Vec::new();
-
-        for file in files {
-            let path = safe_join(root, None, file)?;
-            if !path.exists() {
-                continue;
-            }
-
+        for (file, path) in targets {
             let content = fs::read_to_string(&path)
                 .map_err(|e| VaultError::io(path.display().to_string(), e))?;
 
-            let processed_tags: Vec<String> = tags
-                .iter()
-                .map(|t| {
-                    if normalize {
-                        normalize_tag(t)
-                    } else {
-                        t.clone()
-                    }
-                })
-                .collect();
-
             let new_content = match location {
-                "content" => add_tags_to_content(&content, &processed_tags, position),
-                "frontmatter" => add_tags_to_frontmatter(&content, &processed_tags),
-                _ => {
+                TagLocation::Content => add_tags_to_content(&content, &processed_tags, position),
+                TagLocation::Frontmatter => add_tags_to_frontmatter(&content, &processed_tags),
+                TagLocation::Both => {
                     let with_front = add_tags_to_frontmatter(&content, &processed_tags);
                     add_tags_to_content(&with_front, &processed_tags, position)
                 }
             };
 
             atomic_write(&path, new_content.as_bytes())?;
-            modified.push(file.clone());
+            modified.push(file);
         }
 
         Ok(modified)
@@ -971,23 +1052,51 @@ impl VaultManager {
     ) -> Result<Vec<String>, VaultError> {
         let _guard = self.write_guard();
         let root = self.resolve_vault(vault)?;
+        let targets = self.resolve_batch(root, vault, files)?;
+
         let mut modified = Vec::new();
-
-        for file in files {
-            let path = safe_join(root, None, file)?;
-            if !path.exists() {
-                continue;
-            }
-
+        for (file, path) in targets {
             let content = fs::read_to_string(&path)
                 .map_err(|e| VaultError::io(path.display().to_string(), e))?;
 
             let new_content = remove_tags_from_note(&content, tags);
             atomic_write(&path, new_content.as_bytes())?;
-            modified.push(file.clone());
+            modified.push(file);
         }
 
         Ok(modified)
+    }
+
+    /// Resolve every file in a batch *before* writing any of them.
+    ///
+    /// The tag tools used to skip the files they couldn't find, then report
+    /// `Added tags ["x"] to 0 file(s):` with `isError: false` — which a model
+    /// reads as success and moves on from. Nothing signalled that the work had
+    /// not happened. Checking first means a batch either applies or fails with
+    /// the names it couldn't find, and never half-applies.
+    fn resolve_batch(
+        &self,
+        root: &Path,
+        vault: &str,
+        files: &[String],
+    ) -> Result<Vec<(String, PathBuf)>, VaultError> {
+        let mut found = Vec::with_capacity(files.len());
+        let mut missing = Vec::new();
+        for file in files {
+            let path = safe_join(root, None, file)?;
+            if path.exists() {
+                found.push((file.clone(), path));
+            } else {
+                missing.push(file.clone());
+            }
+        }
+        if !missing.is_empty() {
+            return Err(VaultError::NotesNotFound(
+                missing.join(", "),
+                vault.to_string(),
+            ));
+        }
+        Ok(found)
     }
 
     pub fn rename_tag(
@@ -1251,13 +1360,11 @@ mod tests {
             ),
         );
 
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("Search text not found")
-        );
+        // The message must hand back *what* was searched for. "Search text not
+        // found in note 'note.md'" gave the model nothing at all to correct.
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("missing"), "the needle must be echoed: {err}");
+        assert!(err.contains("byte for byte"), "{err}");
     }
 
     #[test]
@@ -1367,9 +1474,9 @@ mod tests {
                     n,
                     &["note.md".into()],
                     &["work".into()],
-                    "frontmatter",
+                    TagLocation::Frontmatter,
                     false,
-                    "end",
+                    TagPosition::End,
                 )
                 .unwrap();
             });
@@ -2083,10 +2190,11 @@ mod tests {
             )
             .unwrap();
         assert!(
-            out.contains("## H1 (line 1)"),
-            "outline must start at the top"
+            out.contains("\"## H1\"  (line 1)"),
+            "outline must start at the top, got: {}",
+            &out[..out.len().min(120)]
         );
-        assert!(out.contains("## H1000"), "and list every target");
+        assert!(out.contains("\"## H1000\""), "and list every target");
     }
 
     // ── read_note ─────────────────────────────────────────────────────────────
@@ -2483,7 +2591,13 @@ mod tests {
     fn wikilinks_backlinks_lists_the_linking_notes() {
         let (_dir, vault, name) = linked_vault();
         let out = vault
-            .wikilinks(&name, &LinkQuery::Backlinks, Some("hub"), None)
+            .wikilinks(
+                &name,
+                &LinkQuery::Backlinks,
+                Some("hub"),
+                None,
+                &LinkLimits::default(),
+            )
             .unwrap();
         let from: Vec<&str> = out.links.iter().map(|l| l.from.as_str()).collect();
         assert_eq!(from, vec!["a.md", "b.md"]);
@@ -2493,7 +2607,13 @@ mod tests {
     fn wikilinks_outgoing_lists_this_notes_links() {
         let (_dir, vault, name) = linked_vault();
         let out = vault
-            .wikilinks(&name, &LinkQuery::Outgoing, Some("b"), None)
+            .wikilinks(
+                &name,
+                &LinkQuery::Outgoing,
+                Some("b"),
+                None,
+                &LinkLimits::default(),
+            )
             .unwrap();
         let targets: Vec<&str> = out.links.iter().map(|l| l.target.as_str()).collect();
         assert_eq!(targets, vec!["hub", "ghost"]);
@@ -2503,7 +2623,13 @@ mod tests {
     fn wikilinks_broken_finds_targets_that_do_not_exist() {
         let (_dir, vault, name) = linked_vault();
         let out = vault
-            .wikilinks(&name, &LinkQuery::Broken, None, None)
+            .wikilinks(
+                &name,
+                &LinkQuery::Broken,
+                None,
+                None,
+                &LinkLimits::default(),
+            )
             .unwrap();
         assert_eq!(out.links.len(), 1);
         assert_eq!(out.links[0].target, "ghost");
@@ -2514,7 +2640,13 @@ mod tests {
     fn wikilinks_orphans_finds_notes_nothing_links_to() {
         let (_dir, vault, name) = linked_vault();
         let out = vault
-            .wikilinks(&name, &LinkQuery::Orphans, None, None)
+            .wikilinks(
+                &name,
+                &LinkQuery::Orphans,
+                None,
+                None,
+                &LinkLimits::default(),
+            )
             .unwrap();
         assert_eq!(out.notes, vec!["a.md", "b.md", "lonely.md"]);
     }
@@ -2524,7 +2656,13 @@ mod tests {
         let (_dir, vault, name) = linked_vault();
         assert!(
             vault
-                .wikilinks(&name, &LinkQuery::Backlinks, None, None)
+                .wikilinks(
+                    &name,
+                    &LinkQuery::Backlinks,
+                    None,
+                    None,
+                    &LinkLimits::default()
+                )
                 .is_err()
         );
     }
@@ -2538,7 +2676,8 @@ mod tests {
                     &name,
                     &LinkQuery::Backlinks,
                     Some("../../../etc/hosts"),
-                    None
+                    None,
+                    &LinkLimits::default()
                 )
                 .is_err()
         );
@@ -2634,7 +2773,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(results.results.len(), 1);
-        assert_eq!(results.results[0].filename, "a");
+        assert_eq!(results.results[0].path, "a.md");
     }
 
     #[test]
@@ -2686,7 +2825,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(results.results.len(), 1);
-        assert_eq!(results.results[0].filename, "tagged");
+        assert_eq!(results.results[0].path, "tagged.md");
     }
 
     #[test]
@@ -2746,7 +2885,44 @@ mod tests {
             )
             .unwrap();
         assert_eq!(results.results.len(), 1);
-        assert_eq!(results.results[0].filename, "inner");
+        assert_eq!(results.results[0].path, "sub/inner.md");
+    }
+
+    #[test]
+    fn what_search_returns_is_what_read_note_accepts() {
+        // The most common two-step there is — find a note, then read it — used to
+        // break on every note that lived in a folder. `search-vault` returned a
+        // `filename` field holding the bare stem (`inner`), the note tools' schema
+        // said "do not include path separators", and so the model reached for the
+        // one field that could not work: `read-note` looked for `inner.md` in the
+        // vault root and reported the note missing.
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        fs::create_dir_all(dir.path().join("sub")).unwrap();
+        write_note(&dir, "sub/deep.md", "the needle is here\n");
+
+        let hit = vault
+            .search_vault(
+                &name,
+                None,
+                &text_query("needle", false, &SearchType::Content),
+                &SearchLimits::default(),
+            )
+            .unwrap();
+        let path = &hit.results[0].path;
+        assert_eq!(path, "sub/deep.md");
+
+        // The path search hands back is fed straight into read-note, unmodified.
+        let content = vault
+            .read_note(
+                &name,
+                path,
+                None,
+                &NoteView::Content,
+                &ReadWindow::default(),
+            )
+            .expect("the path search returned must be readable as-is");
+        assert!(content.contains("needle"));
     }
 
     #[test]
@@ -2777,9 +2953,9 @@ mod tests {
                 &name,
                 &["note.md".into()],
                 &["new-tag".into()],
-                "frontmatter",
+                TagLocation::Frontmatter,
                 false,
-                "end",
+                TagPosition::End,
             )
             .unwrap();
         let content = fs::read_to_string(dir.path().join("note.md")).unwrap();
@@ -2797,9 +2973,9 @@ mod tests {
                 &name,
                 &["plain.md".into()],
                 &["fresh".into()],
-                "frontmatter",
+                TagLocation::Frontmatter,
                 false,
-                "end",
+                TagPosition::End,
             )
             .unwrap();
         let content = fs::read_to_string(dir.path().join("plain.md")).unwrap();
@@ -2817,9 +2993,9 @@ mod tests {
                 &name,
                 &["note.md".into()],
                 &["inline".into()],
-                "content",
+                TagLocation::Content,
                 false,
-                "end",
+                TagPosition::End,
             )
             .unwrap();
         let content = fs::read_to_string(dir.path().join("note.md")).unwrap();
@@ -2836,9 +3012,9 @@ mod tests {
                 &name,
                 &["note.md".into()],
                 &["first".into()],
-                "content",
+                TagLocation::Content,
                 false,
-                "start",
+                TagPosition::Start,
             )
             .unwrap();
         let content = fs::read_to_string(dir.path().join("note.md")).unwrap();
@@ -2855,9 +3031,9 @@ mod tests {
                 &name,
                 &["note.md".into()],
                 &["mytag".into()],
-                "both",
+                TagLocation::Both,
                 false,
-                "end",
+                TagPosition::End,
             )
             .unwrap();
         let content = fs::read_to_string(dir.path().join("note.md")).unwrap();
@@ -2866,20 +3042,50 @@ mod tests {
     }
 
     #[test]
-    fn add_tags_skips_missing_files() {
+    fn add_tags_names_the_files_it_could_not_find() {
+        // This used to return Ok(vec![]) — and the tool then reported
+        // `Added tags ["tag"] to 0 file(s):` with isError: false, which a model
+        // reads as success. Nothing at all signalled that the work hadn't happened.
         let (dir, vault) = make_vault();
         let name = vault_name(&dir);
-        let modified = vault
+        let err = vault
             .add_tags(
                 &name,
                 &["ghost.md".into()],
                 &["tag".into()],
-                "frontmatter",
+                TagLocation::Frontmatter,
                 false,
-                "end",
+                TagPosition::End,
             )
-            .unwrap();
-        assert!(modified.is_empty());
+            .expect_err("a missing file must not read as success");
+        assert!(err.to_string().contains("ghost.md"), "{err}");
+        assert!(err.is_tool_execution_error(), "{err}");
+    }
+
+    #[test]
+    fn a_batch_with_one_missing_file_changes_nothing_at_all() {
+        // Half-applying a batch is worse than failing it: the model is told the
+        // call failed, retries, and the notes that *did* get the tag get it twice.
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(&dir, "real.md", "body\n");
+
+        let err = vault
+            .add_tags(
+                &name,
+                &["real.md".into(), "ghost.md".into()],
+                &["tag".into()],
+                TagLocation::Frontmatter,
+                false,
+                TagPosition::End,
+            )
+            .expect_err("the batch must fail");
+        assert!(err.to_string().contains("ghost.md"), "{err}");
+        assert_eq!(
+            fs::read_to_string(dir.path().join("real.md")).unwrap(),
+            "body\n",
+            "the note that did exist must be left untouched"
+        );
     }
 
     #[test]
@@ -2892,9 +3098,9 @@ mod tests {
                 &name,
                 &["note.md".into()],
                 &["My Tag".into()],
-                "frontmatter",
+                TagLocation::Frontmatter,
                 true,
-                "end",
+                TagPosition::End,
             )
             .unwrap();
         let content = fs::read_to_string(dir.path().join("note.md")).unwrap();
@@ -2911,9 +3117,9 @@ mod tests {
                 &name,
                 &["note.md".into()],
                 &["existing".into()],
-                "frontmatter",
+                TagLocation::Frontmatter,
                 false,
-                "end",
+                TagPosition::End,
             )
             .unwrap();
         let content = fs::read_to_string(dir.path().join("note.md")).unwrap();
@@ -2932,9 +3138,9 @@ mod tests {
                 &name,
                 &["note.md".into()],
                 &["added".into()],
-                "frontmatter",
+                TagLocation::Frontmatter,
                 false,
-                "end",
+                TagPosition::End,
             )
             .unwrap();
         let content = fs::read_to_string(dir.path().join("note.md")).unwrap();
@@ -2951,9 +3157,9 @@ mod tests {
                 &name,
                 &["note.md".into()],
                 &["top".into()],
-                "content",
+                TagLocation::Content,
                 false,
-                "start",
+                TagPosition::Start,
             )
             .unwrap();
         let content = fs::read_to_string(dir.path().join("note.md")).unwrap();
@@ -2992,13 +3198,13 @@ mod tests {
     }
 
     #[test]
-    fn remove_tags_skips_missing_files() {
+    fn remove_tags_names_the_files_it_could_not_find() {
         let (dir, vault) = make_vault();
         let name = vault_name(&dir);
-        let modified = vault
+        let err = vault
             .remove_tags(&name, &["ghost.md".into()], &["t".into()])
-            .unwrap();
-        assert!(modified.is_empty());
+            .expect_err("a missing file must not read as success");
+        assert!(err.to_string().contains("ghost.md"), "{err}");
     }
 
     // ── rename_tag ────────────────────────────────────────────────────────────
@@ -3173,9 +3379,9 @@ mod tests {
             &name,
             &["../sibling-add.md".into()],
             &["pwned".into()],
-            "frontmatter",
+            TagLocation::Frontmatter,
             false,
-            "end",
+            TagPosition::End,
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("escapes vault"));
@@ -3192,9 +3398,9 @@ mod tests {
             &name,
             &[ABS_FILE.into()],
             &["x".into()],
-            "frontmatter",
+            TagLocation::Frontmatter,
             false,
-            "end",
+            TagPosition::End,
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("absolute"));

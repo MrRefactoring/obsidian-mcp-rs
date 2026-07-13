@@ -40,6 +40,9 @@
 
 ## Setup
 
+> **You need [Node.js](https://nodejs.org/) 22 or newer** for the `npx` commands below — that is how the installer and the server are distributed.
+> The server *itself* is a single static binary with no runtime dependencies: if you would rather not have Node at all, download the binary for your platform from [Releases](https://github.com/MrRefactoring/obsidian-mcp-rs/releases) and point your client's config at it directly, or `cargo install obsidian-mcp-rs`.
+
 **The fastest way: just ask your AI agent to install it.** If you already work inside an agentic client (Claude Code, Cursor, Windsurf, …), you never touch a config file — paste one prompt and let the agent run the installer for you. Swap in your own vault path:
 
 > Install the **obsidian-mcp-rs** MCP server for this editor. My Obsidian vault is at `~/Documents/Obsidian/MyVault`. Run the matching installer, e.g. `npx -y obsidian-mcp-rs install claude-code ~/Documents/Obsidian/MyVault` (use `cursor`, `windsurf`, `vscode`, `claude`, … for other clients), then tell me to restart the session and approve the server if the client asks.
@@ -107,7 +110,7 @@ npx obsidian-mcp-rs uninstall claude --dry-run  # preview changes without writin
 - **Daily notes** — `periodic` reads/creates daily…yearly notes using the vault's *own* Obsidian settings (name format, folder, template), so it writes to the note you actually keep
 - **Vault orientation** — `vault-info` answers what tags exist, what changed recently, and how big the vault is
 - **Read-only mode** — `--no-edit` removes every write tool from `tools/list` entirely, so a read-only server describes itself as one
-- **Zero runtime dependencies** — single static binary, no Node.js required for execution
+- **Zero runtime dependencies** — the server is a single static binary. (Node.js 22+ is needed only for the `npx` distribution path; grab a binary from [Releases](https://github.com/MrRefactoring/obsidian-mcp-rs/releases) or `cargo install` to skip it.)
 - **Cross-platform** — macOS (ARM64 + x64), Linux (x64 + ARM64 + musl), Windows (x64 + ARM64)
 - **Tag search** via `tag:` prefix in queries
 - **YAML frontmatter** tag management
@@ -219,7 +222,7 @@ Add the server to Cursor's MCP settings via **Settings → MCP → Add Server**,
 }
 ```
 
-Once added, Cursor's AI will have access to all 12 vault tools. You can verify with the MCP panel in Settings.
+Once added, Cursor's AI will have access to all 15 vault tools. You can verify with the MCP panel in Settings.
 
 ### OpenClaw (`~/.openclaw/openclaw.json`)
 
@@ -239,13 +242,17 @@ Once added, Cursor's AI will have access to all 12 vault tools. You can verify w
 
 ## Read-only mode (`--no-edit`)
 
-Pass `--no-edit` to start the server in read-only mode. All write tools return an error immediately — no vault files are modified.
+Pass `--no-edit` to start the server in read-only mode. The eight write-only tools are **removed from `tools/list` entirely** — a read-only server describes itself as one, rather than advertising tools it will only refuse — and they are unreachable via `tools/call` as well.
 
-**Read-only tools (always available):**
-- `read-note`, `search-vault`, `list-available-vaults`
+**Removed under `--no-edit`** (the write-only tools):
+`create-note`, `edit-note`, `delete-note`, `move-note`, `create-directory`, `add-tags`, `remove-tags`, `rename-tag`
 
-**Blocked tools when `--no-edit` is set:**
-- `create-note`, `edit-note`, `delete-note`, `move-note`, `create-directory`, `add-tags`, `remove-tags`, `rename-tag`
+**Still listed, because they read as well as write** — these are gated *per action*, so the reads work and the writes are refused:
+- `frontmatter` — `get` works; `set` and `remove` are refused
+- `periodic` — `get` and `list` work; `create` is refused
+
+**Pure reads, always available:**
+`read-note`, `search-vault`, `wikilinks`, `vault-info`, `list-available-vaults`
 
 ### Manual config with `--no-edit`
 
@@ -348,15 +355,71 @@ Create a new directory in the vault.
 | `recursive` | boolean | | Create parent dirs (default: `true`) |
 
 ### `search-vault`
-Search notes by content, filename, or tag.
+Search notes by content, filename, or tag. Results are BM25-ranked, best-first, and paged.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `vault` | string | ✓ | Vault name |
-| `query` | string | ✓ | Search term. Use `tag:name` for tag search |
+| `query` | string | ✓ | Search term. `tag:name` searches a tag. May be empty when filtering by `frontmatter` alone |
 | `path` | string | | Limit search to subfolder |
 | `caseSensitive` | boolean | | Default: `false` |
 | `searchType` | string | | `content` (default), `filename`, `both` |
+| `regex` | boolean | | Read `query` as a regular expression (default `false`) |
+| `frontmatter` | object | | Only notes carrying these fields, e.g. `{"status": "active"}`. A list field matches when it *contains* the value |
+| `limit` | number | | Files to return (default 20) |
+| `offset` | number | | Skip this many files (default 0) |
+| `maxMatchesPerFile` | number | | Lines quoted per file (default 3) |
+
+Each hit carries a `path` — pass it straight back as any note tool's `filename`.
+
+### `wikilinks`
+The vault's link graph, in one parallel pass.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `vault` | string | ✓ | Vault name |
+| `query` | string | ✓ | `backlinks`, `outgoing`, `broken`, or `orphans` |
+| `filename` | string | | The note to ask about — required by `backlinks` and `outgoing` |
+| `folder` | string | | Subfolder containing the note |
+| `limit` | number | | Default 50 — `broken` and `orphans` run to thousands on a neglected vault |
+| `offset` | number | | Skip this many (default 0) |
+
+Links inside code fences are ignored: a `[[link]]` in a code sample is documentation, not a reference.
+
+### `frontmatter`
+Read or write any YAML frontmatter key — not just `tags`. Writes are line surgery on the one key named, so the rest of the block (comments, key order, quoting) survives byte for byte.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `vault` | string | ✓ | Vault name |
+| `filename` | string | ✓ | Note path |
+| `action` | string | ✓ | `get`, `set`, or `remove` |
+| `key` | string | | Which field. Omit with `get` to return the whole block |
+| `value` | any | | What to write — string, number, boolean, list or object (`set` only) |
+| `folder` | string | | Subfolder containing the note |
+
+Under `--no-edit` this is gated per action: `get` works, `set`/`remove` are refused.
+
+### `vault-info`
+What's actually in this vault — the questions you ask *before* you know what to search for.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `vault` | string | ✓ | Vault name |
+| `query` | string | ✓ | `tags` (every tag + how many notes carry it, commonest first), `recent` (newest first), or `stats` |
+| `limit` | number | | Cap the list (default 20) |
+
+### `periodic`
+Today's daily note, and its weekly/monthly/quarterly/yearly siblings — read from Obsidian's *own* settings (the Periodic Notes plugin's `data.json`, then core's `daily-notes.json`, then Obsidian's defaults), so it lands where Obsidian would rather than creating a stray note.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `vault` | string | ✓ | Vault name |
+| `period` | string | ✓ | `daily`, `weekly`, `monthly`, `quarterly`, `yearly` |
+| `action` | string | ✓ | `get`, `create` (idempotent), or `list` |
+| `date` | string | | `YYYY-MM-DD` — defaults to today |
+| `content` | string | | Text for a note `create` brings into existence; without it, the configured template is used |
+| `limit` | number | | How many notes `list` walks back (default 10) |
 
 ### `add-tags`
 Add tags to notes in frontmatter and/or content.
@@ -364,11 +427,11 @@ Add tags to notes in frontmatter and/or content.
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `vault` | string | ✓ | Vault name |
-| `files` | string[] | ✓ | Note filenames (include `.md`) |
+| `files` | string[] | ✓ | Vault-relative note paths. **All must exist** — if any doesn't, nothing is changed |
 | `tags` | string[] | ✓ | Tags to add |
-| `location` | string | | `frontmatter`, `content`, `both` (default) |
+| `location` | string | | `frontmatter`, `content`, or `both` (default). Note that `both` puts the tag in the note **twice** |
 | `normalize` | boolean | | Normalize tag format (default: `true`) |
-| `position` | string | | `start` or `end` (default) for content tags |
+| `position` | string | | `start` or `end` (default) — where an inline tag goes |
 
 ### `remove-tags`
 Remove tags from notes.
@@ -395,7 +458,7 @@ List all vaults configured for this server. Takes no parameters.
 
 ### Prerequisites
 
-- [Rust](https://rustup.rs/) (stable, 1.94+)
+- [Rust](https://rustup.rs/) (stable; MSRV 1.88)
 - [Node.js](https://nodejs.org/) 22+ (for npm wrapper)
 
 ### Build from source
@@ -466,6 +529,10 @@ When the server runs as a background MCP process, stderr is captured by the clie
 
 ```bash
 npx obsidian-mcp-rs logs
+
+# If you started the server with --log-file, point `logs` at the same path,
+# or it will show you the default log while yours fills up elsewhere.
+npx obsidian-mcp-rs logs --log-file /tmp/mcp-debug.log
 ```
 
 Prints the log file path, the last 100 lines, and a link to open a GitHub issue.

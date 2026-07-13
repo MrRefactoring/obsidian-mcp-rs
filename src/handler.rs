@@ -398,17 +398,21 @@ impl ObsidianHandler {
     )]
     fn wikilinks(
         &self,
-        rmcp::handler::server::wrapper::Parameters(WikilinksParams {
-            vault,
-            query,
-            filename,
-            folder,
-        }): rmcp::handler::server::wrapper::Parameters<WikilinksParams>,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<
+            WikilinksParams,
+        >,
     ) -> Result<Json<LinkOutput>, McpError> {
-        tracing::debug!(tool = "wikilinks", %vault, ?query);
+        tracing::debug!(tool = "wikilinks", vault = %params.vault, query = ?params.query);
+        let limits = params.limits();
         let out = self
             .vault
-            .wikilinks(&vault, &query, filename.as_deref(), folder.as_deref())
+            .wikilinks(
+                &params.vault,
+                &params.query,
+                params.filename.as_deref(),
+                params.folder.as_deref(),
+                &limits,
+            )
             .map_err(err)?;
         Ok(Json(out))
     }
@@ -506,9 +510,9 @@ impl ObsidianHandler {
             &vault,
             &files,
             &tags,
-            location.as_deref().unwrap_or("both"),
+            location.unwrap_or_default(),
             normalize.unwrap_or(true),
-            position.as_deref().unwrap_or("end"),
+            position.unwrap_or_default(),
         ) {
             Ok(modified) => ok(format!(
                 "Added tags {:?} to {} file(s): {}",
@@ -704,12 +708,42 @@ impl ServerHandler for ObsidianHandler {
                 Implementation::new(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"))
                     .with_title("Obsidian (Rust MCP)"),
             )
-            .with_instructions(
-                "Notes live in one or more named vaults. Call `list-available-vaults` to \
-                 discover vault names, then pass a `vault` name to every tool. Filenames are \
-                 relative to the vault root; the `.md` extension is optional. Tag search uses \
-                 a `tag:` prefix in `search-vault`.",
-            )
+            .with_instructions(self.instructions())
+    }
+}
+
+impl ObsidianHandler {
+    /// What the client is told about this server, once, at connect time.
+    ///
+    /// The vault names are **named here**. Telling the model to "call
+    /// `list-available-vaults` to discover vault names" cost a guaranteed
+    /// round-trip at the start of every single conversation, to learn something
+    /// the server already knew when it started. It can now open with the work.
+    fn instructions(&self) -> String {
+        let vaults = self.vault.list_vaults();
+        let names: Vec<String> = vaults.iter().map(|(n, _)| format!("`{n}`")).collect();
+
+        let opening = match names.len() {
+            0 => "No vaults are configured on this server.".to_string(),
+            1 => format!(
+                "Notes live in one vault, named {}. Pass that as `vault` to every tool.",
+                names[0]
+            ),
+            _ => format!(
+                "Notes live in {} named vaults: {}. Pass one of those names as `vault` to \
+                 every tool; ask the user which they mean if it isn't clear.",
+                names.len(),
+                names.join(", ")
+            ),
+        };
+
+        format!(
+            "{opening} `filename` is a path relative to the vault root — `search-vault` returns \
+             exactly such a path in its `path` field, and it can be passed straight back in. The \
+             `.md` extension is optional. Tag search uses a `tag:` prefix in `search-vault`; \
+             `regex: true` matches a pattern instead of words. To edit part of a note, read it \
+             with `view: \"outline\"` first — that lists the targets `edit-note` can aim at."
+        )
     }
 }
 

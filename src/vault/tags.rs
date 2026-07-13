@@ -92,11 +92,15 @@ fn block_list<'a>(tags: impl Iterator<Item = &'a String>) -> String {
         .join("\n")
 }
 
-pub(crate) fn add_tags_to_content(content: &str, tags: &[String], position: &str) -> String {
+pub(crate) fn add_tags_to_content(
+    content: &str,
+    tags: &[String],
+    position: super::TagPosition,
+) -> String {
     let tag_str: String = tags.iter().map(|t| format!("#{} ", t)).collect();
     let tag_str = tag_str.trim_end();
 
-    if position == "start" {
+    if position == super::TagPosition::Start {
         if let Some(stripped) = content.strip_prefix("---")
             && let Some(end) = find_closing_fm(stripped)
         {

@@ -4,7 +4,8 @@ use serde::Deserialize;
 pub struct CreateNoteParams {
     /// Name of the vault to create the note in
     pub vault: String,
-    /// Note filename (with or without .md extension). Do not include path separators.
+    /// Note to act on: a vault-relative path (`projects/apollo.md`) or a bare
+    /// filename. `.md` optional. `search-vault`'s `path` works as-is.
     pub filename: String,
     /// Content of the note in Markdown format
     pub content: String,
