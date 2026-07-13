@@ -1,6 +1,12 @@
 # Changelog
 
-## [Unreleased]
+## [0.6.0] - 2026-07-13
+
+A correctness release. Two things shipped in 0.5.0 were not what they said they
+were: `--no-edit` advertised every write tool it then refused, and the installer
+rewrote whole config files it was only meant to add one key to. Both are fixed,
+along with a batch of tool-surface bugs that made the server harder for a model
+to use than it needed to be.
 
 ### Changed
 
