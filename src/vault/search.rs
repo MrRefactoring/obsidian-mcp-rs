@@ -35,37 +35,50 @@ pub struct Snippet {
     pub text: String,
 }
 
+// There used to be a `filename` field here alongside `path` — the bare stem, no
+// folder and no extension. It was a trap: the model reached for the field called
+// `filename`, handed it to `read-note`, and `read-note` couldn't find the note,
+// because the folder had been thrown away. `path` is now the only identifier, and
+// every note tool takes it verbatim.
+//
+// Doc comments on this struct reach the model: `#[derive(JsonSchema)]` promotes
+// them into the tool's `outputSchema`, which every conversation pays for. Keep
+// them short and actionable; put the reasoning in `//` comments like this one.
 /// One file's search hit.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct SearchResult {
+    /// Vault-relative path. Pass straight back as any note tool's `filename`.
     pub path: String,
-    pub filename: String,
-    /// BM25 relevance. Higher is better; results are returned best-first.
+    /// Relevance; results come back best-first.
     pub score: f32,
-    /// Matching lines in this file, before `max_matches_per_file` clipping.
+    /// Lines that matched, before `maxMatchesPerFile` clipped them.
     pub match_count: usize,
     pub snippets: Vec<Snippet>,
-    /// Whether `snippets` was clipped — this file has more matches than shown.
+    /// Whether this file has more matches than are shown.
     pub truncated: bool,
 }
 
-/// Structured output for `search-vault` — its `structuredContent` and declared
-/// `outputSchema`. `total` and `truncated` let the model see that more hits
-/// exist without us shipping them.
+// `total`/`truncated` are what let the model see that more hits exist without us
+// shipping them — the whole point of the cap.
+/// Ranked search results.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct SearchOutput {
     pub results: Vec<SearchResult>,
-    /// Files that matched, before `offset`/`limit` were applied.
+    /// Files that matched, before `offset`/`limit`.
     pub total: usize,
     pub offset: usize,
-    /// Whether more matching files exist past this page.
+    /// Whether more matches exist past this page.
     pub truncated: bool,
 }
 
-/// What a query is matched against. Deriving `Deserialize`/`JsonSchema` here (in
-/// the domain, which owns the vocabulary) means an unknown value is rejected as
-/// `INVALID_PARAMS` instead of silently degrading to `Content`, and the tool's
-/// `inputSchema` advertises the legal values rather than burying them in prose.
+// Typed here, in the domain that owns the vocabulary, so an unknown value is
+// rejected as INVALID_PARAMS instead of silently degrading to Content — and the
+// legal values reach the model as an enum in the schema rather than as prose.
+//
+// The `schemars(description)` is deliberate: `#[derive(JsonSchema)]` promotes
+// rustdoc straight onto the wire, and the paragraph above is for maintainers, not
+// for the model, which pays for it in context on every conversation.
+/// What the query is matched against.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum SearchType {
@@ -156,7 +169,6 @@ fn line_weight(line: &str, in_frontmatter: bool) -> f32 {
 /// tokenized — they only contribute their length to the corpus average.
 struct Candidate {
     path: String,
-    filename: String,
     /// Weighted term frequency per query term.
     tf: Vec<f32>,
     /// Whether the term occurs at all, for the document-frequency count.
@@ -332,7 +344,6 @@ pub(crate) fn search(
                         .unwrap_or(path)
                         .display()
                         .to_string(),
-                    filename: filename.trim_end_matches(".md").to_string(),
                     tf,
                     present,
                     len,
@@ -365,7 +376,6 @@ pub(crate) fn search(
         .map(|c| SearchResult {
             score: bm25(c, &idf, avgdl),
             path: std::mem::take(&mut c.path),
-            filename: std::mem::take(&mut c.filename),
             match_count: c.match_count,
             truncated: c.match_count > c.snippets.len(),
             snippets: std::mem::take(&mut c.snippets),
@@ -445,7 +455,6 @@ fn regex_search(
 
             Some(SearchResult {
                 path: super::rel_path(root, path),
-                filename: filename.trim_end_matches(".md").to_string(),
                 score: match_count as f32,
                 match_count,
                 truncated: match_count > snippets.len(),
@@ -478,10 +487,8 @@ fn filter_only(
             if !matches_meta(&content, filter) {
                 return None;
             }
-            let filename = path.file_name()?.to_str()?.to_string();
             Some(SearchResult {
                 path: super::rel_path(root, path),
-                filename: filename.trim_end_matches(".md").to_string(),
                 score: 1.0,
                 match_count: 1,
                 truncated: false,
@@ -509,10 +516,8 @@ fn tag_search(
             if !content_has_tag(&content, tag) || !matches_meta(&content, filter) {
                 return None;
             }
-            let filename = path.file_name()?.to_str()?.to_string();
             Some(SearchResult {
                 path: super::rel_path(root, path),
-                filename: filename.trim_end_matches(".md").to_string(),
                 score: 1.0,
                 match_count: 1,
                 snippets: vec![Snippet {

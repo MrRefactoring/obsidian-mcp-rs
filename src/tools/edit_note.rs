@@ -6,7 +6,8 @@ use crate::vault::{EditOperation, TargetKind};
 pub struct EditNoteParams {
     /// Name of the vault containing the note
     pub vault: String,
-    /// Note filename (with or without .md extension). Do not include path separators.
+    /// Note to act on: a vault-relative path (`projects/apollo.md`) or a bare
+    /// filename. `.md` optional. `search-vault`'s `path` works as-is.
     pub filename: String,
     /// What to do: "append" adds to the end, "prepend" to the start, "replace" overwrites, "find_and_replace" swaps the first occurrence of `search` for `content`
     pub operation: EditOperation,

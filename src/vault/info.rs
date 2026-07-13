@@ -149,10 +149,17 @@ pub(crate) fn info(root: &Path, query: &InfoQuery, limit: usize) -> InfoOutput {
     let files = md_files(root);
 
     match query {
-        InfoQuery::Tags => InfoOutput {
-            tags: tag_counts(&files),
-            ..InfoOutput::empty()
-        },
+        InfoQuery::Tags => {
+            // `limit` used to be documented as "ignored by the other queries",
+            // which was honest but left no way at all to cap this list — a vault
+            // with 500 tags returned all 500, every time.
+            let mut tags = tag_counts(&files);
+            tags.truncate(limit);
+            InfoOutput {
+                tags,
+                ..InfoOutput::empty()
+            }
+        }
         InfoQuery::Recent => InfoOutput {
             recent: recent(root, &files, limit),
             ..InfoOutput::empty()

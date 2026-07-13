@@ -6,7 +6,8 @@ use crate::vault::{NoteView, ReadWindow};
 pub struct ReadNoteParams {
     /// Name of the vault containing the note
     pub vault: String,
-    /// Note filename (with or without .md extension). Do not include path separators.
+    /// Note to act on: a vault-relative path (`projects/apollo.md`) or a bare
+    /// filename. `.md` optional. `search-vault`'s `path` works as-is.
     pub filename: String,
     /// Optional subfolder path relative to vault root (e.g. "journal/2024")
     pub folder: Option<String>,

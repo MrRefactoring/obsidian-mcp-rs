@@ -288,16 +288,23 @@ pub(crate) fn outline(content: &str) -> String {
         return out;
     }
 
+    // The target is *quoted*, and nothing but the target is inside the quotes.
+    //
+    // This used to print `## Log (line 9)`, and a model that faithfully copied
+    // that line as its `target` got `TargetNotFound` — the ` (line 9)` came along
+    // with it. The one tool whose entire purpose is to tell the patcher what to
+    // aim at was handing it something the patcher cannot find.
+    out.push_str("targets for edit-note — pass targetType and the quoted target:\n");
     for h in &headings {
         out.push_str(&format!(
-            "{} {} (line {})\n",
+            "  heading  \"{} {}\"  (line {})\n",
             "#".repeat(h.level),
             h.text,
             h.line
         ));
     }
     for b in &blocks {
-        out.push_str(&format!("^{} (line {})\n", b.id, b.line));
+        out.push_str(&format!("  block    \"^{}\"  (line {})\n", b.id, b.line));
     }
     out
 }
@@ -527,10 +534,10 @@ deep text
     fn outline_lists_every_patchable_target() {
         let out = outline(NOTE);
         assert!(out.contains("frontmatter keys: title"));
-        assert!(out.contains("# Top (line 4)"));
-        assert!(out.contains("## Log (line 8)"));
-        assert!(out.contains("### Deep (line 16)"));
-        assert!(out.contains("^n1 (line 14)"));
+        assert!(out.contains("heading  \"# Top\"  (line 4)"), "{out}");
+        assert!(out.contains("heading  \"## Log\"  (line 8)"), "{out}");
+        assert!(out.contains("heading  \"### Deep\"  (line 16)"), "{out}");
+        assert!(out.contains("block    \"^n1\"  (line 14)"), "{out}");
     }
 
     #[test]
@@ -542,6 +549,41 @@ deep text
                 h.text
             );
         }
+    }
+
+    #[test]
+    fn a_target_copied_verbatim_out_of_the_rendered_outline_resolves() {
+        // The test above checks the *parsed* headings, which is not what a model
+        // sees — it sees the rendered text. The outline used to print
+        // `## Log (line 9)`, so a model copying that line faithfully got
+        // TargetNotFound: the ` (line 9)` came with it. This asserts on the bytes
+        // we actually emit, which is where the contract really lives.
+        let rendered = outline(NOTE);
+        let mut checked = 0;
+
+        for line in rendered.lines() {
+            let trimmed = line.trim();
+            let kind = if trimmed.starts_with("heading ") {
+                TargetKind::Heading
+            } else if trimmed.starts_with("block ") {
+                TargetKind::Block
+            } else {
+                continue;
+            };
+            // Everything the model should copy sits between the quotes.
+            let target = trimmed
+                .split('"')
+                .nth(1)
+                .unwrap_or_else(|| panic!("no quoted target in outline line: {line:?}"));
+
+            assert!(
+                find_region(NOTE, &kind, target).is_some(),
+                "the outline printed {target:?}, but the patcher cannot find it"
+            );
+            checked += 1;
+        }
+
+        assert!(checked >= 4, "the outline offered no targets at all");
     }
 
     #[test]

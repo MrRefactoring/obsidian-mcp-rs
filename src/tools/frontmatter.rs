@@ -6,7 +6,8 @@ use crate::vault::FrontmatterAction;
 pub struct FrontmatterParams {
     /// Name of the vault containing the note
     pub vault: String,
-    /// Note filename (with or without .md extension). Do not include path separators.
+    /// Note to act on: a vault-relative path (`projects/apollo.md`) or a bare
+    /// filename. `.md` optional. `search-vault`'s `path` works as-is.
     pub filename: String,
     /// What to do: "get" reads, "set" writes `key` = `value`, "remove" deletes `key`
     pub action: FrontmatterAction,

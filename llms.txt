@@ -20,11 +20,11 @@
 - `create-directory` — create a directory inside a vault
 - `search-vault` — BM25-ranked search by content, filename, or tag (`tag:` prefix); paged via `limit`/`offset`. `regex: true` matches a pattern instead of words; `frontmatter: {"status": "active"}` keeps only notes carrying those fields (a list field matches when it contains the value), and works alone with an empty query
 - `list-available-vaults` — list all configured vaults
-- `wikilinks` — link graph: `backlinks`, `outgoing`, `broken`, `orphans`
+- `wikilinks` — link graph: `backlinks`, `outgoing`, `broken`, `orphans`; paged via `limit`/`offset`
 - `frontmatter` — read or write any YAML frontmatter key (`get`/`set`/`remove`), preserving the rest of the block
-- `vault-info` — what's in the vault: `tags` (with counts), `recent`, `stats`
+- `vault-info` — what's in the vault: `tags` (with counts), `recent`, `stats`; capped by `limit`
 - `periodic` — daily/weekly/monthly/quarterly/yearly notes (`get`/`create`/`list`), using Obsidian's own name, folder and template settings
-- `add-tags` — add tags to frontmatter and/or content
+- `add-tags` — add tags to frontmatter and/or content (`location`, `position`). Every file must exist, or nothing is changed
 - `remove-tags` — remove tags from a note
 - `rename-tag` — rename a tag across all notes in a vault
 
