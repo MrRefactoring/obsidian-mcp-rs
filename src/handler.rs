@@ -669,7 +669,20 @@ impl ObsidianHandler {
         }
         let list = vaults
             .iter()
-            .map(|(name, path)| format!("- {} → {}", name, path.display()))
+            .map(|(name, path)| {
+                // A configured path that isn't on disk is a typo in the client's
+                // config. Say so here, or the model has no way to tell an empty
+                // vault from a vault that isn't there.
+                if path.exists() {
+                    format!("- {} → {}", name, path.display())
+                } else {
+                    format!(
+                        "- {} → {} (MISSING — this directory does not exist; the path is probably mistyped in the MCP client's config)",
+                        name,
+                        path.display()
+                    )
+                }
+            })
             .collect::<Vec<_>>()
             .join("\n");
         ok(format!("Available vaults:\n{}", list))

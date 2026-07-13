@@ -6,6 +6,13 @@ pub enum VaultError {
     VaultNotFound(String, String),
 
     #[error(
+        "Vault '{0}' is configured to point at '{1}', but that directory does not exist. \
+         The path was most likely mistyped when this server was set up — tell the user, \
+         and do not report the vault as empty."
+    )]
+    VaultUnavailable(String, String),
+
+    #[error(
         "Note '{0}' not found in vault '{1}'. Check the folder, or run search-vault with searchType=\"filename\" to locate it."
     )]
     NoteNotFound(String, String),
@@ -53,7 +60,8 @@ impl VaultError {
     pub fn is_tool_execution_error(&self) -> bool {
         matches!(
             self,
-            VaultError::NoteNotFound(..)
+            VaultError::VaultUnavailable(..)
+                | VaultError::NoteNotFound(..)
                 | VaultError::NoteAlreadyExists(..)
                 | VaultError::DirectoryAlreadyExists(..)
                 | VaultError::SearchTextNotFound(..)
@@ -69,6 +77,7 @@ impl From<VaultError> for rmcp::ErrorData {
         // client can tell them apart from genuine server faults (IO/search).
         let code = match &err {
             VaultError::VaultNotFound(..)
+            | VaultError::VaultUnavailable(..)
             | VaultError::NoteNotFound(..)
             | VaultError::NoteAlreadyExists(..)
             | VaultError::DirectoryAlreadyExists(..)

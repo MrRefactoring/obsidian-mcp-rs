@@ -232,6 +232,14 @@ pub struct FrontmatterOutput {
 /// link graph and `rename-tag` — never sees it again.
 const TRASH: &str = ".trash";
 
+/// A directory's own name, e.g. `notes` for `~/work/notes`.
+fn basename(path: &Path) -> String {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("vault")
+        .to_string()
+}
+
 /// What `delete-note` did.
 #[derive(Debug, Clone)]
 pub struct DeleteOutcome {
@@ -283,28 +291,36 @@ impl VaultManager {
     pub fn new(vault_paths: Vec<PathBuf>) -> Self {
         let mut vaults = HashMap::new();
         for path in vault_paths {
-            let base = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("vault")
-                .to_string();
+            let base = basename(&path);
             // Disambiguate when the basename collides — `~/work/notes` and
             // `~/personal/notes` would otherwise shadow each other silently.
+            //
+            // The disambiguator is the *parent directory*, not an ordinal. A
+            // `notes-2` was assigned by argument order, so reordering the paths —
+            // a plausible hand-edit of a config — silently swapped which vault
+            // `notes` and `notes-2` meant, and "save this to notes" then wrote to
+            // the wrong one. `work/notes` and `personal/notes` are stable, and
+            // they actually tell the model which is which.
             let name = if vaults.contains_key(&base) {
+                let qualified = match path.parent().map(basename) {
+                    Some(parent) if !parent.is_empty() => format!("{parent}/{base}"),
+                    _ => base.clone(),
+                };
+                tracing::warn!(
+                    vault = %qualified,
+                    original = %base,
+                    path = %path.display(),
+                    "vault basename collision — registered under its parent folder"
+                );
+                // Two vaults with the same name *and* the same parent name: now an
+                // ordinal is the only thing left.
+                let mut candidate = qualified.clone();
                 let mut n = 2;
-                loop {
-                    let candidate = format!("{base}-{n}");
-                    if !vaults.contains_key(&candidate) {
-                        tracing::warn!(
-                            vault = %candidate,
-                            original = %base,
-                            path = %path.display(),
-                            "vault basename collision — registered under disambiguated name"
-                        );
-                        break candidate;
-                    }
+                while vaults.contains_key(&candidate) {
+                    candidate = format!("{qualified}-{n}");
                     n += 1;
                 }
+                candidate
             } else {
                 base
             };
@@ -351,6 +367,24 @@ impl VaultManager {
     }
 
     pub fn resolve_vault(&self, name: &str) -> Result<&Path, VaultError> {
+        let path = self.resolve_registered(name)?;
+        // A vault path that isn't there is nearly always a typo made when the
+        // server was configured — and until now it was invisible: every search
+        // came back empty and every tool said `isError: false`, so the model
+        // reported "I looked through your vault and found nothing". The warning
+        // we printed went to stderr, which MCP clients swallow. Say it in-band,
+        // where the model — and therefore the user — will actually see it.
+        if !path.exists() {
+            return Err(VaultError::VaultUnavailable(
+                name.to_string(),
+                path.display().to_string(),
+            ));
+        }
+        Ok(path)
+    }
+
+    /// The vault's configured path, whether or not it exists on disk.
+    fn resolve_registered(&self, name: &str) -> Result<&Path, VaultError> {
         self.vaults.get(name).map(|p| p.as_path()).ok_or_else(|| {
             let available = self.vaults.keys().cloned().collect::<Vec<_>>().join(", ");
             VaultError::VaultNotFound(name.to_string(), available)
@@ -1777,20 +1811,63 @@ mod tests {
     // ── VaultManager basics ───────────────────────────────────────────────────
 
     #[test]
-    fn vault_basename_collisions_are_disambiguated() {
+    fn a_name_collision_is_broken_by_the_parent_folder() {
         use std::fs;
-        let parent_a = TempDir::new().unwrap();
-        let parent_b = TempDir::new().unwrap();
-        fs::create_dir(parent_a.path().join("notes")).unwrap();
-        fs::create_dir(parent_b.path().join("notes")).unwrap();
+        let root = TempDir::new().unwrap();
+        for parent in ["work", "personal"] {
+            fs::create_dir_all(root.path().join(parent).join("notes")).unwrap();
+        }
         let manager = VaultManager::new(vec![
-            parent_a.path().join("notes"),
-            parent_b.path().join("notes"),
+            root.path().join("work").join("notes"),
+            root.path().join("personal").join("notes"),
         ]);
         let names: Vec<String> = manager.list_vaults().into_iter().map(|(n, _)| n).collect();
         assert_eq!(names.len(), 2, "both vaults must be registered: {names:?}");
         assert!(names.iter().any(|n| n == "notes"));
-        assert!(names.iter().any(|n| n == "notes-2"));
+        assert!(
+            names.iter().any(|n| n == "personal/notes"),
+            "the second must be named for its parent, not given an ordinal: {names:?}"
+        );
+    }
+
+    #[test]
+    fn reordering_the_vault_paths_does_not_swap_which_is_which() {
+        // The old `-2` suffix was assigned by argument order, so reordering the
+        // paths — a plausible hand-edit of a config — silently swapped `notes` and
+        // `notes-2`. "Save this to notes" then wrote to the other vault.
+        use std::fs;
+        let root = TempDir::new().unwrap();
+        for parent in ["work", "personal"] {
+            fs::create_dir_all(root.path().join(parent).join("notes")).unwrap();
+        }
+        let work = root.path().join("work").join("notes");
+        let personal = root.path().join("personal").join("notes");
+
+        let one = VaultManager::new(vec![work.clone(), personal.clone()]);
+        let two = VaultManager::new(vec![personal.clone(), work.clone()]);
+
+        // Whichever order they were given in, a qualified name still points at the
+        // directory it names.
+        let resolve = |m: &VaultManager, name: &str| m.resolve_vault(name).map(Path::to_path_buf);
+        assert_eq!(resolve(&one, "personal/notes").unwrap(), personal);
+        assert_eq!(resolve(&two, "work/notes").unwrap(), work);
+    }
+
+    #[test]
+    fn a_vault_whose_directory_is_gone_says_so_instead_of_looking_empty() {
+        // The silent failure this exists to kill: a mistyped path produced a
+        // server that started fine, searched happily, and found nothing — so the
+        // assistant reported "your vault is empty".
+        let manager = VaultManager::new(vec![PathBuf::from("/nonexistent/typo/vault")]);
+        let err = manager
+            .resolve_vault("vault")
+            .expect_err("a missing directory must be an error, not an empty vault");
+        assert!(matches!(err, VaultError::VaultUnavailable(..)), "{err}");
+        assert!(err.to_string().contains("does not exist"), "{err}");
+        assert!(
+            err.is_tool_execution_error(),
+            "the model must see this and tell the user, not get a bare protocol error"
+        );
     }
 
     #[test]

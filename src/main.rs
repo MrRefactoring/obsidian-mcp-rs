@@ -77,7 +77,13 @@ enum Commands {
 
     /// Show the log file location and its most recent entries.
     /// Use this when reporting a bug.
-    Logs,
+    Logs {
+        /// Read this log instead of the default one. Pass the same path you gave
+        /// the server's `--log-file`, or `logs` will show you a stale default
+        /// while the log you are actually writing sits elsewhere.
+        #[arg(long, value_name = "PATH")]
+        log_file: Option<PathBuf>,
+    },
 }
 
 // ── Logging setup ─────────────────────────────────────────────────────────────
@@ -194,10 +200,12 @@ fn setup_logging(verbose: bool, log_path: Option<PathBuf>) {
 }
 
 /// Print the log file path and its most recent entries for bug reporting.
-fn run_logs() -> anyhow::Result<()> {
+fn run_logs(log_file: Option<PathBuf>) -> anyhow::Result<()> {
     use console::style;
 
-    let path = default_log_path().unwrap_or_else(|| PathBuf::from("obsidian-mcp-rs.log"));
+    let path = log_file
+        .or_else(default_log_path)
+        .unwrap_or_else(|| PathBuf::from("obsidian-mcp-rs.log"));
 
     println!(
         "{} {}",
@@ -283,7 +291,7 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Install(args)) => install::run_install(args)?,
         Some(Commands::Uninstall(args)) => install::run_uninstall(args)?,
         Some(Commands::List) => install::run_list()?,
-        Some(Commands::Logs) => run_logs()?,
+        Some(Commands::Logs { log_file }) => run_logs(log_file)?,
         None => {
             if cli.vaults.is_empty() {
                 eprintln!(

@@ -39,6 +39,7 @@ rayon = "1"
 serde_yml = { package = "serde_yaml_ng", version = "0.10" }
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 regex = "1.13.0"
+jsonc-parser = { version = "0.33", default-features = false, features = ["cst", "serde_json"] }
 
 [features]
 default = []
