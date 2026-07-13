@@ -577,7 +577,7 @@ npx obsidian-mcp-rs /vault/path
           │
           ├── clap → CLI args parsing
           ├── VaultManager → filesystem operations
-          ├── ObsidianHandler → 11 MCP tool implementations
+          ├── ObsidianHandler → 15 MCP tool implementations
           └── rmcp → JSON-RPC / MCP protocol
 ```
 

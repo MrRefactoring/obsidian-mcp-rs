@@ -758,11 +758,7 @@ impl VaultManager {
         fs::rename(&src, &dest).map_err(|e| VaultError::io(src.display().to_string(), e))?;
         prune_empty_parent(&src, &root);
 
-        let dest_rel = dest
-            .strip_prefix(&root)
-            .unwrap_or(&dest)
-            .to_string_lossy()
-            .replace('\\', "/");
+        let dest_rel = rel_path(&root, &dest);
 
         // The moved note can link to itself; it is already at its new path, so
         // rewrite it there rather than at the path it just left.
@@ -774,13 +770,7 @@ impl VaultManager {
                 let updated =
                     links::rewrite_links(&content, path, &src, &dest_rel, &resolver)?;
                 match atomic_write(read_at, updated.as_bytes()) {
-                    Ok(()) => Some(
-                        read_at
-                            .strip_prefix(&root)
-                            .unwrap_or(read_at)
-                            .to_string_lossy()
-                            .replace('\\', "/"),
-                    ),
+                    Ok(()) => Some(rel_path(&root, read_at)),
                     Err(e) => {
                         tracing::warn!(note = %read_at.display(), error = %e, "failed to update links");
                         None
@@ -865,12 +855,7 @@ impl VaultManager {
                         vault.to_string(),
                     ));
                 }
-                Some(
-                    path.strip_prefix(&root)
-                        .unwrap_or(&path)
-                        .to_string_lossy()
-                        .replace('\\', "/"),
-                )
+                Some(rel_path(&root, &path))
             }
             _ => None,
         };
@@ -902,12 +887,7 @@ impl VaultManager {
                     refs.iter().filter_map(|r| r.resolved.as_deref()).collect();
                 let mut notes: Vec<String> = files
                     .iter()
-                    .map(|p| {
-                        p.strip_prefix(&root)
-                            .unwrap_or(p)
-                            .to_string_lossy()
-                            .replace('\\', "/")
-                    })
+                    .map(|p| rel_path(&root, p))
                     .filter(|rel| !linked.contains(rel.as_str()))
                     .collect();
                 notes.sort();
@@ -1118,12 +1098,7 @@ impl VaultManager {
                 }
                 let new_content = rename_tag_in_note(&content, old_tag, new_tag);
                 atomic_write(path, new_content.as_bytes())?;
-                let rel = path
-                    .strip_prefix(root)
-                    .unwrap_or(path)
-                    .display()
-                    .to_string();
-                Ok(Some(rel))
+                Ok(Some(rel_path(root, path)))
             })
             .collect::<Result<Vec<_>, _>>()?
             .into_iter()
@@ -1159,6 +1134,12 @@ fn free_path(wanted: &Path) -> PathBuf {
 
 /// A note's path as the vault refers to it: relative to the root, `/`-separated
 /// on every platform.
+///
+/// **Every path that leaves this crate goes through here.** Ranked search and
+/// `rename-tag` each used to build their own with `Path::display()`, which on
+/// Windows emitted `sub\deep.md` while the link graph and the other search paths
+/// emitted `sub/deep.md` — so the same note had two names depending on which tool
+/// you asked, and only the CI Windows leg noticed.
 fn rel_path(root: &Path, path: &Path) -> String {
     path.strip_prefix(root)
         .unwrap_or(path)
@@ -2886,6 +2867,45 @@ mod tests {
             .unwrap();
         assert_eq!(results.results.len(), 1);
         assert_eq!(results.results[0].path, "sub/inner.md");
+    }
+
+    #[test]
+    fn every_tool_names_a_note_the_same_way() {
+        // Ranked search and rename-tag each built their own relative path with
+        // `Path::display()`, so on Windows they said `sub\deep.md` while the link
+        // graph and the other search paths said `sub/deep.md` — the same note with
+        // two names, depending on which tool you asked. Only the Windows CI leg
+        // caught it, which is why this asserts on the shape rather than the
+        // platform: `rel_path` is the single point every outgoing path goes
+        // through, and a backslash must never survive it.
+        let root = Path::new("/vault");
+        let nested = Path::new("/vault/sub/deep.md");
+        assert_eq!(rel_path(root, nested), "sub/deep.md");
+
+        // And a note in a folder must come out `/`-separated from every tool that
+        // names one.
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        fs::create_dir_all(dir.path().join("sub")).unwrap();
+        write_note(&dir, "sub/deep.md", "---\ntags:\n  - old\n---\nneedle\n");
+
+        let searched = vault
+            .search_vault(
+                &name,
+                None,
+                &text_query("needle", false, &SearchType::Content),
+                &SearchLimits::default(),
+            )
+            .unwrap();
+        let renamed = vault.rename_tag(&name, "old", "new").unwrap();
+
+        for named in [&searched.results[0].path, &renamed[0]] {
+            assert!(
+                !named.contains('\\'),
+                "a path left the crate with a backslash in it: {named:?}"
+            );
+            assert_eq!(named, "sub/deep.md");
+        }
     }
 
     #[test]
