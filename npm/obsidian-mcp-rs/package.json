@@ -1,6 +1,6 @@
 {
   "name": "obsidian-mcp-rs",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Rust MCP server for Obsidian vaults — read, write, search notes via Model Context Protocol. Works with Claude, Cursor, and any MCP client.",
   "keywords": [
     "obsidian",
@@ -47,13 +47,13 @@
     "test:coverage": "vitest run --coverage"
   },
   "optionalDependencies": {
-    "@obsidian-mcp-rs/darwin-arm64": "0.5.0",
-    "@obsidian-mcp-rs/darwin-x64": "0.5.0",
-    "@obsidian-mcp-rs/linux-arm64": "0.5.0",
-    "@obsidian-mcp-rs/linux-x64": "0.5.0",
-    "@obsidian-mcp-rs/linux-x64-musl": "0.5.0",
-    "@obsidian-mcp-rs/win32-arm64": "0.5.0",
-    "@obsidian-mcp-rs/win32-x64": "0.5.0"
+    "@obsidian-mcp-rs/darwin-arm64": "0.5.1",
+    "@obsidian-mcp-rs/darwin-x64": "0.5.1",
+    "@obsidian-mcp-rs/linux-arm64": "0.5.1",
+    "@obsidian-mcp-rs/linux-x64": "0.5.1",
+    "@obsidian-mcp-rs/linux-x64-musl": "0.5.1",
+    "@obsidian-mcp-rs/win32-arm64": "0.5.1",
+    "@obsidian-mcp-rs/win32-x64": "0.5.1"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
