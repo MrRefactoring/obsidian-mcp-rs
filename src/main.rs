@@ -149,17 +149,35 @@ impl Write for FileWriterGuard<'_> {
     }
 }
 
+/// What "debug" means for this server: everything *we* emit, and nothing else.
+///
+/// Plain `debug` is a different setting than it looks. It turns on DEBUG for
+/// every dependency too, and two of them are actively harmful here:
+///
+/// - `rmcp` logs each response payload, so a note the user read or searched is
+///   written to a file on disk in plaintext. Nobody asked for their notes to be
+///   copied out of the vault, and a log is exactly the file that gets pasted
+///   into a bug report.
+/// - `ignore` logs a line per directory entry it considers. Roughly a thousand
+///   lines per vault-wide call was measured on a 5,000-note vault, which is what
+///   turned a diagnostic log into megabytes of noise the actual diagnosis is
+///   buried in.
+///
+/// So the level applies to this crate, and everything else has to earn its way
+/// in through `RUST_LOG`.
+const OUR_DEBUG: &str = "warn,obsidian_mcp_rs=debug";
+
 /// Initialise the global tracing subscriber.
 ///
-/// - **stderr**: WARN by default (DEBUG when `verbose = true`), overridden by `RUST_LOG`
-/// - **file**: DEBUG always — captures everything for bug reports
+/// - **stderr**: WARN by default (our own DEBUG when `verbose = true`), overridden by `RUST_LOG`
+/// - **file**: our own DEBUG always — captures what we did, never what the notes said
 fn setup_logging(verbose: bool, log_path: Option<PathBuf>) {
     use tracing_subscriber::{
         EnvFilter, Layer, fmt, layer::SubscriberExt, util::SubscriberInitExt,
     };
 
     let stderr_filter = if verbose {
-        EnvFilter::new("debug")
+        EnvFilter::new(OUR_DEBUG)
     } else {
         EnvFilter::from_default_env().add_directive(tracing::Level::WARN.into())
     };
@@ -185,7 +203,7 @@ fn setup_logging(verbose: bool, log_path: Option<PathBuf>) {
             fmt::layer()
                 .with_writer(writer)
                 .with_ansi(false)
-                .with_filter(EnvFilter::new("debug"))
+                .with_filter(EnvFilter::new(OUR_DEBUG))
                 .boxed(),
         )
     });
