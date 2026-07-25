@@ -12,6 +12,8 @@ use std::{collections::HashMap, fs, path::Path};
 
 use chrono::{DateTime, Utc};
 use rayon::prelude::*;
+
+use super::cache::ContentCache;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -98,10 +100,10 @@ fn tags_of(content: &str) -> Vec<String> {
     tags
 }
 
-fn tag_counts(files: &[std::path::PathBuf]) -> Vec<TagCount> {
+fn tag_counts(files: &[std::path::PathBuf], cache: &ContentCache) -> Vec<TagCount> {
     let counts = files
         .par_iter()
-        .filter_map(|path| fs::read_to_string(path).ok())
+        .filter_map(|path| cache.read(path))
         .fold(HashMap::<String, usize>::new, |mut acc, content| {
             for tag in tags_of(&content) {
                 *acc.entry(tag).or_default() += 1;
@@ -145,7 +147,12 @@ fn recent(root: &Path, files: &[std::path::PathBuf], limit: usize) -> Vec<Recent
     notes.into_iter().take(limit).map(|(_, n)| n).collect()
 }
 
-pub(crate) fn info(root: &Path, query: &InfoQuery, limit: usize) -> InfoOutput {
+pub(crate) fn info(
+    root: &Path,
+    query: &InfoQuery,
+    limit: usize,
+    cache: &ContentCache,
+) -> InfoOutput {
     let files = md_files(root);
 
     match query {
@@ -153,7 +160,7 @@ pub(crate) fn info(root: &Path, query: &InfoQuery, limit: usize) -> InfoOutput {
             // `limit` used to be documented as "ignored by the other queries",
             // which was honest but left no way at all to cap this list — a vault
             // with 500 tags returned all 500, every time.
-            let mut tags = tag_counts(&files);
+            let mut tags = tag_counts(&files, cache);
             tags.truncate(limit);
             InfoOutput {
                 tags,
@@ -176,14 +183,14 @@ pub(crate) fn info(root: &Path, query: &InfoQuery, limit: usize) -> InfoOutput {
                 .filter(|p| *p != root)
                 .collect::<std::collections::HashSet<_>>()
                 .len();
-            let (_, _, refs) = link_graph(root);
+            let (_, _, refs) = link_graph(root, cache);
 
             InfoOutput {
                 stats: Some(Stats {
                     notes: files.len(),
                     folders,
                     bytes,
-                    tags: tag_counts(&files).len(),
+                    tags: tag_counts(&files, cache).len(),
                     links: refs.len(),
                     broken_links: refs.iter().filter(|r| r.resolved.is_none()).count(),
                 }),
@@ -218,7 +225,12 @@ mod tests {
     #[test]
     fn tags_counts_notes_not_occurrences() {
         let dir = vault();
-        let out = info(dir.path(), &InfoQuery::Tags, DEFAULT_RECENT);
+        let out = info(
+            dir.path(),
+            &InfoQuery::Tags,
+            DEFAULT_RECENT,
+            &ContentCache::default(),
+        );
         let counts: Vec<(&str, usize)> =
             out.tags.iter().map(|t| (t.tag.as_str(), t.notes)).collect();
 
@@ -230,7 +242,12 @@ mod tests {
     #[test]
     fn a_tag_inside_a_code_block_is_not_a_tag() {
         let dir = vault();
-        let out = info(dir.path(), &InfoQuery::Tags, DEFAULT_RECENT);
+        let out = info(
+            dir.path(),
+            &InfoQuery::Tags,
+            DEFAULT_RECENT,
+            &ContentCache::default(),
+        );
         assert!(
             !out.tags.iter().any(|t| t.tag == "notatag"),
             "a # in a shell snippet is a comment: {:?}",
@@ -241,9 +258,14 @@ mod tests {
     #[test]
     fn stats_describe_the_vault() {
         let dir = vault();
-        let s = info(dir.path(), &InfoQuery::Stats, DEFAULT_RECENT)
-            .stats
-            .unwrap();
+        let s = info(
+            dir.path(),
+            &InfoQuery::Stats,
+            DEFAULT_RECENT,
+            &ContentCache::default(),
+        )
+        .stats
+        .unwrap();
 
         assert_eq!(s.notes, 2);
         assert_eq!(s.folders, 1, "only sub/ — the root is not a folder");
@@ -260,7 +282,12 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(10));
         fs::write(dir.path().join("sub/b.md"), "touched").unwrap();
 
-        let out = info(dir.path(), &InfoQuery::Recent, DEFAULT_RECENT);
+        let out = info(
+            dir.path(),
+            &InfoQuery::Recent,
+            DEFAULT_RECENT,
+            &ContentCache::default(),
+        );
         let paths: Vec<&str> = out.recent.iter().map(|n| n.path.as_str()).collect();
 
         assert_eq!(paths, vec!["sub/b.md", "a.md"]);
@@ -274,7 +301,7 @@ mod tests {
     #[test]
     fn recent_respects_the_limit() {
         let dir = vault();
-        let out = info(dir.path(), &InfoQuery::Recent, 1);
+        let out = info(dir.path(), &InfoQuery::Recent, 1, &ContentCache::default());
         assert_eq!(out.recent.len(), 1);
     }
 }

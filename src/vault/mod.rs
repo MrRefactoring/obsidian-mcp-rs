@@ -1,3 +1,4 @@
+mod cache;
 mod frontmatter;
 mod info;
 mod links;
@@ -351,6 +352,9 @@ pub struct VaultManager {
     /// Serialises every mutation *between* processes. `None` disables it, which
     /// is what happens when the OS offers no cache directory to put it in.
     lock_path: Option<PathBuf>,
+    /// Note contents, so a vault-wide read does not re-read an unchanged vault.
+    /// Read-only operations only — see `cache`.
+    cache: cache::ContentCache,
 }
 
 /// Both halves of the write lock, released together when this is dropped.
@@ -415,6 +419,7 @@ impl VaultManager {
             vaults,
             write_lock: Mutex::new(()),
             lock_path,
+            cache: cache::ContentCache::default(),
         }
     }
 
@@ -871,7 +876,7 @@ impl VaultManager {
             Some(p) if !p.is_empty() => safe_join(root, None, p)?,
             _ => root.to_path_buf(),
         };
-        search::search(root, &search_root, query, limits)
+        search::search(root, &search_root, query, limits, &self.cache)
     }
 
     /// Query the vault's link graph. One parallel pass builds the whole graph,
@@ -885,7 +890,7 @@ impl VaultManager {
         limits: &LinkLimits,
     ) -> Result<LinkOutput, VaultError> {
         let root = self.resolve_vault(vault)?.to_path_buf();
-        let (files, _, refs) = links::link_graph(&root);
+        let (files, _, refs) = links::link_graph(&root, &self.cache);
 
         // `backlinks` and `outgoing` are about one note, so they need one.
         let note = match query {
@@ -1032,7 +1037,7 @@ impl VaultManager {
         limit: usize,
     ) -> Result<InfoOutput, VaultError> {
         let root = self.resolve_vault(vault)?;
-        Ok(info::info(root, query, limit))
+        Ok(info::info(root, query, limit, &self.cache))
     }
 
     pub fn add_tags(
@@ -1292,6 +1297,74 @@ mod tests {
         assert_eq!(
             fs::read_to_string(dir.path().join("note.md")).unwrap(),
             "# hello"
+        );
+    }
+
+    /// The invariant that keeps the content cache from eating data: a
+    /// read-modify-write must read from disk, never from memory.
+    ///
+    /// Set up the worst case the cache's `(mtime, len)` stamp cannot see — an
+    /// outside writer replacing the text with something the same length inside
+    /// the same mtime tick — and then edit the note. A search may serve the
+    /// stale snippet; that is the accepted trade. An *edit* built on stale text
+    /// would write the other writer's change out of existence, and that is not.
+    #[test]
+    fn an_edit_never_builds_on_a_cached_read() {
+        let dir = TempDir::new().unwrap();
+        let name = vault_name(&dir);
+        let manager = VaultManager::with_lock_path(
+            vec![dir.path().to_path_buf()],
+            dir.path().join(".write.lock"),
+        );
+
+        let note = dir.path().join("a.md");
+        fs::write(&note, "AAAA").unwrap();
+
+        // Populate the cache through a read-only path.
+        manager
+            .search_vault(
+                &name,
+                None,
+                &SearchQuery {
+                    query: "AAAA",
+                    case_sensitive: false,
+                    search_type: &SearchType::Content,
+                    regex: false,
+                    frontmatter: &MetaFilter::new(),
+                },
+                &SearchLimits::default(),
+            )
+            .unwrap();
+
+        // Someone else rewrites it: same length, same timestamp. Nothing the
+        // stamp can detect.
+        let stamp = fs::metadata(&note).unwrap().modified().unwrap();
+        fs::write(&note, "BBBB").unwrap();
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&note)
+            .unwrap()
+            .set_modified(stamp)
+            .unwrap();
+
+        manager
+            .edit_note(
+                &name,
+                "a.md",
+                None,
+                &Edit {
+                    operation: EditOperation::Append,
+                    content: "X",
+                    search: None,
+                    target: None,
+                },
+            )
+            .unwrap();
+
+        let on_disk = fs::read_to_string(&note).unwrap();
+        assert!(
+            on_disk.starts_with("BBBB"),
+            "the edit was built on cached text and destroyed the other writer's change: {on_disk:?}"
         );
     }
 
