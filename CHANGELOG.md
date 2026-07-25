@@ -1,5 +1,49 @@
 # Changelog
 
+## [0.7.0] - 2026-07-25
+
+A lifecycle release. The server used to depend on its client behaving well — closing stdin on the way out, being the only one running, being the only thing writing to the vault. None of those held in practice, and each one had a consequence: processes that outlived their client and kept write access to someone's notes, two live servers silently losing each other's edits, and a log that quietly copied the vault into a plaintext file on disk. All three are closed here. The installer also stops writing `npx` into client configs, which is what made the first one fixable at all.
+
+### Changed
+
+- **`install` now places the server binary and points configs at it, instead of writing `npx`.** Every config used to say `npx -y obsidian-mcp-rs`, and that one choice cost three separate things. It starts three processes per client — npm, the Node wrapper, the server — of which a client terminating "the server" only ever kills the first. The workaround people reached for, hardcoding the resolved path, lands in npm's `_npx` cache, whose directory name is a hash of the package spec: **four such directories were found on a single machine**, so the config silently breaks on the next update and the symptom is "the MCP server disappeared". And it made the client's death invisible to the server, because our parent was npm's process rather than the client.
+
+  `install` is a subcommand of the very binary that needs installing, so `current_exe()` *is* the path resolution — no npm internals, no guessing. It copies itself to a fixed per-user location (`~/Library/Application Support/obsidian-mcp-rs/bin/` on macOS, `~/.local/share/…` on Linux, `%LOCALAPPDATA%\…` on Windows) and writes that absolute path into all 14 client configs. **Node is no longer in the runtime path at all.**
+
+  **Updating is re-running `install`** — `npx obsidian-mcp-rs@latest install` — which replaces the copy while the configured path stays put forever. `npm update` alone does *not* update the server your client runs; `list` now prints the installed version next to the package's and says so when they drift. Existing `npx` configs keep working, so nothing breaks on upgrade, but they do not get the process-lifecycle fixes below until you re-run `install`.
+
+- **The installed entry is described in one place.** The same invocation used to be spelled out separately in each of the JSON, TOML and YAML backends. It is now one value that all of them encode — and status detection compares the **command** as well as the arguments, so an entry left over from the `npx` era is correctly reported as differing instead of passing as "already installed".
+
+### Fixed
+
+- **The server outlived clients that died without closing its stdin, and accumulated one process per unclean exit.** stdin EOF is the shutdown signal the MCP spec asks a server for, and it works — but it is not guaranteed to *arrive*. The write end of our stdin is refcounted, so if any process other than the client is holding a copy when the client dies, no EOF is ever delivered. The server then ran forever: reparented to init, holding write access to someone's vault, reapable only by hand. This is widespread across MCP servers ([claude-code#22612](https://github.com/anthropics/claude-code/issues/22612), [#1935](https://github.com/anthropics/claude-code/issues/1935), [#40667](https://github.com/anthropics/claude-code/issues/40667)) and a comparable server had the identical report ([context7#2542](https://github.com/upstash/context7/issues/2542)).
+
+  The server now watches the process that started it. On Unix it records `getppid()` and polls — a ppid changes exactly once and only because the parent died, so it cannot false-positive while the parent lives. On Windows it opens a `SYNCHRONIZE` handle to the parent and blocks on it, which is stronger: the handle names the process *object*, so a recycled pid cannot alias it.
+
+  Deliberately absent, each a documented false positive in another MCP server: no idle timeout (it kills live sessions in clients that never reconnect), no stdin-state heuristics layered on the parent check (they misfire on Windows while the parent is busy), no parent-identity check beyond the pid (it breaks when the system clock moves). One subtlety the integration test caught: a parent of pid 1 at startup means we were *already* orphaned — the parent can die between spawn and our first look — and reading that as "nothing to watch" would have left the fastest-created orphans permanent.
+
+- **Two servers on one vault silently lost each other's edits.** The write guard was an in-process mutex, which was the whole story when a vault had one server. It does not any more: clients duplicate-spawn them ([claude-code#36616](https://github.com/anthropics/claude-code/issues/36616) reports 6 of 10 servers doubled within 45 seconds), and people point several clients at one vault. Two live servers each doing read → edit → write on the same note both read the old text and both write; the second rename wins and the first edit is gone, with no error and no trace. `atomic_write` does not help — it makes a single *write* atomic, never the read-modify-write *pair*.
+
+  The mutex is now backed by an advisory file lock held for the same span, in the OS cache directory rather than in the vault (where it would sync and show up in the user's own files). A process that dies holding it releases it, so a crash cannot wedge the others. This is per machine: two devices writing one cloud-synced vault is a sync conflict and not something this layer can close.
+
+- **The log file contained the full text of every note read or searched.** The file layer ran at a bare `debug`, which is a different setting than it looks — it turns DEBUG on for every dependency, and `rmcp` logs each response payload. So notes were written verbatim to a plaintext file on disk: the same file users are asked to attach to a bug report. A 15,752-character log line of note bodies was reproduced directly. Separately, `ignore` logs a line per directory entry — 972 of them from six tool calls on a 5,000-note vault — which is what turned the log into megabytes of noise with the actual diagnosis buried in it.
+
+  Both filters are now scoped to this crate. The same six calls produce **3.5 KB across 26 lines instead of 417 KB across 1,531**, with no note contents and no walk noise, and the log still records which tool ran against which vault with which arguments. `RUST_LOG` still turns dependencies up when a bug needs them. Queries are still logged, deliberately: a query is what the model asked for, and without it the log cannot explain a result. What is never logged is what the vault answered with.
+
+### Performance
+
+- **Vault-wide calls stopped re-reading a vault that had not changed.** Search, `vault-info` and the link graph read every note on every call. The obvious suspect was the directory walk, and it was the wrong one: on a 5,000-note vault the walk costs ~5 ms, `stat`-ing every file ~4 ms, and *reading* every file ~50 ms. Caching the file list would have bought 5 ms of 55.
+
+  Note contents are now cached, keyed on `(mtime, len)`. A call still walks and still stats — that is how a write by Obsidian, another agent or an arriving sync gets noticed, and the server never assumes it is the only writer — but only changed files are re-read. Measured end to end over the protocol: `search-vault` 57 ms → **21 ms**, `vault-info stats` 118 ms → **39 ms**, `wikilinks` 59 ms → **19 ms**.
+
+  It helps most where the worry was greatest. On a real iCloud vault, search dropped **47 ms → 8 ms**: walking a synced directory costs ~8 µs per file against ~1 µs locally, and an evicted file ("Optimize Mac Storage") answers `stat` from its placeholder while a *read* pulls it back over the network.
+
+  Only read-only operations read through the cache; every mutating method still reads from disk. A stale entry served to `search-vault` is a wrong snippet, visible and gone at the next edit — the same entry served to the read half of a read-modify-write would be edited and written back, destroying another writer's change. One is a glitch, the other is data loss.
+
+### Internal
+
+- Dependencies refreshed; `tokio` cut from the `full` feature to the four it actually uses, dropping seven crates from the tree (149 → 142) and 35 KB from the release binary. The `serde_yml` alias is gone — the crate is `serde_yaml_ng` and is now called that.
+
 ## [0.6.0] - 2026-07-13
 
 A correctness release. Two things shipped in 0.5.0 were not what they said they
