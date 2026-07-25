@@ -252,3 +252,108 @@ fn the_structured_tools_keep_their_output_schema_and_can_report_is_error() {
         "the model can only fix the name if we tell it the name: {text:?}"
     );
 }
+
+/// The log is a diagnostic, not a copy of the vault.
+///
+/// `rmcp` logs each response payload at DEBUG, and the file layer is on DEBUG by
+/// design so a bug report has something in it. Together that wrote **the full
+/// text of every note read or searched** into a plaintext file on disk — the
+/// exact file a user is then asked to paste into an issue. The fix is that
+/// "debug" means this crate's debug, and everything else has to be asked for
+/// through `RUST_LOG`.
+#[test]
+fn note_contents_never_reach_the_log_file() {
+    const SECRET: &str = "ZZTOPSECRETPHRASEZZ";
+
+    let vault = tempfile::tempdir().unwrap();
+    std::fs::write(
+        vault.path().join("diary.md"),
+        format!("# diary\n\n{SECRET}\n"),
+    )
+    .unwrap();
+    // A second note so the search has something to rank, and a hit whose snippet
+    // would drag the secret into a logged response payload if payloads were
+    // logged at all.
+    std::fs::write(
+        vault.path().join("other.md"),
+        format!("# other\n\nthe diary mentions {SECRET} in passing\n"),
+    )
+    .unwrap();
+    let name = vault
+        .path()
+        .file_name()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+
+    let log_dir = tempfile::tempdir().unwrap();
+    let log = log_dir.path().join("server.log");
+
+    let mut messages = handshake();
+    messages.push(json!({
+        "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+        "params": {"name": "read-note", "arguments": {"vault": name, "filename": "diary.md"}}
+    }));
+    // Deliberately *not* searching for the secret itself. The query is logged,
+    // and on purpose: it is what the model asked for, and without it the log
+    // cannot explain why a search returned what it did. What must never be
+    // logged is what the vault answered with.
+    messages.push(json!({
+        "jsonrpc": "2.0", "id": 4, "method": "tools/call",
+        "params": {"name": "search-vault", "arguments": {"vault": name, "query": "diary"}}
+    }));
+
+    let by_id = talk_with_log(&log, vault.path(), &messages);
+
+    // The note really was served — otherwise this test proves nothing.
+    let served = serde_json::to_string(by_id.get(&3).expect("no read-note response")).unwrap();
+    assert!(
+        served.contains(SECRET),
+        "read-note did not return the note; the assertion below would pass for the wrong reason"
+    );
+
+    let written = std::fs::read_to_string(&log).expect("no log file was written");
+    assert!(
+        !written.contains(SECRET),
+        "the note's contents were written to the log:\n{written}"
+    );
+    // Still useful as a diagnostic: it has to say what was called.
+    assert!(
+        written.contains("read-note"),
+        "the log lost its diagnostic value entirely:\n{written}"
+    );
+}
+
+/// `talk`, but with the file log pointed at `log` instead of turned off.
+fn talk_with_log(
+    log: &std::path::Path,
+    vault: &std::path::Path,
+    messages: &[Value],
+) -> HashMap<i64, Value> {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_obsidian-mcp-rs"))
+        .arg("--log-file")
+        .arg(log)
+        .arg(vault)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn server binary");
+    {
+        let mut stdin = child.stdin.take().unwrap();
+        for m in messages {
+            writeln!(stdin, "{}", serde_json::to_string(m).unwrap()).unwrap();
+        }
+    }
+    let output = child.wait_with_output().expect("server did not exit");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let mut by_id = HashMap::new();
+    for line in stdout.lines().filter(|l| !l.trim().is_empty()) {
+        let v: Value = serde_json::from_str(line).expect("non-JSON line on stdout");
+        if let Some(id) = v.get("id").and_then(Value::as_i64) {
+            by_id.insert(id, v);
+        }
+    }
+    by_id
+}
