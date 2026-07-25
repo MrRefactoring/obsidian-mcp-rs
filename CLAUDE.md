@@ -65,7 +65,7 @@ Two traps that already bit this code once, both pinned by tests:
 | `parent.rs`  | parent-liveness watch — exits when the client that spawned us dies without closing stdin (`getppid` poll on Unix, parent-handle wait on Windows) |
 | `vault/`     | `VaultManager` (`mod.rs`) + submodules: `path` (**`safe_join` sandbox**), `frontmatter` (parse + line-surgery edits), `tags`, `patch` (heading/block targets + outline), `links`, `search`, `info` (tags/recent/stats), `periodic` (Obsidian's daily-note settings), `walk` (`md_files` via `ignore`). Vault walks run in parallel with `rayon` |
 | `tools/*.rs` | `serde` + `schemars::JsonSchema` param structs only — one per tool                                                   |
-| `install/`   | Writes/removes MCP-server entries in 14 AI-client configs (JSON / TOML for Codex / YAML for Goose)                   |
+| `install/`   | Writes/removes MCP-server entries in 14 AI-client configs (JSON / TOML for Codex / YAML for Goose). `binary` places the server itself; `writer::Launch` is the one description of what an entry runs |
 | `error.rs`   | `VaultError` + `From<VaultError> for rmcp::ErrorData`                                                                |
 
 Tools are wired via the `#[tool_router]` / `#[tool_handler]` rmcp macros — adding a new tool means: new `tools/foo.rs` with a `Params` struct, plus a method on `ObsidianHandler` annotated `#[tool(name = "foo")]`.
@@ -79,6 +79,20 @@ The `--no-edit` flag is a gate enforced in `ObsidianHandler::check_write()`, cal
 **Every mutating `VaultManager` method must take `self.write_guard()` as its first statement, and hold it for the whole read-modify-write.** The MCP server answers requests concurrently; `atomic_write` makes a single write atomic but not the read→edit→write *pair*, so without the guard two concurrent calls on one note both read the old text and the second write silently discards the first one's edit. Reads intentionally don't take the lock — `atomic_write` renames into place, so a reader sees the old note or the new one, never a torn one.
 
 The guard is **two** locks (`vault/lock.rs`): a mutex for the threads in this process, and an advisory file lock for the other *processes*. There is more than one server — clients duplicate-spawn them, and users point several clients at one vault — and two live servers lose an edit exactly as two threads would. The lock file sits in the OS cache directory, never in the vault, where it would sync and show up in the user's own files; one lock covers every vault, which is what keeps `write_guard()` callable before the vault argument has been resolved. When it can't be taken the server warns and carries on with in-process locking, because refusing every write over a missing cache directory is the worse failure. It is per machine: two devices writing one cloud-synced vault is a sync conflict and not ours to solve.
+
+### What an installed config runs (do not regress)
+
+`install` copies the running binary — `current_exe()`, since `install` is a subcommand of the very binary being installed — to a fixed per-user path under `dirs::data_local_dir()`, and writes **that absolute path** into every client config. Never `npx`.
+
+Three separate reasons, and losing any one of them is a regression:
+
+1. `npx -y obsidian-mcp-rs` starts three processes (npm → the Node wrapper → the server). Clients that terminate "the server" kill only the first.
+2. The resolved npx path lives under a `_npx/<hash>` directory keyed on the package spec, so it changes on every version bump — four such directories were observed on one machine. A config holding one silently breaks on update.
+3. It defeats `parent.rs`: our parent becomes npm's process rather than the client, so the client's death is invisible. Only a direct child can watch the right process.
+
+`writer::Launch` is the single description of command + args; all four backends (JSON/TOML/YAML) encode it and status detection compares against it. It compares the **command as well as the args** — an entry left from the npx era has the right trailing arguments and entirely the wrong command, and comparing args alone reported it as already installed.
+
+Updating is re-running `install`, which replaces the copy while the configured path stays put. `list` reports the installed copy's version against this package's, because the copy only changes when `install` runs and that skew is otherwise invisible. `uninstall` removes the binary once no config still points at it.
 
 ### Multi-vault model
 

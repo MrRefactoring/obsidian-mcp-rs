@@ -64,12 +64,11 @@ pub fn check_status(path: &Path, format: &ConfigFormat) -> InstallStatus {
 pub fn write_entry(
     path: &Path,
     format: &ConfigFormat,
-    vaults: &[PathBuf],
+    launch: &Launch,
     dry_run: bool,
     force: bool,
-    no_edit: bool,
 ) -> Result<WriteOutcome> {
-    backend(format).write_entry(path, vaults, dry_run, force, no_edit)
+    backend(format).write_entry(path, launch, dry_run, force)
 }
 
 /// Remove the obsidian-mcp-rs entry from the config file.
@@ -100,10 +99,9 @@ trait ConfigBackend {
     fn write_entry(
         &self,
         path: &Path,
-        vaults: &[PathBuf],
+        launch: &Launch,
         dry_run: bool,
         force: bool,
-        no_edit: bool,
     ) -> Result<WriteOutcome>;
     fn remove_entry(&self, path: &Path, dry_run: bool) -> Result<bool>;
 }
@@ -161,7 +159,7 @@ struct JsonBackend {
     /// Key path to the obsidian entry, e.g. `["mcpServers", "obsidian"]`.
     entry_path: &'static [&'static str],
     /// Builds the entry value for this format.
-    build: fn(&[String], bool) -> Value,
+    build: fn(&Launch) -> Value,
 }
 
 /// Walk `path` down the CST, creating the intermediate objects that don't exist.
@@ -208,10 +206,9 @@ impl ConfigBackend for JsonBackend {
     fn write_entry(
         &self,
         path: &Path,
-        vaults: &[PathBuf],
+        launch: &Launch,
         dry_run: bool,
         force: bool,
-        no_edit: bool,
     ) -> Result<WriteOutcome> {
         let file_exists = path.exists();
         let text = if file_exists {
@@ -222,11 +219,7 @@ impl ConfigBackend for JsonBackend {
         let root = parse_jsonc(path, &text)?;
         let (obj, key) = descend(&root, self.entry_path);
 
-        let vault_strings: Vec<String> = vaults
-            .iter()
-            .map(|p| p.to_string_lossy().into_owned())
-            .collect();
-        let wanted = (self.build)(&vault_strings, no_edit);
+        let wanted = (self.build)(launch);
 
         let existing = obj.get(key);
         if let Some(prop) = &existing
@@ -311,50 +304,71 @@ fn to_cst(v: &Value) -> CstInputValue {
     }
 }
 
-/// The arguments `npx` is handed, in order. The single source of truth for what
-/// the installed entry runs — the JSON, TOML and YAML backends all encode this.
-fn npx_argv(vaults: &[PathBuf], no_edit: bool) -> Vec<String> {
-    let mut args = vec!["-y".to_string(), "obsidian-mcp-rs".to_string()];
-    if no_edit {
-        args.push("--no-edit".to_string());
+/// What an installed entry runs: the binary, and the arguments it is handed.
+///
+/// The single source of truth — the JSON, TOML and YAML backends all encode
+/// this one value, and status detection compares against it. Previously each
+/// backend spelled out `npx -y obsidian-mcp-rs` for itself, which is how the
+/// same invocation came to exist in five places.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Launch {
+    /// Absolute path to the installed binary. Never `npx`: see `binary`.
+    pub(crate) command: String,
+    pub(crate) args: Vec<String>,
+}
+
+impl Launch {
+    pub(crate) fn new(binary: &Path, vaults: &[String], no_edit: bool) -> Self {
+        let mut args = Vec::new();
+        if no_edit {
+            args.push("--no-edit".to_string());
+        }
+        args.extend(vaults.iter().cloned());
+        Self {
+            command: binary.to_string_lossy().into_owned(),
+            args,
+        }
     }
-    args.extend(vaults.iter().map(|v| v.to_string_lossy().into_owned()));
-    args
-}
 
-fn npx_args(vaults: &[String], no_edit: bool) -> Vec<Value> {
-    let mut args: Vec<Value> = vec![json!("-y"), json!("obsidian-mcp-rs")];
-    if no_edit {
-        args.push(json!("--no-edit"));
+    fn json_args(&self) -> Vec<Value> {
+        self.args.iter().map(|a| json!(a)).collect()
     }
-    args.extend(vaults.iter().map(|s| json!(s)));
-    args
+
+    /// Command and arguments as one list, for the clients that want it that way.
+    fn argv(&self) -> Vec<String> {
+        let mut argv = vec![self.command.clone()];
+        argv.extend(self.args.iter().cloned());
+        argv
+    }
+
+    /// Does what is already in the config match what we would write?
+    ///
+    /// Both halves matter now: an entry left over from the `npx` era has the
+    /// right arguments after the first two and entirely the wrong command.
+    fn matches(&self, command: Option<&str>, args: Option<&[String]>) -> bool {
+        command == Some(self.command.as_str()) && args == Some(self.args.as_slice())
+    }
 }
 
-fn build_standard(vaults: &[String], no_edit: bool) -> Value {
-    json!({ "command": "npx", "args": npx_args(vaults, no_edit) })
+fn build_standard(launch: &Launch) -> Value {
+    json!({ "command": launch.command, "args": launch.json_args() })
 }
 
-fn build_claude_app(vaults: &[String], no_edit: bool) -> Value {
-    json!({ "type": "stdio", "command": "npx", "args": npx_args(vaults, no_edit) })
+fn build_claude_app(launch: &Launch) -> Value {
+    json!({ "type": "stdio", "command": launch.command, "args": launch.json_args() })
 }
 
-fn build_openclaw(vaults: &[String], no_edit: bool) -> Value {
-    json!({ "command": "npx", "args": npx_args(vaults, no_edit), "transport": "stdio" })
+fn build_openclaw(launch: &Launch) -> Value {
+    json!({ "command": launch.command, "args": launch.json_args(), "transport": "stdio" })
 }
 
-fn build_vscode(vaults: &[String], no_edit: bool) -> Value {
-    json!({ "type": "stdio", "command": "npx", "args": npx_args(vaults, no_edit) })
+fn build_vscode(launch: &Launch) -> Value {
+    json!({ "type": "stdio", "command": launch.command, "args": launch.json_args() })
 }
 
-fn build_opencode(vaults: &[String], no_edit: bool) -> Value {
+fn build_opencode(launch: &Launch) -> Value {
     // opencode merges command + args into a single array
-    let mut cmd: Vec<Value> = vec![json!("npx"), json!("-y"), json!("obsidian-mcp-rs")];
-    if no_edit {
-        cmd.push(json!("--no-edit"));
-    }
-    cmd.extend(vaults.iter().map(|s| json!(s)));
-    json!({ "type": "local", "command": cmd })
+    json!({ "type": "local", "command": launch.argv().into_iter().map(Value::from).collect::<Vec<_>>() })
 }
 
 /// Create parent dirs, back up any existing file, then write `content`.
@@ -418,10 +432,9 @@ impl ConfigBackend for TomlBackend {
     fn write_entry(
         &self,
         path: &Path,
-        vaults: &[PathBuf],
+        launch: &Launch,
         dry_run: bool,
         force: bool,
-        no_edit: bool,
     ) -> Result<WriteOutcome> {
         let file_exists = path.exists();
         let mut doc: toml_edit::DocumentMut = if file_exists {
@@ -435,12 +448,16 @@ impl ConfigBackend for TomlBackend {
         };
 
         if toml_has_obsidian(&doc) && !force {
-            // Every backend encodes the same invocation, so comparing the argv is
-            // what answers "is this the entry you just asked for?" — including
-            // whether it carries --no-edit.
-            let installed = doc
-                .get("mcp_servers")
-                .and_then(|s| s.get("obsidian"))
+            // Every backend encodes the same invocation, so comparing it is what
+            // answers "is this the entry you just asked for?" — including
+            // whether it carries --no-edit, and whether it still points at the
+            // npx command this installer stopped writing.
+            let entry = doc.get("mcp_servers").and_then(|s| s.get("obsidian"));
+            let command = entry
+                .and_then(|o| o.get("command"))
+                .and_then(|c| c.as_str())
+                .map(str::to_string);
+            let installed = entry
                 .and_then(|o| o.get("args"))
                 .and_then(|a| a.as_array())
                 .map(|a| {
@@ -449,7 +466,7 @@ impl ConfigBackend for TomlBackend {
                         .collect::<Vec<_>>()
                 });
             return Ok(WriteOutcome::AlreadyInstalled {
-                differs: installed.as_deref() != Some(&npx_argv(vaults, no_edit)),
+                differs: !launch.matches(command.as_deref(), installed.as_deref()),
             });
         }
         if dry_run {
@@ -459,17 +476,12 @@ impl ConfigBackend for TomlBackend {
         }
 
         let mut args_arr = toml_edit::Array::new();
-        args_arr.push("-y");
-        args_arr.push("obsidian-mcp-rs");
-        if no_edit {
-            args_arr.push("--no-edit");
-        }
-        for v in vaults {
-            args_arr.push(v.to_string_lossy().as_ref());
+        for a in &launch.args {
+            args_arr.push(a.as_str());
         }
 
         let mut obsidian = toml_edit::Table::new();
-        obsidian.insert("command", toml_edit::value("npx"));
+        obsidian.insert("command", toml_edit::value(launch.command.as_str()));
         obsidian.insert("args", toml_edit::value(args_arr));
 
         if !doc.contains_key("mcp_servers") {
@@ -547,10 +559,9 @@ impl ConfigBackend for YamlBackend {
     fn write_entry(
         &self,
         path: &Path,
-        vaults: &[PathBuf],
+        launch: &Launch,
         dry_run: bool,
         force: bool,
-        no_edit: bool,
     ) -> Result<WriteOutcome> {
         let file_exists = path.exists();
         let mut doc: serde_yaml_ng::Value = if file_exists {
@@ -563,13 +574,18 @@ impl ConfigBackend for YamlBackend {
         };
 
         if yaml_has_obsidian(&doc) && !force {
-            let installed = doc
+            let entry = doc
                 .get("extensions")
                 .and_then(|e| e.as_sequence())
                 .and_then(|seq| {
                     seq.iter()
                         .find(|i| i.get("name").and_then(|n| n.as_str()) == Some("obsidian"))
-                })
+                });
+            let command = entry
+                .and_then(|e| e.get("cmd"))
+                .and_then(|c| c.as_str())
+                .map(str::to_string);
+            let installed = entry
                 .and_then(|e| e.get("args"))
                 .and_then(|a| a.as_sequence())
                 .map(|a| {
@@ -578,7 +594,7 @@ impl ConfigBackend for YamlBackend {
                         .collect::<Vec<_>>()
                 });
             return Ok(WriteOutcome::AlreadyInstalled {
-                differs: installed.as_deref() != Some(&npx_argv(vaults, no_edit)),
+                differs: !launch.matches(command.as_deref(), installed.as_deref()),
             });
         }
         if dry_run {
@@ -591,15 +607,8 @@ impl ConfigBackend for YamlBackend {
         let goose_ext = GooseExtension {
             name: "obsidian".into(),
             ext_type: "stdio".into(),
-            cmd: "npx".into(),
-            args: {
-                let mut a = vec!["-y".into(), "obsidian-mcp-rs".into()];
-                if no_edit {
-                    a.push("--no-edit".into());
-                }
-                a.extend(vaults.iter().map(|v| v.to_string_lossy().into_owned()));
-                a
-            },
+            cmd: launch.command.clone(),
+            args: launch.args.clone(),
             enabled: true,
             timeout: 300,
         };
@@ -667,6 +676,27 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    /// The `Launch` a test would get from a real install, with a fixed binary
+    /// path so assertions do not depend on where this machine keeps user data.
+    fn launch(vaults: &[PathBuf], no_edit: bool) -> Launch {
+        let strings: Vec<String> = vaults
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        Launch::new(Path::new(TEST_BINARY), &strings, no_edit)
+    }
+
+    const TEST_BINARY: &str = "/opt/obsidian-mcp-rs/bin/obsidian-mcp-rs";
+
+    /// An empty config in whatever syntax this format expects.
+    fn empty_for(format: &ConfigFormat) -> &'static str {
+        match format {
+            ConfigFormat::Codex => "",
+            ConfigFormat::Goose => "{}\n",
+            _ => "{}",
+        }
+    }
+
     fn temp_cfg(content: &str) -> (TempDir, std::path::PathBuf) {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("config.json");
@@ -720,8 +750,14 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("new.json");
         let vaults = vec![std::path::PathBuf::from("/vault")];
-        let outcome =
-            write_entry(&path, &ConfigFormat::Standard, &vaults, false, false, false).unwrap();
+        let outcome = write_entry(
+            &path,
+            &ConfigFormat::Standard,
+            &launch(&vaults, false),
+            false,
+            false,
+        )
+        .unwrap();
         assert!(matches!(
             outcome,
             WriteOutcome::Written { created: true, .. }
@@ -736,8 +772,14 @@ mod tests {
     fn write_entry_already_installed_no_force() {
         let (_dir, path) = temp_cfg(r#"{"mcpServers":{"obsidian":{"command":"npx"}}}"#);
         let vaults = vec![std::path::PathBuf::from("/vault")];
-        let outcome =
-            write_entry(&path, &ConfigFormat::Standard, &vaults, false, false, false).unwrap();
+        let outcome = write_entry(
+            &path,
+            &ConfigFormat::Standard,
+            &launch(&vaults, false),
+            false,
+            false,
+        )
+        .unwrap();
         assert!(matches!(outcome, WriteOutcome::AlreadyInstalled { .. }));
     }
 
@@ -745,8 +787,14 @@ mod tests {
     fn write_entry_force_overwrites() {
         let (_dir, path) = temp_cfg(r#"{"mcpServers":{"obsidian":{"command":"old"}}}"#);
         let vaults = vec![std::path::PathBuf::from("/vault")];
-        let outcome =
-            write_entry(&path, &ConfigFormat::Standard, &vaults, false, true, false).unwrap();
+        let outcome = write_entry(
+            &path,
+            &ConfigFormat::Standard,
+            &launch(&vaults, false),
+            false,
+            true,
+        )
+        .unwrap();
         assert!(matches!(
             outcome,
             WriteOutcome::Written { created: false, .. }
@@ -758,8 +806,14 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("dry.json");
         let vaults = vec![std::path::PathBuf::from("/vault")];
-        let outcome =
-            write_entry(&path, &ConfigFormat::Standard, &vaults, true, false, false).unwrap();
+        let outcome = write_entry(
+            &path,
+            &ConfigFormat::Standard,
+            &launch(&vaults, false),
+            true,
+            false,
+        )
+        .unwrap();
         assert!(matches!(
             outcome,
             WriteOutcome::DryRun { would_create: true }
@@ -772,7 +826,14 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("config.json");
         let vaults = vec![std::path::PathBuf::from("/vault")];
-        write_entry(&path, &ConfigFormat::Standard, &vaults, false, false, true).unwrap();
+        write_entry(
+            &path,
+            &ConfigFormat::Standard,
+            &launch(&vaults, true),
+            false,
+            false,
+        )
+        .unwrap();
         let content: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         let args = content["mcpServers"]["obsidian"]["args"]
@@ -787,7 +848,14 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("config.json");
         let vaults = vec![std::path::PathBuf::from("/vault")];
-        write_entry(&path, &ConfigFormat::Standard, &vaults, false, false, false).unwrap();
+        write_entry(
+            &path,
+            &ConfigFormat::Standard,
+            &launch(&vaults, false),
+            false,
+            false,
+        )
+        .unwrap();
         let content: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         let args = content["mcpServers"]["obsidian"]["args"]
@@ -805,7 +873,14 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("openclaw.json");
         let vaults = vec![std::path::PathBuf::from("/vault")];
-        write_entry(&path, &ConfigFormat::OpenClaw, &vaults, false, false, false).unwrap();
+        write_entry(
+            &path,
+            &ConfigFormat::OpenClaw,
+            &launch(&vaults, false),
+            false,
+            false,
+        )
+        .unwrap();
         let content: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert!(content["mcp"]["servers"]["obsidian"].is_object());
@@ -822,8 +897,7 @@ mod tests {
         write_entry(
             &path,
             &ConfigFormat::ClaudeApp,
-            &vaults,
-            false,
+            &launch(&vaults, false),
             false,
             false,
         )
@@ -833,14 +907,123 @@ mod tests {
         let entry = &content["mcpServers"]["obsidian"];
         assert!(entry.is_object());
         assert_eq!(entry["type"], "stdio");
-        assert_eq!(entry["command"], "npx");
+        assert_eq!(entry["command"], TEST_BINARY);
+    }
+
+    #[test]
+    fn every_format_points_at_the_binary_rather_than_npx() {
+        // The whole point of the change: no config may carry an `npx`
+        // invocation, because that is what builds the process chain, goes stale
+        // on update, and hides the client's death from the parent watch.
+        let vaults = vec![PathBuf::from("/vault")];
+        for format in [
+            ConfigFormat::Standard,
+            ConfigFormat::ClaudeApp,
+            ConfigFormat::OpenClaw,
+            ConfigFormat::VSCode,
+            ConfigFormat::Amp,
+            ConfigFormat::OpenCode,
+            ConfigFormat::Codex,
+            ConfigFormat::Goose,
+        ] {
+            let (_dir, path) = temp_cfg(empty_for(&format));
+            write_entry(&path, &format, &launch(&vaults, false), false, false).unwrap();
+            let written = std::fs::read_to_string(&path).unwrap();
+            assert!(
+                written.contains(TEST_BINARY),
+                "{format:?} did not write the binary path: {written}"
+            );
+            assert!(
+                !written.contains("npx"),
+                "{format:?} still writes an npx invocation: {written}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_entry_left_over_from_the_npx_era_reads_as_different() {
+        // Same vault, same flags, but the command is the old `npx`. Comparing
+        // only the arguments — which is what this used to do — would call that
+        // "already installed" and leave the broken entry in place forever.
+        let (_dir, path) = temp_cfg(
+            r#"{"mcpServers":{"obsidian":{"command":"npx","args":["-y","obsidian-mcp-rs","/vault"]}}}"#,
+        );
+        let vaults = vec![PathBuf::from("/vault")];
+
+        let outcome = write_entry(
+            &path,
+            &ConfigFormat::Standard,
+            &launch(&vaults, false),
+            false,
+            false,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            outcome,
+            WriteOutcome::AlreadyInstalled { differs: true }
+        ));
+    }
+
+    #[test]
+    fn the_entry_we_just_wrote_reads_as_unchanged() {
+        let (_dir, path) = temp_cfg("{}");
+        let vaults = vec![PathBuf::from("/vault")];
+        write_entry(
+            &path,
+            &ConfigFormat::Standard,
+            &launch(&vaults, false),
+            false,
+            false,
+        )
+        .unwrap();
+
+        let outcome = write_entry(
+            &path,
+            &ConfigFormat::Standard,
+            &launch(&vaults, false),
+            false,
+            false,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            outcome,
+            WriteOutcome::AlreadyInstalled { differs: false }
+        ));
+    }
+
+    #[test]
+    fn no_edit_still_reaches_every_backend() {
+        let vaults = vec![PathBuf::from("/vault")];
+        for format in [
+            ConfigFormat::Standard,
+            ConfigFormat::Codex,
+            ConfigFormat::Goose,
+        ] {
+            let (_dir, path) = temp_cfg(empty_for(&format));
+            write_entry(&path, &format, &launch(&vaults, true), false, false).unwrap();
+            assert!(
+                std::fs::read_to_string(&path)
+                    .unwrap()
+                    .contains("--no-edit"),
+                "{format:?} dropped --no-edit"
+            );
+        }
     }
 
     #[test]
     fn write_entry_creates_backup() {
         let (_dir, path) = temp_cfg(r#"{"mcpServers":{}}"#);
         let vaults = vec![std::path::PathBuf::from("/vault")];
-        write_entry(&path, &ConfigFormat::Standard, &vaults, false, false, false).unwrap();
+        write_entry(
+            &path,
+            &ConfigFormat::Standard,
+            &launch(&vaults, false),
+            false,
+            false,
+        )
+        .unwrap();
         let bak = path.with_extension("json.bak");
         assert!(bak.exists());
     }
@@ -930,8 +1113,14 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("config.toml");
         let vaults = vec![std::path::PathBuf::from("/vault")];
-        let outcome =
-            write_entry(&path, &ConfigFormat::Codex, &vaults, false, false, false).unwrap();
+        let outcome = write_entry(
+            &path,
+            &ConfigFormat::Codex,
+            &launch(&vaults, false),
+            false,
+            false,
+        )
+        .unwrap();
         assert!(matches!(
             outcome,
             WriteOutcome::Written { created: true, .. }
@@ -952,8 +1141,14 @@ mod tests {
     fn write_entry_toml_already_installed_no_force() {
         let (_dir, path) = temp_toml("[mcp_servers.obsidian]\ncommand = \"npx\"\n");
         let vaults = vec![std::path::PathBuf::from("/vault")];
-        let outcome =
-            write_entry(&path, &ConfigFormat::Codex, &vaults, false, false, false).unwrap();
+        let outcome = write_entry(
+            &path,
+            &ConfigFormat::Codex,
+            &launch(&vaults, false),
+            false,
+            false,
+        )
+        .unwrap();
         assert!(matches!(outcome, WriteOutcome::AlreadyInstalled { .. }));
     }
 
@@ -962,8 +1157,14 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("config.toml");
         let vaults = vec![std::path::PathBuf::from("/vault")];
-        let outcome =
-            write_entry(&path, &ConfigFormat::Codex, &vaults, true, false, false).unwrap();
+        let outcome = write_entry(
+            &path,
+            &ConfigFormat::Codex,
+            &launch(&vaults, false),
+            true,
+            false,
+        )
+        .unwrap();
         assert!(matches!(
             outcome,
             WriteOutcome::DryRun { would_create: true }
@@ -1036,8 +1237,14 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("config.yaml");
         let vaults = vec![std::path::PathBuf::from("/vault")];
-        let outcome =
-            write_entry(&path, &ConfigFormat::Goose, &vaults, false, false, false).unwrap();
+        let outcome = write_entry(
+            &path,
+            &ConfigFormat::Goose,
+            &launch(&vaults, false),
+            false,
+            false,
+        )
+        .unwrap();
         assert!(matches!(
             outcome,
             WriteOutcome::Written { created: true, .. }
@@ -1062,8 +1269,14 @@ mod tests {
             "extensions:\n  - name: obsidian\n    type: stdio\n    cmd: npx\n    args: []\n    enabled: true\n    timeout: 300\n",
         );
         let vaults = vec![std::path::PathBuf::from("/vault")];
-        let outcome =
-            write_entry(&path, &ConfigFormat::Goose, &vaults, false, false, false).unwrap();
+        let outcome = write_entry(
+            &path,
+            &ConfigFormat::Goose,
+            &launch(&vaults, false),
+            false,
+            false,
+        )
+        .unwrap();
         assert!(matches!(outcome, WriteOutcome::AlreadyInstalled { .. }));
     }
 
@@ -1072,8 +1285,14 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("config.yaml");
         let vaults = vec![std::path::PathBuf::from("/vault")];
-        let outcome =
-            write_entry(&path, &ConfigFormat::Goose, &vaults, true, false, false).unwrap();
+        let outcome = write_entry(
+            &path,
+            &ConfigFormat::Goose,
+            &launch(&vaults, false),
+            true,
+            false,
+        )
+        .unwrap();
         assert!(matches!(
             outcome,
             WriteOutcome::DryRun { would_create: true }

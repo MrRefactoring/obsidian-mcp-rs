@@ -1,16 +1,17 @@
+mod binary;
 pub mod clients;
 mod writer;
 
 use std::path::PathBuf;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use console::style;
 use dialoguer::{Confirm, Input, MultiSelect, theme::ColorfulTheme};
 
 use clap::ValueEnum as _;
 use clients::{InstallTarget, all_targets, display_path, expand_tilde};
 use writer::{
-    InstallStatus, WriteOutcome, check_status, discard_backup, remove_entry, write_entry,
+    InstallStatus, Launch, WriteOutcome, check_status, discard_backup, remove_entry, write_entry,
 };
 
 pub use clients::ClientKind;
@@ -80,9 +81,10 @@ pub fn run_install(args: InstallArgs) -> Result<()> {
             if targets.is_empty() {
                 bail!("No config path found for this client on your system.");
             }
+            let launch = prepare_launch(&vaults, args.no_edit, args.dry_run)?;
             let mut wrote_any = false;
             for target in &targets {
-                wrote_any |= install_one(target, &vaults, args.dry_run, args.force, args.no_edit)?;
+                wrote_any |= install_one(target, &launch, args.dry_run, args.force)?;
             }
             // Telling the user to restart when we changed nothing is how someone
             // re-running with --no-edit came away believing they were read-only.
@@ -109,9 +111,45 @@ pub fn run_uninstall(args: UninstallArgs) -> Result<()> {
             for target in &targets {
                 uninstall_one(target, args.dry_run, args.force)?;
             }
+            remove_binary_if_unused(args.dry_run)?;
             Ok(())
         }
     }
+}
+
+/// Delete the installed server once no client config still points at it.
+///
+/// Removing it while another client is still configured would leave that client
+/// with a config naming a file that is not there — a broken server rather than
+/// an uninstalled one.
+fn remove_binary_if_unused(dry_run: bool) -> Result<()> {
+    let still_used = all_targets().iter().any(|t| {
+        matches!(
+            check_status(&t.config_path, &t.format),
+            InstallStatus::Installed
+        )
+    });
+    if still_used {
+        return Ok(());
+    }
+    if dry_run {
+        if let Some(path) = binary::stable_path().filter(|p| p.exists()) {
+            println!(
+                "  {} would remove the server at {}",
+                style("~").yellow(),
+                style(display_path(&path)).dim()
+            );
+        }
+        return Ok(());
+    }
+    if let Some(removed) = binary::uninstall()? {
+        println!(
+            "  {} removed the server at {}",
+            style("✓").green(),
+            style(display_path(&removed)).dim()
+        );
+    }
+    Ok(())
 }
 
 pub fn run_list() -> Result<()> {
@@ -163,7 +201,49 @@ pub fn run_list() -> Result<()> {
         );
     }
     println!();
+    report_installed_binary();
     Ok(())
+}
+
+/// Show where the server itself lives, and whether it has fallen behind.
+///
+/// The copy in the configs only changes when `install` runs, so updating the npm
+/// package alone leaves it on the old version. That skew is otherwise invisible,
+/// and it is exactly what someone debugging "I updated but nothing changed"
+/// needs to see.
+fn report_installed_binary() {
+    let Some(path) = binary::stable_path() else {
+        return;
+    };
+    if !path.exists() {
+        println!(
+            "  {} {}",
+            style("server:").bold(),
+            style("not installed yet — run `obsidian-mcp-rs install`").dim()
+        );
+        println!();
+        return;
+    }
+
+    let running = env!("CARGO_PKG_VERSION");
+    let installed = binary::installed_version();
+    print!(
+        "  {} {}",
+        style("server:").bold(),
+        style(display_path(&path)).cyan()
+    );
+    match installed.as_deref() {
+        Some(v) if v == running => println!("  {}", style(format!("v{v}")).dim()),
+        Some(v) => println!(
+            "  {}",
+            style(format!(
+                "v{v} — this package is v{running}; run `install` again to update it"
+            ))
+            .yellow()
+        ),
+        None => println!("  {}", style("(version unknown)").dim()),
+    }
+    println!();
 }
 
 // ── Interactive install wizard ────────────────────────────────────────────────
@@ -277,9 +357,10 @@ fn interactive_install(dry_run: bool, force: bool, no_edit: bool) -> Result<()> 
         println!();
     }
 
+    let launch = prepare_launch(&vaults, no_edit, dry_run)?;
     let mut wrote_any = false;
     for &i in &chosen {
-        if install_one(&targets[i], &vaults, dry_run, force, no_edit)? {
+        if install_one(&targets[i], &launch, dry_run, force)? {
             wrote_any = true;
         }
     }
@@ -337,29 +418,54 @@ fn interactive_uninstall(dry_run: bool, force: bool) -> Result<()> {
     for &i in &chosen {
         uninstall_one(&installed[i], dry_run, force)?;
     }
+    remove_binary_if_unused(dry_run)?;
 
     Ok(())
 }
 
 // ── Per-target helpers ────────────────────────────────────────────────────────
 
+/// Place the binary, and describe how a config should invoke it.
+///
+/// Configs get an absolute path to a copy this installer owns, never `npx`.
+/// That is what removes the npm process chain, survives package updates without
+/// the config going stale, and makes the server a direct child of the client so
+/// it notices when the client dies. See `binary`.
+///
+/// A dry run copies nothing but still reports the path a real run would write,
+/// because a preview that shows something other than what would happen is worse
+/// than no preview.
+fn prepare_launch(vaults: &[PathBuf], no_edit: bool, dry_run: bool) -> Result<Launch> {
+    let binary_path = if dry_run {
+        binary::stable_path()
+            .context("no per-user data directory on this system to install the server into")?
+    } else {
+        let installed = binary::install()?;
+        binary::ensure_installed(&installed)?;
+        println!(
+            "  {} server installed at {}",
+            style("✓").green(),
+            style(display_path(&installed)).cyan()
+        );
+        installed
+    };
+
+    let vault_strings: Vec<String> = vaults
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+    Ok(Launch::new(&binary_path, &vault_strings, no_edit))
+}
+
 /// Returns true if a file was actually written.
 fn install_one(
     target: &InstallTarget,
-    vaults: &[PathBuf],
+    launch: &Launch,
     dry_run: bool,
     force: bool,
-    no_edit: bool,
 ) -> Result<bool> {
     let pd = display_path(&target.config_path);
-    match write_entry(
-        &target.config_path,
-        &target.format,
-        vaults,
-        dry_run,
-        force,
-        no_edit,
-    )? {
+    match write_entry(&target.config_path, &target.format, launch, dry_run, force)? {
         WriteOutcome::AlreadyInstalled { differs } if differs => {
             // The dangerous case, and the reason this branch exists: someone who
             // gave the AI write access, thought better of it, and re-ran with
@@ -574,6 +680,20 @@ fn check_vaults(paths: &[PathBuf]) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// The `Launch` a test would get from a real install, with a fixed binary
+    /// path so assertions do not depend on where this machine keeps user data.
+    fn launch(vaults: &[PathBuf], no_edit: bool) -> Launch {
+        let strings: Vec<String> = vaults
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        Launch::new(
+            std::path::Path::new("/opt/obsidian-mcp-rs/bin/obsidian-mcp-rs"),
+            &strings,
+            no_edit,
+        )
+    }
+
     use super::*;
     use std::path::PathBuf;
     use tempfile::TempDir;
@@ -748,7 +868,7 @@ mod tests {
             is_local: true,
         };
         let vaults = normalize_vaults(&[dir.path().to_path_buf()]);
-        let wrote = install_one(&target, &vaults, false, false, false).unwrap();
+        let wrote = install_one(&target, &launch(&vaults, false), false, false).unwrap();
         assert!(wrote);
         assert!(config.exists());
     }
@@ -766,8 +886,8 @@ mod tests {
             detected: true,
             is_local: true,
         };
-        install_one(&target, &vaults, false, false, false).unwrap();
-        let wrote = install_one(&target, &vaults, false, false, false).unwrap(); // already installed
+        install_one(&target, &launch(&vaults, false), false, false).unwrap();
+        let wrote = install_one(&target, &launch(&vaults, false), false, false).unwrap(); // already installed
         assert!(!wrote);
     }
 
@@ -784,7 +904,7 @@ mod tests {
             detected: true,
             is_local: true,
         };
-        let wrote = install_one(&target, &vaults, true, false, false).unwrap();
+        let wrote = install_one(&target, &launch(&vaults, false), true, false).unwrap();
         assert!(!wrote);
         assert!(!config.exists()); // dry_run → no file written
     }
@@ -803,7 +923,7 @@ mod tests {
             detected: true,
             is_local: true,
         };
-        let wrote = install_one(&target, &vaults, false, false, false).unwrap();
+        let wrote = install_one(&target, &launch(&vaults, false), false, false).unwrap();
         assert!(wrote);
     }
 
