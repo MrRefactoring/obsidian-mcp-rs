@@ -9,5 +9,6 @@ pub mod handler;
 #[cfg(feature = "http")]
 pub mod http;
 pub mod install;
+pub mod parent;
 pub mod tools;
 pub mod vault;

@@ -960,6 +960,7 @@ dependencies = [
  "dirs",
  "ignore",
  "jsonc-parser",
+ "libc",
  "rayon",
  "regex",
  "rmcp",
@@ -974,6 +975,7 @@ dependencies = [
  "toml_edit",
  "tracing",
  "tracing-subscriber",
+ "windows-sys",
 ]
 
 [[package]]
