@@ -40,21 +40,14 @@
 
 ## Установка
 
-> **Для команд `npx` ниже нужен [Node.js](https://nodejs.org/) версии 22 или новее** — именно так распространяются инсталлер и сам сервер.
-> При этом *сам* сервер — один статический бинарник без зависимостей в рантайме: если Node вам не нужен вовсе, скачайте бинарник для своей платформы со страницы [Releases](https://github.com/MrRefactoring/obsidian-mcp-rs/releases) и укажите путь к нему прямо в конфиге клиента — либо выполните `cargo install obsidian-mcp-rs`.
+> **Node.js 22 или новее нужен, чтобы *запустить инсталлер*** — именно так он распространяется.
+> Для **работы сервера** Node не нужен: инсталлер кладёт один статический бинарник и прописывает клиенту путь прямо к нему, так что дальше не работает ничего, кроме этого бинарника. Если Node не нужен вовсе — скачайте бинарник со страницы [Releases](https://github.com/MrRefactoring/obsidian-mcp-rs/releases) или выполните `cargo install obsidian-mcp-rs`, а затем запустите его подкоманду `install`.
 
 **Самый быстрый способ — просто попросите вашего AI-агента установить сервер.** Если вы уже работаете внутри агентного клиента (Claude Code, Cursor, Windsurf, …), вам вообще не нужно трогать конфиг — вставьте один промпт, и агент сам запустит инсталлер. Подставьте свой путь к vault:
 
-> Установи MCP-сервер **obsidian-mcp-rs** для этого редактора. Мой Obsidian vault находится в `~/Documents/Obsidian/MyVault`. Запусти подходящий инсталлер, например `npx -y obsidian-mcp-rs install claude-code ~/Documents/Obsidian/MyVault` (для других клиентов используй `cursor`, `windsurf`, `vscode`, `claude`, …), затем напомни мне перезапустить сессию и подтвердить сервер, если клиент попросит.
+> Установи MCP-сервер **obsidian-mcp-rs** для этого редактора. Мой Obsidian vault находится в `~/Documents/Obsidian/MyVault`. Выполни `npx -y obsidian-mcp-rs install claude-code ~/Documents/Obsidian/MyVault` (для других клиентов — `cursor`, `windsurf`, `vscode`, `claude`, …). Инсталлер копирует сервер в постоянное место и прописывает этот путь в мой конфиг — скажи, куда он его положил, и напомни, что обновление это повторный запуск той же команды, а не `npm update`. Затем напомни перезапустить сессию и подтвердить сервер, если клиент попросит.
 
-У **Claude Code** есть нативный MCP CLI, поэтому его можно попросить выполнить:
-
-```bash
-claude mcp add obsidian -- npx -y obsidian-mcp-rs ~/Documents/Obsidian/MyVault
-# добавьте `--scope user`, чтобы включить сервер во всех проектах (пишет в ~/.claude.json)
-```
-
-> **Важно:** клиенты читают MCP-конфиг **при старте сессии**, поэтому агент может его записать, но не подхватит на лету. После установки **перезапустите** клиент — а в Claude Code подтвердите project-scoped сервер из `.mcp.json` через панель `/mcp` — и только тогда появятся 15 инструментов. Нативный `mcp add` есть только у Claude Code; для остальных клиентов агент просто выполняет команду `npx obsidian-mcp-rs install <client>` выше.
+> **Важно:** клиенты читают MCP-конфиг **при старте сессии**, поэтому агент может его записать, но не подхватит на лету. После установки **перезапустите** клиент — а в Claude Code подтвердите project-scoped сервер из `.mcp.json` через панель `/mcp` — и только тогда появятся 15 инструментов.
 
 ### Предпочитаете CLI? (или не используете агента)
 
@@ -92,10 +85,45 @@ npx obsidian-mcp-rs install claude ~/vault1 ~/vault2
 Другие команды управления:
 
 ```bash
-npx obsidian-mcp-rs list       # показать статус установки по всем клиентам
+npx obsidian-mcp-rs list       # статус установки по всем клиентам и версия установленного сервера
 npx obsidian-mcp-rs uninstall  # интерактивный мастер удаления
 npx obsidian-mcp-rs uninstall claude --dry-run  # предварительный просмотр без записи
 ```
+
+### Что именно записывает `install`
+
+Он копирует бинарник сервера в постоянное место для текущего пользователя и записывает в конфиг клиента **этот абсолютный путь**:
+
+| Платформа | Установленный сервер |
+|-----------|----------------------|
+| macOS     | `~/Library/Application Support/obsidian-mcp-rs/bin/obsidian-mcp-rs` |
+| Linux     | `~/.local/share/obsidian-mcp-rs/bin/obsidian-mcp-rs` |
+| Windows   | `%LOCALAPPDATA%\obsidian-mcp-rs\bin\obsidian-mcp-rs.exe` |
+
+Поэтому ваш конфиг запускает **один процесс** — сам сервер, прямым потомком AI-клиента. Он не запускает `npx`, который поднял бы три (npm → Node-лаунчер → сервер) и оставил бы два лишних всякий раз, когда клиент завершает только первый. Кроме того, сервер благодаря этому видит, что клиент закрылся, и уходит вместе с ним, а не остаётся висеть с правом записи в ваш vault.
+
+`npx` по-прежнему остаётся способом *запустить инсталлер* и самым быстрым способом попробовать сервер. Он просто больше не то, что навсегда попадает в конфиг.
+
+### Обновление
+
+```bash
+npx obsidian-mcp-rs@latest install    # та же команда, что и при первой установке
+```
+
+Она заменяет установленный бинарник на месте. **Путь в конфигах не меняется никогда**, поэтому ничего не нужно перенастраивать и ни один конфиг не протухает.
+
+Два момента, о которых стоит знать:
+
+- **Один `npm update` не обновляет установленный сервер.** Копия, которую запускает клиент, меняется только при запуске `install`. Команда `npx obsidian-mcp-rs list` показывает версию установленного сервера рядом с версией пакета и предупреждает, когда они разошлись.
+- **На Windows сначала закройте AI-клиенты.** Windows не даёт перезаписать запущенный исполняемый файл; если клиент всё ещё держит сервер открытым, инсталлер скажет об этом и попросит закрыть клиент.
+
+`uninstall` удаляет и сам бинарник — как только на него не ссылается ни один конфиг.
+
+### Известные проблемы, которые не на нашей стороне
+
+- **Дублирование процессов в Claude Desktop.** Claude Desktop может поднять больше одной копии одного и того же MCP-сервера за запуск ([claude-code#36616](https://github.com/anthropics/claude-code/issues/36616)). Этот сервер не является причиной и не может это предотвратить. Это безопасно: одновременные серверы на одном vault сериализуются и не теряют правки друг друга, а те, что пережили своего клиента, выходят сами.
+- **Осиротевшие MCP-процессы вообще.** Некоторые клиенты не завершают stdio MCP-серверы при нештатном выходе ([#22612](https://github.com/anthropics/claude-code/issues/22612), [#1935](https://github.com/anthropics/claude-code/issues/1935), [#40667](https://github.com/anthropics/claude-code/issues/40667)). Этот сервер следит за процессом, который его запустил, и выходит вместе с ним — на macOS и Linux. На Windows такой подстраховки пока нет.
+- **Два устройства и один синхронизируемый vault.** Записи сериализуются в пределах машины. Два компьютера, одновременно правящие один облачный vault, — это конфликт синхронизации, и он относится к iCloud / Obsidian Sync, а не к серверу.
 
 ## Возможности
 
@@ -146,7 +174,9 @@ npx obsidian-mcp-rs uninstall claude --dry-run  # предварительный
 
 ## Настройка
 
-> **Совет:** `npx obsidian-mcp-rs install` записывает эти конфигурации автоматически. Разделы ниже — для ручной настройки или справки.
+> **Совет:** `npx obsidian-mcp-rs install` записывает эти конфигурации автоматически, включая абсолютный путь ниже — вычислять его вручную не нужно. Разделы ниже — для ручной настройки или справки.
+>
+> В `command` идёт путь, который сообщает `install`, например `~/Library/Application Support/obsidian-mcp-rs/bin/obsidian-mcp-rs` на macOS (полностью, без `~` — конфиги его не раскрывают). **Не** пишите сюда `npx`: он поднимает три процесса вместо одного, оставляет два из них после того, как клиент завершил сервер, и скрывает от сервера факт выхода клиента, из-за чего тот не может убрать за собой.
 
 ### Claude Desktop (`claude_desktop_config.json`)
 
@@ -154,8 +184,8 @@ npx obsidian-mcp-rs uninstall claude --dry-run  # предварительный
 {
   "mcpServers": {
     "obsidian": {
-      "command": "npx",
-      "args": ["-y", "obsidian-mcp-rs", "/path/to/your/vault"]
+      "command": "/Users/you/Library/Application Support/obsidian-mcp-rs/bin/obsidian-mcp-rs",
+      "args": ["/path/to/your/vault"]
     }
   }
 }
@@ -167,11 +197,8 @@ npx obsidian-mcp-rs uninstall claude --dry-run  # предварительный
 {
   "mcpServers": {
     "obsidian": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "obsidian-mcp-rs",
-        "/path/to/vault1",
+      "command": "/Users/you/Library/Application Support/obsidian-mcp-rs/bin/obsidian-mcp-rs",
+      "args": ["/path/to/vault1",
         "/path/to/vault2"
       ]
     }
@@ -188,8 +215,8 @@ npx obsidian-mcp-rs uninstall claude --dry-run  # предварительный
   "mcpServers": {
     "obsidian": {
       "type": "stdio",
-      "command": "npx",
-      "args": ["-y", "obsidian-mcp-rs", "~/Documents/Obsidian/MyVault"]
+      "command": "/Users/you/Library/Application Support/obsidian-mcp-rs/bin/obsidian-mcp-rs",
+      "args": ["~/Documents/Obsidian/MyVault"]
     }
   }
 }
@@ -203,8 +230,8 @@ npx obsidian-mcp-rs uninstall claude --dry-run  # предварительный
 {
   "mcpServers": {
     "obsidian": {
-      "command": "npx",
-      "args": ["-y", "obsidian-mcp-rs", "/path/to/your/vault"]
+      "command": "/Users/you/Library/Application Support/obsidian-mcp-rs/bin/obsidian-mcp-rs",
+      "args": ["/path/to/your/vault"]
     }
   }
 }
@@ -219,8 +246,8 @@ npx obsidian-mcp-rs uninstall claude --dry-run  # предварительный
   "mcp": {
     "servers": {
       "obsidian": {
-        "command": "npx",
-        "args": ["-y", "obsidian-mcp-rs", "/path/to/your/vault"],
+        "command": "/Users/you/Library/Application Support/obsidian-mcp-rs/bin/obsidian-mcp-rs",
+        "args": ["/path/to/your/vault"],
         "transport": "stdio"
       }
     }
@@ -248,8 +275,8 @@ npx obsidian-mcp-rs uninstall claude --dry-run  # предварительный
 {
   "mcpServers": {
     "obsidian": {
-      "command": "npx",
-      "args": ["-y", "obsidian-mcp-rs", "--no-edit", "/path/to/your/vault"]
+      "command": "/Users/you/Library/Application Support/obsidian-mcp-rs/bin/obsidian-mcp-rs",
+      "args": ["--no-edit", "/path/to/your/vault"]
     }
   }
 }

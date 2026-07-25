@@ -40,21 +40,14 @@
 
 ## Setup
 
-> **You need [Node.js](https://nodejs.org/) 22 or newer** for the `npx` commands below — that is how the installer and the server are distributed.
-> The server *itself* is a single static binary with no runtime dependencies: if you would rather not have Node at all, download the binary for your platform from [Releases](https://github.com/MrRefactoring/obsidian-mcp-rs/releases) and point your client's config at it directly, or `cargo install obsidian-mcp-rs`.
+> **You need [Node.js](https://nodejs.org/) 22 or newer** to *run the installer* — that is how it is distributed.
+> Node is not needed to **run the server**: the installer places a single static binary and points your client straight at it, so nothing but that binary runs afterwards. If you would rather skip Node entirely, grab the binary for your platform from [Releases](https://github.com/MrRefactoring/obsidian-mcp-rs/releases) or `cargo install obsidian-mcp-rs`, then run its `install` subcommand.
 
 **The fastest way: just ask your AI agent to install it.** If you already work inside an agentic client (Claude Code, Cursor, Windsurf, …), you never touch a config file — paste one prompt and let the agent run the installer for you. Swap in your own vault path:
 
-> Install the **obsidian-mcp-rs** MCP server for this editor. My Obsidian vault is at `~/Documents/Obsidian/MyVault`. Run the matching installer, e.g. `npx -y obsidian-mcp-rs install claude-code ~/Documents/Obsidian/MyVault` (use `cursor`, `windsurf`, `vscode`, `claude`, … for other clients), then tell me to restart the session and approve the server if the client asks.
+> Install the **obsidian-mcp-rs** MCP server for this editor. My Obsidian vault is at `~/Documents/Obsidian/MyVault`. Run `npx -y obsidian-mcp-rs install claude-code ~/Documents/Obsidian/MyVault` (use `cursor`, `windsurf`, `vscode`, `claude`, … for other clients). It copies the server to a fixed location and writes that path into my client config — so tell me where it landed, and remind me that updating means re-running this same command, not `npm update`. Then tell me to restart the session and approve the server if the client asks.
 
-**Claude Code** also ships a native MCP CLI, so you can instead ask it to run:
-
-```bash
-claude mcp add obsidian -- npx -y obsidian-mcp-rs ~/Documents/Obsidian/MyVault
-# add `--scope user` to enable it in every project (writes ~/.claude.json)
-```
-
-> **Heads-up:** clients read MCP config at **session start**, so the agent can write it but can't hot-load it. After it installs the server, **restart** the client — and in Claude Code approve a project-scoped `.mcp.json` server via the `/mcp` panel — before the 15 tools appear. Only Claude Code has a native `mcp add` CLI; for every other client the agent just runs the `npx obsidian-mcp-rs install <client>` command above.
+> **Heads-up:** clients read MCP config at **session start**, so the agent can write it but can't hot-load it. After it installs the server, **restart** the client — and in Claude Code approve a project-scoped `.mcp.json` server via the `/mcp` panel — before the 15 tools appear.
 
 ### Prefer a CLI? (or not using an agent)
 
@@ -92,10 +85,45 @@ npx obsidian-mcp-rs install claude ~/vault1 ~/vault2
 Other management commands:
 
 ```bash
-npx obsidian-mcp-rs list       # show installation status across all clients
+npx obsidian-mcp-rs list       # installation status across all clients, and which server version is installed
 npx obsidian-mcp-rs uninstall  # interactive removal wizard
 npx obsidian-mcp-rs uninstall claude --dry-run  # preview changes without writing
 ```
+
+### What `install` actually writes
+
+It copies the server binary to a fixed per-user location and writes **that absolute path** into your client config:
+
+| Platform | Installed server |
+|----------|------------------|
+| macOS    | `~/Library/Application Support/obsidian-mcp-rs/bin/obsidian-mcp-rs` |
+| Linux    | `~/.local/share/obsidian-mcp-rs/bin/obsidian-mcp-rs` |
+| Windows  | `%LOCALAPPDATA%\obsidian-mcp-rs\bin\obsidian-mcp-rs.exe` |
+
+Your config therefore runs **one process** — the server itself, as a direct child of your AI client. It does not run `npx`, which would start three (npm → a Node launcher → the server) and leave the extra two behind whenever a client terminates only the first. It also means the server can tell when your client goes away, and exit with it instead of lingering with write access to your vault.
+
+`npx` is still how you *run the installer*, and it is still the quickest way to try the server. It is simply no longer what ends up written into a config permanently.
+
+### Updating
+
+```bash
+npx obsidian-mcp-rs@latest install    # same command you used the first time
+```
+
+That replaces the installed binary in place. **The path in your configs never changes**, so nothing needs re-pointing and no config goes stale.
+
+Two things worth knowing:
+
+- **`npm update` alone does not update the installed server.** The copy your client runs only changes when `install` runs. `npx obsidian-mcp-rs list` prints the installed version next to this package's, and says so when they drift apart.
+- **On Windows, quit your AI clients first.** Windows refuses to overwrite a running executable; if a client still has the server open the installer will say so and ask you to close it.
+
+`uninstall` removes the binary too, once no client config still points at it.
+
+### Known issues that are not ours
+
+- **Duplicate server processes on Claude Desktop.** Claude Desktop can spawn more than one copy of the same MCP server per launch ([claude-code#36616](https://github.com/anthropics/claude-code/issues/36616)). Nothing this server does causes it, and nothing it does can prevent it. It is safe: concurrent servers on one vault are serialised so they cannot lose each other's edits, and any that outlive their client exit on their own.
+- **Orphaned MCP processes generally.** Several clients fail to terminate stdio MCP servers on unclean exit ([#22612](https://github.com/anthropics/claude-code/issues/22612), [#1935](https://github.com/anthropics/claude-code/issues/1935), [#40667](https://github.com/anthropics/claude-code/issues/40667)). This server watches the process that started it and exits when it goes, so it does not accumulate — on macOS and Linux. On Windows that backstop is not yet in place.
+- **Two devices, one synced vault.** Writes are serialised per machine. Two computers editing the same cloud-synced vault at once is a sync conflict, and it belongs to iCloud / Obsidian Sync rather than to this server.
 
 ## Features
 
@@ -110,12 +138,12 @@ npx obsidian-mcp-rs uninstall claude --dry-run  # preview changes without writin
 - **Daily notes** — `periodic` reads/creates daily…yearly notes using the vault's *own* Obsidian settings (name format, folder, template), so it writes to the note you actually keep
 - **Vault orientation** — `vault-info` answers what tags exist, what changed recently, and how big the vault is
 - **Read-only mode** — `--no-edit` removes every write tool from `tools/list` entirely, so a read-only server describes itself as one
-- **Zero runtime dependencies** — the server is a single static binary. (Node.js 22+ is needed only for the `npx` distribution path; grab a binary from [Releases](https://github.com/MrRefactoring/obsidian-mcp-rs/releases) or `cargo install` to skip it.)
+- **Zero runtime dependencies** — the server is a single static binary, and it is what your client runs: `install` places it and points the config straight at it, so no Node process sits in between. Node.js 22+ is needed only to *run the installer*; grab a binary from [Releases](https://github.com/MrRefactoring/obsidian-mcp-rs/releases) or `cargo install` to skip it entirely.
 - **Cross-platform** — macOS (ARM64 + x64), Linux (x64 + ARM64 + musl), Windows (x64 + ARM64)
 - **Tag search** via `tag:` prefix in queries
 - **YAML frontmatter** tag management
 - **Streamable HTTP** (optional) — `cargo install obsidian-mcp-rs --features http`, then `--http` serves several clients from one long-lived server. Validates the `Origin` header, as the MCP spec requires of local servers. stdio remains the default.
-- **`npx` compatible** — runs instantly via npm
+- **`npx` compatible** — try it or install it in one command, with nothing to download first
 
 ### Search
 
@@ -146,7 +174,9 @@ Single-note operations (`read-note`, `create-note`, `edit-note`, …) touch one 
 
 ## Configuration
 
-> **Tip:** `npx obsidian-mcp-rs install` writes these configs automatically. The sections below are for manual setup or reference.
+> **Tip:** `npx obsidian-mcp-rs install` writes these configs automatically, including the absolute path below — you do not have to work it out yourself. The sections below are for manual setup or reference.
+>
+> `command` is the path `install` reports, e.g. `~/Library/Application Support/obsidian-mcp-rs/bin/obsidian-mcp-rs` on macOS (spelled out in full — configs do not expand `~`). Do **not** put `npx` here: it starts three processes where one is needed, leaves two of them behind when a client shuts the server down, and hides your client's exit from the server so it cannot clean up after itself.
 
 ### Claude Desktop (`claude_desktop_config.json`)
 
@@ -154,8 +184,8 @@ Single-note operations (`read-note`, `create-note`, `edit-note`, …) touch one 
 {
   "mcpServers": {
     "obsidian": {
-      "command": "npx",
-      "args": ["-y", "obsidian-mcp-rs", "/path/to/your/vault"]
+      "command": "/Users/you/Library/Application Support/obsidian-mcp-rs/bin/obsidian-mcp-rs",
+      "args": ["/path/to/your/vault"]
     }
   }
 }
@@ -167,10 +197,8 @@ Single-note operations (`read-note`, `create-note`, `edit-note`, …) touch one 
 {
   "mcpServers": {
     "obsidian": {
-      "command": "npx",
+      "command": "/Users/you/Library/Application Support/obsidian-mcp-rs/bin/obsidian-mcp-rs",
       "args": [
-        "-y",
-        "obsidian-mcp-rs",
         "/path/to/vault1",
         "/path/to/vault2"
       ]
@@ -188,8 +216,8 @@ Claude Code's config carries an explicit `"type": "stdio"` (Claude Desktop, abov
   "mcpServers": {
     "obsidian": {
       "type": "stdio",
-      "command": "npx",
-      "args": ["-y", "obsidian-mcp-rs", "~/Documents/Obsidian/MyVault"]
+      "command": "/Users/you/Library/Application Support/obsidian-mcp-rs/bin/obsidian-mcp-rs",
+      "args": ["~/Documents/Obsidian/MyVault"]
     }
   }
 }
@@ -203,8 +231,8 @@ Add the server to Cursor's MCP settings via **Settings → MCP → Add Server**,
 {
   "mcpServers": {
     "obsidian": {
-      "command": "npx",
-      "args": ["-y", "obsidian-mcp-rs", "/path/to/your/vault"]
+      "command": "/Users/you/Library/Application Support/obsidian-mcp-rs/bin/obsidian-mcp-rs",
+      "args": ["/path/to/your/vault"]
     }
   }
 }
@@ -219,8 +247,8 @@ Once added, Cursor's AI will have access to all 15 vault tools. You can verify w
   "mcp": {
     "servers": {
       "obsidian": {
-        "command": "npx",
-        "args": ["-y", "obsidian-mcp-rs", "/path/to/your/vault"],
+        "command": "/Users/you/Library/Application Support/obsidian-mcp-rs/bin/obsidian-mcp-rs",
+        "args": ["/path/to/your/vault"],
         "transport": "stdio"
       }
     }
@@ -248,8 +276,8 @@ Pass `--no-edit` to start the server in read-only mode. The eight write-only too
 {
   "mcpServers": {
     "obsidian": {
-      "command": "npx",
-      "args": ["-y", "obsidian-mcp-rs", "--no-edit", "/path/to/your/vault"]
+      "command": "/Users/you/Library/Application Support/obsidian-mcp-rs/bin/obsidian-mcp-rs",
+      "args": ["--no-edit", "/path/to/your/vault"]
     }
   }
 }
