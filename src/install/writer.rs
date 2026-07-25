@@ -534,7 +534,7 @@ impl ConfigBackend for YamlBackend {
         let Ok(content) = std::fs::read_to_string(path) else {
             return InstallStatus::NotInstalled;
         };
-        let Ok(doc) = serde_yml::from_str::<serde_yml::Value>(&content) else {
+        let Ok(doc) = serde_yaml_ng::from_str::<serde_yaml_ng::Value>(&content) else {
             return InstallStatus::NotInstalled;
         };
         if yaml_has_obsidian(&doc) {
@@ -553,13 +553,13 @@ impl ConfigBackend for YamlBackend {
         no_edit: bool,
     ) -> Result<WriteOutcome> {
         let file_exists = path.exists();
-        let mut doc: serde_yml::Value = if file_exists {
+        let mut doc: serde_yaml_ng::Value = if file_exists {
             let content = std::fs::read_to_string(path)
                 .with_context(|| format!("Cannot read {}", path.display()))?;
-            serde_yml::from_str(&content)
+            serde_yaml_ng::from_str(&content)
                 .with_context(|| format!("Invalid YAML in {}", path.display()))?
         } else {
-            serde_yml::Value::Mapping(serde_yml::Mapping::new())
+            serde_yaml_ng::Value::Mapping(serde_yaml_ng::Mapping::new())
         };
 
         if yaml_has_obsidian(&doc) && !force {
@@ -603,7 +603,7 @@ impl ConfigBackend for YamlBackend {
             enabled: true,
             timeout: 300,
         };
-        let entry: serde_yml::Value = serde_yml::to_value(&goose_ext)?;
+        let entry: serde_yaml_ng::Value = serde_yaml_ng::to_value(&goose_ext)?;
 
         // Append to the extensions sequence, or create it if absent / not a list.
         if let Some(seq) = doc.get_mut("extensions").and_then(|v| v.as_sequence_mut()) {
@@ -613,12 +613,12 @@ impl ConfigBackend for YamlBackend {
             seq.push(entry);
         } else if let Some(mapping) = doc.as_mapping_mut() {
             mapping.insert(
-                serde_yml::Value::String("extensions".into()),
-                serde_yml::Value::Sequence(vec![entry]),
+                serde_yaml_ng::Value::String("extensions".into()),
+                serde_yaml_ng::Value::Sequence(vec![entry]),
             );
         }
 
-        let backup = write_with_backup(path, &serde_yml::to_string(&doc)?)?;
+        let backup = write_with_backup(path, &serde_yaml_ng::to_string(&doc)?)?;
         Ok(WriteOutcome::Written {
             created: !file_exists,
             backup,
@@ -631,7 +631,7 @@ impl ConfigBackend for YamlBackend {
         }
         let content = std::fs::read_to_string(path)
             .with_context(|| format!("Cannot read {}", path.display()))?;
-        let mut doc: serde_yml::Value = serde_yml::from_str(&content)
+        let mut doc: serde_yaml_ng::Value = serde_yaml_ng::from_str(&content)
             .with_context(|| format!("Invalid YAML in {}", path.display()))?;
 
         let removed = if let Some(seq) = doc.get_mut("extensions").and_then(|v| v.as_sequence_mut())
@@ -644,13 +644,13 @@ impl ConfigBackend for YamlBackend {
         };
 
         if removed && !dry_run {
-            write_with_backup(path, &serde_yml::to_string(&doc)?)?;
+            write_with_backup(path, &serde_yaml_ng::to_string(&doc)?)?;
         }
         Ok(removed)
     }
 }
 
-fn yaml_has_obsidian(doc: &serde_yml::Value) -> bool {
+fn yaml_has_obsidian(doc: &serde_yaml_ng::Value) -> bool {
     doc.get("extensions")
         .and_then(|v| v.as_sequence())
         .map(|seq| {
@@ -1043,8 +1043,8 @@ mod tests {
             WriteOutcome::Written { created: true, .. }
         ));
         assert!(path.exists());
-        let doc: serde_yml::Value =
-            serde_yml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let doc: serde_yaml_ng::Value =
+            serde_yaml_ng::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         let found = doc
             .get("extensions")
             .and_then(|v| v.as_sequence())
@@ -1087,8 +1087,8 @@ mod tests {
             "extensions:\n  - name: obsidian\n    type: stdio\n    cmd: npx\n    args: []\n    enabled: true\n    timeout: 300\n",
         );
         assert!(remove_entry(&path, &ConfigFormat::Goose, false).unwrap());
-        let doc: serde_yml::Value =
-            serde_yml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let doc: serde_yaml_ng::Value =
+            serde_yaml_ng::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         let found = doc
             .get("extensions")
             .and_then(|v| v.as_sequence())
