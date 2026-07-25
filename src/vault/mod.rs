@@ -1,6 +1,7 @@
 mod frontmatter;
 mod info;
 mod links;
+mod lock;
 mod patch;
 mod path;
 mod periodic;
@@ -345,12 +346,34 @@ fn page<T>(items: Vec<T>, limits: &LinkLimits) -> Vec<T> {
 #[derive(Debug)]
 pub struct VaultManager {
     vaults: HashMap<String, PathBuf>,
-    /// Serialises every mutation. See `write_guard`.
+    /// Serialises every mutation within this process. See `write_guard`.
     write_lock: Mutex<()>,
+    /// Serialises every mutation *between* processes. `None` disables it, which
+    /// is what happens when the OS offers no cache directory to put it in.
+    lock_path: Option<PathBuf>,
+}
+
+/// Both halves of the write lock, released together when this is dropped.
+struct WriteGuard<'a> {
+    _in_process: std::sync::MutexGuard<'a, ()>,
+    /// Dropping the file releases the advisory lock; the kernel does the same if
+    /// the process dies, so a crash cannot wedge the other servers.
+    _across_processes: Option<std::fs::File>,
 }
 
 impl VaultManager {
     pub fn new(vault_paths: Vec<PathBuf>) -> Self {
+        Self::build(vault_paths, lock::default_lock_path())
+    }
+
+    /// Same, with the cross-process lock pointed somewhere harmless so a test
+    /// run neither touches the real one nor blocks a server that is running.
+    #[cfg(test)]
+    pub(crate) fn with_lock_path(vault_paths: Vec<PathBuf>, lock_path: PathBuf) -> Self {
+        Self::build(vault_paths, Some(lock_path))
+    }
+
+    fn build(vault_paths: Vec<PathBuf>, lock_path: Option<PathBuf>) -> Self {
         let mut vaults = HashMap::new();
         for path in vault_paths {
             let base = basename(&path);
@@ -391,6 +414,7 @@ impl VaultManager {
         Self {
             vaults,
             write_lock: Mutex::new(()),
+            lock_path,
         }
     }
 
@@ -404,18 +428,45 @@ impl VaultManager {
     /// `atomic_write` renames into place, so a reader sees the old note or the
     /// new one, never a torn one.
     ///
+    /// The guard is **two** locks, because there is more than one server. A
+    /// mutex settles the threads inside this process; an advisory file lock
+    /// settles the other processes, which duplicate-spawning clients and
+    /// multi-client setups produce routinely. Without the second one, two live
+    /// servers on one vault lose an edit exactly as two threads would. See
+    /// `lock`.
+    ///
     /// One lock for all writes, rather than one per note: vault mutations are
     /// short, tool calls are not a hot loop, and a single lock cannot deadlock.
     ///
     /// It is **not** reentrant: a guarded method must never call another guarded
     /// method. `periodic` therefore delegates its write to `create_note` and takes
     /// no guard of its own.
-    fn write_guard(&self) -> std::sync::MutexGuard<'_, ()> {
+    fn write_guard(&self) -> WriteGuard<'_> {
         // A poisoned lock means some earlier call panicked mid-edit. Refusing
         // every write from then on is worse than carrying on.
-        self.write_lock
+        let in_process = self
+            .write_lock
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        let across_processes = self.lock_path.as_deref().and_then(|path| {
+            let held = lock::lock_exclusive(path);
+            if held.is_none() {
+                // Degraded, not fatal: this process still serialises its own
+                // writes. Refusing to write at all because a cache directory is
+                // missing would be the worse failure of the two.
+                tracing::warn!(
+                    path = %path.display(),
+                    "could not take the cross-process write lock — concurrent servers on this vault may lose edits"
+                );
+            }
+            held
+        });
+
+        WriteGuard {
+            _in_process: in_process,
+            _across_processes: across_processes,
+        }
     }
 
     pub fn list_vaults(&self) -> Vec<(String, PathBuf)> {
@@ -1186,8 +1237,62 @@ mod tests {
 
     fn make_vault() -> (TempDir, VaultManager) {
         let dir = TempDir::new().unwrap();
-        let manager = VaultManager::new(vec![dir.path().to_path_buf()]);
+        // A hidden lock file inside the temp vault: `md_files` skips hidden
+        // entries, so it stays invisible to every walk, and the real one in the
+        // user's cache directory is left alone by the whole test run.
+        let manager = VaultManager::with_lock_path(
+            vec![dir.path().to_path_buf()],
+            dir.path().join(".write.lock"),
+        );
         (dir, manager)
+    }
+
+    /// The reason the file lock exists: a *second server process* must not be
+    /// able to run a read-modify-write while this one is inside one.
+    ///
+    /// The stand-in for that second process is an independent file descriptor on
+    /// the same lock file. Advisory locks are held per open file description, so
+    /// a second descriptor conflicts with the first even from one process —
+    /// which is exactly the conflict a separate process would produce, without
+    /// the flakiness of racing two real ones.
+    #[test]
+    fn a_write_waits_while_another_server_holds_the_lock() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let dir = TempDir::new().unwrap();
+        let lock_path = dir.path().join(".write.lock");
+        let name = vault_name(&dir);
+        let manager =
+            VaultManager::with_lock_path(vec![dir.path().to_path_buf()], lock_path.clone());
+
+        let other_server = lock::lock_exclusive(&lock_path).expect("hold the lock");
+
+        let wrote = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&wrote);
+        let worker = std::thread::spawn(move || {
+            manager
+                .create_note(&name, "note.md", "# hello", None)
+                .unwrap();
+            flag.store(true, Ordering::SeqCst);
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert!(
+            !wrote.load(Ordering::SeqCst),
+            "the write went ahead while another server held the lock"
+        );
+
+        drop(other_server);
+
+        worker
+            .join()
+            .expect("the write should finish once the lock is free");
+        assert!(wrote.load(Ordering::SeqCst));
+        assert_eq!(
+            fs::read_to_string(dir.path().join("note.md")).unwrap(),
+            "# hello"
+        );
     }
 
     fn vault_name(dir: &TempDir) -> String {

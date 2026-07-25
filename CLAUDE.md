@@ -78,6 +78,8 @@ The `--no-edit` flag is a gate enforced in `ObsidianHandler::check_write()`, cal
 
 **Every mutating `VaultManager` method must take `self.write_guard()` as its first statement, and hold it for the whole read-modify-write.** The MCP server answers requests concurrently; `atomic_write` makes a single write atomic but not the read→edit→write *pair*, so without the guard two concurrent calls on one note both read the old text and the second write silently discards the first one's edit. Reads intentionally don't take the lock — `atomic_write` renames into place, so a reader sees the old note or the new one, never a torn one.
 
+The guard is **two** locks (`vault/lock.rs`): a mutex for the threads in this process, and an advisory file lock for the other *processes*. There is more than one server — clients duplicate-spawn them, and users point several clients at one vault — and two live servers lose an edit exactly as two threads would. The lock file sits in the OS cache directory, never in the vault, where it would sync and show up in the user's own files; one lock covers every vault, which is what keeps `write_guard()` callable before the vault argument has been resolved. When it can't be taken the server warns and carries on with in-process locking, because refusing every write over a missing cache directory is the worse failure. It is per machine: two devices writing one cloud-synced vault is a sync conflict and not ours to solve.
+
 ### Multi-vault model
 
 `VaultManager` keys each vault by its directory basename. Basename collisions are disambiguated as `<name>-2`, `<name>-3`, ... with a `tracing::warn!`. The MCP client refers to vaults by these names via the `vault` parameter on every tool.
