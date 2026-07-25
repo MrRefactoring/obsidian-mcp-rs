@@ -14,10 +14,8 @@ categories = ["command-line-utilities", "filesystem"]
 
 [dependencies]
 rmcp = { version = "2.2", features = ["server", "transport-io", "macros"] }
-# Only pulled in by the `http` feature. Hosts rmcp's StreamableHttpService, which
-# is a plain tower service.
 axum = { version = "0.8", optional = true }
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std"] }
 serde = { version = "1", features = ["derive"] }
 schemars = "1.2"
 tracing = "0.1"
@@ -33,20 +31,14 @@ console = "0.16"
 toml_edit = "0.25"
 ignore = "0.4"
 rayon = "1"
-# Maintained serde-yaml fork, aliased as `serde_yml` in code. Replaces the
-# previous `serde_yml`/`libyml` crates, both RustSec-flagged unmaintained +
-# unsound (RUSTSEC-2025-0067/0068).
-serde_yml = { package = "serde_yaml_ng", version = "0.10" }
+serde_yaml_ng = "0.10"
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
-regex = "1.13.0"
+regex = "1.13.1"
 jsonc-parser = { version = "0.33", default-features = false, features = ["cst", "serde_json"] }
 
 [features]
 default = []
-# Serve MCP over Streamable HTTP (`--http`) as well as stdio. Off by default: it
-# pulls in a whole HTTP stack, and the npm packages ship prebuilt binaries for
-# seven platforms, where every megabyte is a download the user pays for.
-http = ["dep:axum", "rmcp/transport-streamable-http-server"]
+http = ["dep:axum", "rmcp/transport-streamable-http-server", "tokio/net"]
 
 [dev-dependencies]
 criterion = { version = "0.8.2", features = ["html_reports"] }

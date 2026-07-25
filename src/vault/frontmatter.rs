@@ -61,7 +61,7 @@ pub(crate) fn extract_frontmatter(content: &str) -> Option<Frontmatter> {
 /// Parse the `tags` field out of a frontmatter YAML body. Malformed YAML yields
 /// no tags (strict parsing — we no longer best-effort scrape line-by-line).
 pub(crate) fn extract_tags(yaml: &str) -> Vec<String> {
-    serde_yml::from_str::<RawFrontmatter>(yaml)
+    serde_yaml_ng::from_str::<RawFrontmatter>(yaml)
         .ok()
         .and_then(|fm| fm.tags)
         .map(TagField::into_vec)
@@ -250,7 +250,7 @@ pub(crate) fn parse_fields(content: &str) -> Result<Map<String, Value>, String> 
         return Ok(Map::new());
     }
 
-    let yaml: serde_yml::Value = serde_yml::from_str(body).map_err(|e| e.to_string())?;
+    let yaml: serde_yaml_ng::Value = serde_yaml_ng::from_str(body).map_err(|e| e.to_string())?;
     match serde_json::to_value(&yaml).map_err(|e| e.to_string())? {
         Value::Object(map) => Ok(map),
         _ => Err("frontmatter is not a YAML mapping".to_string()),
@@ -260,12 +260,13 @@ pub(crate) fn parse_fields(content: &str) -> Result<Map<String, Value>, String> 
 /// Render `name: value` as frontmatter lines. serde does the emitting, so
 /// quoting, escaping and block scalars are all its problem, not ours.
 fn render_field(name: &str, value: &Value) -> Result<Vec<String>, String> {
-    let mut map = serde_yml::Mapping::new();
+    let mut map = serde_yaml_ng::Mapping::new();
     map.insert(
-        serde_yml::Value::String(name.to_string()),
-        serde_yml::to_value(value).map_err(|e| e.to_string())?,
+        serde_yaml_ng::Value::String(name.to_string()),
+        serde_yaml_ng::to_value(value).map_err(|e| e.to_string())?,
     );
-    let text = serde_yml::to_string(&serde_yml::Value::Mapping(map)).map_err(|e| e.to_string())?;
+    let text =
+        serde_yaml_ng::to_string(&serde_yaml_ng::Value::Mapping(map)).map_err(|e| e.to_string())?;
 
     let lines: Vec<String> = text
         .trim_end_matches('\n')
