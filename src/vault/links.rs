@@ -4,7 +4,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use std::sync::Arc;
+
 use rayon::prelude::*;
+
+use super::cache::ContentCache;
 use schemars::JsonSchema;
 use serde::Serialize;
 
@@ -336,14 +340,21 @@ fn rel(root: &Path, path: &Path) -> String {
 }
 
 /// Every link in the vault, resolved. One parallel pass.
-pub(crate) fn link_graph(root: &Path) -> (Vec<PathBuf>, Resolver, Vec<LinkRef>) {
+///
+/// Read-only, so it reads through the cache. `move_note` builds its own
+/// `Resolver` and reads from disk instead — it rewrites what it reads, and the
+/// cache must never feed a read-modify-write.
+pub(crate) fn link_graph(
+    root: &Path,
+    cache: &ContentCache,
+) -> (Vec<PathBuf>, Resolver, Vec<LinkRef>) {
     let files = md_files(root);
     let resolver = Resolver::new(root, &files);
 
     let refs: Vec<LinkRef> = files
         .par_iter()
         .flat_map_iter(|path| {
-            let content = std::fs::read_to_string(path).unwrap_or_default();
+            let content = cache.read(path).unwrap_or_else(|| Arc::from(""));
             let from = rel(root, path);
             parse_links(&content)
                 .into_iter()

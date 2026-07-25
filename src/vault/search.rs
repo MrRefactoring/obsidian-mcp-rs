@@ -1,6 +1,8 @@
-use std::{collections::HashMap, fs, path::Path};
+use std::{collections::HashMap, path::Path};
 
 use rayon::prelude::*;
+
+use super::cache::ContentCache;
 use regex::RegexBuilder;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -204,18 +206,19 @@ pub(crate) fn search(
     search_root: &Path,
     q: &SearchQuery<'_>,
     limits: &SearchLimits,
+    cache: &ContentCache,
 ) -> Result<SearchOutput, VaultError> {
     let files = md_files(search_root);
     let (query, case_sensitive, search_type) = (q.query, q.case_sensitive, q.search_type);
 
     if q.regex {
-        return regex_search(root, &files, q, limits);
+        return regex_search(root, &files, q, limits, cache);
     }
 
     // `tag:` is a filter, not a ranked query — a note either carries the tag or
     // it doesn't, so there is nothing to score.
     if let Some(tag) = query.strip_prefix("tag:") {
-        return Ok(tag_search(root, &files, tag, q.frontmatter, limits));
+        return Ok(tag_search(root, &files, tag, q.frontmatter, limits, cache));
     }
 
     let fold = |s: &str| {
@@ -230,7 +233,7 @@ pub(crate) fn search(
         // No words to rank by. With a frontmatter filter that's still a real
         // question — "every note where status is active" — so answer it.
         if !q.frontmatter.is_empty() {
-            return Ok(filter_only(root, &files, q.frontmatter, limits));
+            return Ok(filter_only(root, &files, q.frontmatter, limits, cache));
         }
         return Ok(empty(limits));
     }
@@ -248,7 +251,7 @@ pub(crate) fn search(
     let scanned: Vec<(f32, Option<Candidate>)> = files
         .par_iter()
         .filter_map(|path| {
-            let content = fs::read_to_string(path).ok()?;
+            let content = cache.read(path)?;
             let len = content.len() as f32;
 
             // A note the filter excludes is not a candidate — but it still counts
@@ -403,6 +406,7 @@ fn regex_search(
     files: &[std::path::PathBuf],
     q: &SearchQuery<'_>,
     limits: &SearchLimits,
+    cache: &ContentCache,
 ) -> Result<SearchOutput, VaultError> {
     let re = RegexBuilder::new(q.query)
         .case_insensitive(!q.case_sensitive)
@@ -418,7 +422,7 @@ fn regex_search(
     let mut results: Vec<SearchResult> = files
         .par_iter()
         .filter_map(|path| {
-            let content = fs::read_to_string(path).ok()?;
+            let content = cache.read(path)?;
             if !matches_meta(&content, q.frontmatter) {
                 return None;
             }
@@ -479,11 +483,12 @@ fn filter_only(
     files: &[std::path::PathBuf],
     filter: &MetaFilter,
     limits: &SearchLimits,
+    cache: &ContentCache,
 ) -> SearchOutput {
     let mut results: Vec<SearchResult> = files
         .par_iter()
         .filter_map(|path| {
-            let content = fs::read_to_string(path).ok()?;
+            let content = cache.read(path)?;
             if !matches_meta(&content, filter) {
                 return None;
             }
@@ -508,11 +513,12 @@ fn tag_search(
     tag: &str,
     filter: &MetaFilter,
     limits: &SearchLimits,
+    cache: &ContentCache,
 ) -> SearchOutput {
     let mut results: Vec<SearchResult> = files
         .par_iter()
         .filter_map(|path| {
-            let content = fs::read_to_string(path).ok()?;
+            let content = cache.read(path)?;
             if !content_has_tag(&content, tag) || !matches_meta(&content, filter) {
                 return None;
             }
@@ -598,6 +604,7 @@ mod tests {
                 frontmatter: &MetaFilter::new(),
             },
             &limits,
+            &ContentCache::default(),
         )
         .expect("a plain query cannot fail")
     }
@@ -615,6 +622,7 @@ mod tests {
                 frontmatter: &MetaFilter::new(),
             },
             &SearchLimits::default(),
+            &ContentCache::default(),
         )
     }
 
@@ -631,6 +639,7 @@ mod tests {
                 frontmatter: &filter,
             },
             &SearchLimits::default(),
+            &ContentCache::default(),
         )
         .expect("a plain query cannot fail")
     }
@@ -883,6 +892,7 @@ mod tests {
                 frontmatter: &MetaFilter::new(),
             },
             &SearchLimits::default(),
+            &ContentCache::default(),
         )
         .unwrap();
         assert_eq!(out.total, 1);
@@ -903,6 +913,7 @@ mod tests {
                 frontmatter: &MetaFilter::new(),
             },
             &SearchLimits::default(),
+            &ContentCache::default(),
         )
         .unwrap();
         assert_eq!(out.total, 1);
@@ -923,6 +934,7 @@ mod tests {
                 frontmatter: &MetaFilter::new(),
             },
             &SearchLimits::default(),
+            &ContentCache::default(),
         )
         .unwrap();
         assert_eq!(out.total, 1);
