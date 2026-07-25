@@ -46,6 +46,15 @@ The `http` cargo feature (off by default) adds a Streamable HTTP transport (`src
 
 The server uses `(stdin, stdout)` for the MCP JSON-RPC stream (`main.rs::run_server`). **Anything that writes to stdout will corrupt the protocol.** All diagnostics go to stderr or to a size-rotated file log (`~/Library/Logs/obsidian-mcp-rs/obsidian-mcp-rs.log` on macOS, `~/.local/share/...` on Linux, `%LOCALAPPDATA%\...` on Windows). `tracing_subscriber` is configured in `main::setup_logging`: stderr layer = WARN by default (DEBUG with `--verbose`), file layer = always DEBUG. Rotation is size-based and runs at startup — `main::rotate_if_large` renames the log to `<path>.1` once it passes `MAX_LOG_BYTES` (5 MiB), keeping one backup, so the current path stays stable.
 
+### Process lifetime (do not break)
+
+stdin EOF is the primary shutdown signal and the only portable one — the spec asks servers for exactly that, and `tests/orphan_exit.rs` pins it. It is not sufficient on its own: the write end of our stdin is refcounted, so a client that dies while any other process holds a copy never delivers EOF, and the server sits there forever with write access to the vault. `parent.rs::watch_parent` is the backstop, wired into `run_server` only — the `install`/`uninstall`/`list`/`logs` subcommands are short-lived and their parent shell may legitimately exit first.
+
+Two traps that already bit this code once, both pinned by tests:
+
+- **A parent of pid 1 at startup means we were *already* orphaned**, not "nothing to watch" — the parent can die between spawn and our first `getppid`. Reading it as "no host" is how the fastest-created orphans become the permanent ones. Being pid 1 ourselves (container entrypoint, `getppid() == 0`) is the only genuine no-host case.
+- **No idle timeout, no stdin-state heuristics, no parent-identity checks beyond the pid.** Each is a documented false-positive in another MCP server; see the module docs for which and why.
+
 ### Module layout
 
 | Module       | Role                                                                                                                 |
@@ -53,6 +62,7 @@ The server uses `(stdin, stdout)` for the MCP JSON-RPC stream (`main.rs::run_ser
 | `lib.rs`     | crate root — re-exports `error`/`handler`/`install`/`tools`/`vault` as the public library surface                    |
 | `main.rs`    | thin bin over the lib: clap CLI, log setup, dispatches to `install`/`uninstall`/`list`/`logs` subcommands or starts the MCP server |
 | `handler.rs` | `ObsidianHandler` with `#[tool_router]` macro — 15 MCP tools, thin wrappers over `vault`                             |
+| `parent.rs`  | parent-liveness watch — exits when the client that spawned us dies without closing stdin (`getppid` poll on Unix, parent-handle wait on Windows) |
 | `vault/`     | `VaultManager` (`mod.rs`) + submodules: `path` (**`safe_join` sandbox**), `frontmatter` (parse + line-surgery edits), `tags`, `patch` (heading/block targets + outline), `links`, `search`, `info` (tags/recent/stats), `periodic` (Obsidian's daily-note settings), `walk` (`md_files` via `ignore`). Vault walks run in parallel with `rayon` |
 | `tools/*.rs` | `serde` + `schemars::JsonSchema` param structs only — one per tool                                                   |
 | `install/`   | Writes/removes MCP-server entries in 14 AI-client configs (JSON / TOML for Codex / YAML for Goose)                   |

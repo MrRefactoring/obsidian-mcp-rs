@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use clap::{Parser, Subcommand};
 use obsidian_mcp_rs::handler::ObsidianHandler;
 use obsidian_mcp_rs::install;
+use obsidian_mcp_rs::parent;
 use obsidian_mcp_rs::vault::VaultManager;
 use rmcp::ServiceExt;
 
@@ -375,6 +376,13 @@ async fn run_server(vaults: Vec<PathBuf>, no_edit: bool) -> anyhow::Result<()> {
     );
 
     register_vaults(&vaults);
+
+    // Only in server mode: the subcommands are short-lived and their parent is a
+    // shell that may legitimately exit first.
+    parent::watch_parent(|reason| {
+        tracing::warn!(%reason, "client is gone, shutting down");
+        std::process::exit(0);
+    });
 
     let manager = VaultManager::new(vaults);
     let handler = ObsidianHandler::with_options(manager, no_edit);
