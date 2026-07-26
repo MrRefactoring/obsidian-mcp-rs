@@ -110,7 +110,7 @@ Your config therefore runs **one process** — the server itself, as a direct ch
 npx obsidian-mcp-rs@latest install    # same command you used the first time
 ```
 
-That replaces the installed binary in place. **The path in your configs never changes**, so nothing needs re-pointing and no config goes stale.
+That replaces the installed binary in place. **The path in your configs never changes**, so nothing needs re-pointing and no config goes stale. (One exception, and it catches everyone who installed early: a config written before 0.7.0 does not hold that path yet, and `install` will not overwrite it on its own — see [below](#upgrading-from-a-config-written-before-070).)
 
 Two things worth knowing:
 
@@ -118,6 +118,37 @@ Two things worth knowing:
 - **On Windows, quit your AI clients first.** Windows refuses to overwrite a running executable; if a client still has the server open the installer will say so and ask you to close it.
 
 `uninstall` removes the binary too, once no client config still points at it.
+
+### Upgrading from a config written before 0.7.0
+
+Everything above describes a config `install` wrote for you. If yours predates 0.7.0 it holds `npx -y obsidian-mcp-rs`, or a resolved path into npm's `_npx` cache, and **re-running `install` will not replace it.**
+
+The installer refuses to overwrite an entry that differs from the one it would write — that entry may be something you tuned by hand, and silently discarding it is worse than doing nothing. So it reports the entry and moves on:
+
+```
+! Claude Code – global (~/.claude.json)  already installed in ~/.claude.json, but with different settings than you asked for
+    nothing was changed — re-run with --force to replace that entry
+```
+
+That line sits between the clients that *were* written and the "restart your client" note at the end, which is an easy place to miss it. If your client still starts `npx` after an update, this is why — and none of the process-lifecycle fixes above are in effect for it.
+
+To migrate, add `--force`:
+
+```bash
+npx obsidian-mcp-rs@latest install --force
+```
+
+Every backend copies the previous file to `<config>.bak` before writing, so this is reversible.
+
+`list` names the ones that need it:
+
+```
+! Claude Desktop                          outdated   …/claude_desktop_config.json — runs `obsidian-vault-mcp`, not the installed server; re-run `install --force`
+! Claude Code – global (~/.claude.json)   outdated   ~/.claude.json — runs `npx`, not the installed server; re-run `install --force`
+✓ Codex CLI – global                      installed  ~/.codex/config.toml
+```
+
+`outdated` means the entry is there and does not launch this server. Earlier versions reported every one of these as `installed`, because the check asked only whether an `obsidian` key existed — which is also why a config naming a binary that had since been deleted went unnoticed.
 
 ### Known issues that are not ours
 
