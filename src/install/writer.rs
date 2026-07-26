@@ -22,8 +22,15 @@ struct GooseExtension {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InstallStatus {
-    /// obsidian-mcp-rs entry present in config
-    Installed,
+    /// obsidian-mcp-rs entry present in config.
+    ///
+    /// `command` is what that entry actually launches, and it is carried here
+    /// because the key existing is not the same as the server working. An entry
+    /// written before 0.7.0 runs `npx`; one left by a build that has since moved
+    /// names a file that is not there. Reporting both as a bare "installed" is
+    /// how a config pointing at a deleted binary went unnoticed — `install`
+    /// declines to overwrite what it did not write, so nothing else says it.
+    Installed { command: Option<String> },
     /// Config file exists but no obsidian entry
     NotInstalled,
     /// Config file does not exist at all
@@ -197,8 +204,10 @@ impl ConfigBackend for JsonBackend {
                 None => return InstallStatus::NotInstalled,
             }
         }
-        match obj.object_value(last) {
-            Some(_) => InstallStatus::Installed,
+        match obj.get(last) {
+            Some(prop) => InstallStatus::Installed {
+                command: prop.to_serde_value().as_ref().and_then(entry_command),
+            },
             None => InstallStatus::NotInstalled,
         }
     }
@@ -286,6 +295,18 @@ impl ConfigBackend for JsonBackend {
             write_with_backup(path, &root.to_string())?;
         }
         Ok(true)
+    }
+}
+
+/// The binary an existing JSON entry launches.
+///
+/// Most clients store it as a string; opencode stores command and arguments as
+/// one array, where the binary is the head.
+fn entry_command(entry: &Value) -> Option<String> {
+    match entry.get("command")? {
+        Value::String(s) => Some(s.clone()),
+        Value::Array(argv) => argv.first()?.as_str().map(str::to_owned),
+        _ => None,
     }
 }
 
@@ -423,7 +444,9 @@ impl ConfigBackend for TomlBackend {
             return InstallStatus::NotInstalled;
         };
         if toml_has_obsidian(&doc) {
-            InstallStatus::Installed
+            InstallStatus::Installed {
+                command: toml_obsidian_command(&doc),
+            }
         } else {
             InstallStatus::NotInstalled
         }
@@ -453,10 +476,7 @@ impl ConfigBackend for TomlBackend {
             // whether it carries --no-edit, and whether it still points at the
             // npx command this installer stopped writing.
             let entry = doc.get("mcp_servers").and_then(|s| s.get("obsidian"));
-            let command = entry
-                .and_then(|o| o.get("command"))
-                .and_then(|c| c.as_str())
-                .map(str::to_string);
+            let command = toml_obsidian_command(&doc);
             let installed = entry
                 .and_then(|o| o.get("args"))
                 .and_then(|a| a.as_array())
@@ -534,6 +554,14 @@ fn toml_has_obsidian(doc: &toml_edit::DocumentMut) -> bool {
         .unwrap_or(false)
 }
 
+fn toml_obsidian_command(doc: &toml_edit::DocumentMut) -> Option<String> {
+    doc.get("mcp_servers")?
+        .get("obsidian")?
+        .get("command")?
+        .as_str()
+        .map(str::to_owned)
+}
+
 // ── YAML backend (Goose) ──────────────────────────────────────────────────────
 
 struct YamlBackend;
@@ -550,7 +578,9 @@ impl ConfigBackend for YamlBackend {
             return InstallStatus::NotInstalled;
         };
         if yaml_has_obsidian(&doc) {
-            InstallStatus::Installed
+            InstallStatus::Installed {
+                command: yaml_obsidian_command(&doc),
+            }
         } else {
             InstallStatus::NotInstalled
         }
@@ -581,10 +611,7 @@ impl ConfigBackend for YamlBackend {
                     seq.iter()
                         .find(|i| i.get("name").and_then(|n| n.as_str()) == Some("obsidian"))
                 });
-            let command = entry
-                .and_then(|e| e.get("cmd"))
-                .and_then(|c| c.as_str())
-                .map(str::to_string);
+            let command = yaml_obsidian_command(&doc);
             let installed = entry
                 .and_then(|e| e.get("args"))
                 .and_then(|a| a.as_sequence())
@@ -660,13 +687,21 @@ impl ConfigBackend for YamlBackend {
 }
 
 fn yaml_has_obsidian(doc: &serde_yaml_ng::Value) -> bool {
-    doc.get("extensions")
-        .and_then(|v| v.as_sequence())
-        .map(|seq| {
-            seq.iter()
-                .any(|item| item.get("name").and_then(|n| n.as_str()) == Some("obsidian"))
-        })
-        .unwrap_or(false)
+    yaml_obsidian_entry(doc).is_some()
+}
+
+fn yaml_obsidian_entry(doc: &serde_yaml_ng::Value) -> Option<&serde_yaml_ng::Value> {
+    doc.get("extensions")?
+        .as_sequence()?
+        .iter()
+        .find(|item| item.get("name").and_then(|n| n.as_str()) == Some("obsidian"))
+}
+
+fn yaml_obsidian_command(doc: &serde_yaml_ng::Value) -> Option<String> {
+    yaml_obsidian_entry(doc)?
+        .get("cmd")?
+        .as_str()
+        .map(str::to_owned)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -727,10 +762,12 @@ mod tests {
 
     #[test]
     fn check_status_installed_standard() {
-        let (_dir, path) = temp_cfg(r#"{"mcpServers":{"obsidian":{}}}"#);
+        let (_dir, path) = temp_cfg(r#"{"mcpServers":{"obsidian":{"command":"/opt/srv"}}}"#);
         assert_eq!(
             check_status(&path, &ConfigFormat::Standard),
-            InstallStatus::Installed
+            InstallStatus::Installed {
+                command: Some("/opt/srv".to_string())
+            }
         );
     }
 
@@ -739,7 +776,36 @@ mod tests {
         let (_dir, path) = temp_cfg(r#"{"mcp":{"servers":{"obsidian":{}}}}"#);
         assert_eq!(
             check_status(&path, &ConfigFormat::OpenClaw),
-            InstallStatus::Installed
+            InstallStatus::Installed { command: None }
+        );
+    }
+
+    /// The entry that made this necessary. `list` reported it as installed
+    /// because the key was there, and it had been launching nothing for weeks.
+    #[test]
+    fn check_status_reports_the_command_a_stale_npx_entry_runs() {
+        let (_dir, path) = temp_cfg(
+            r#"{"mcpServers":{"obsidian":{"command":"npx","args":["-y","obsidian-mcp-rs","/v"]}}}"#,
+        );
+        assert_eq!(
+            check_status(&path, &ConfigFormat::Standard),
+            InstallStatus::Installed {
+                command: Some("npx".to_string())
+            }
+        );
+    }
+
+    /// opencode merges command and arguments into one array, so the binary is
+    /// the head of it rather than a `command` string.
+    #[test]
+    fn check_status_reads_the_command_out_of_an_opencode_argv() {
+        let (_dir, path) =
+            temp_cfg(r#"{"mcp":{"obsidian":{"type":"local","command":["/opt/srv","/vault"]}}}"#);
+        assert_eq!(
+            check_status(&path, &ConfigFormat::OpenCode),
+            InstallStatus::Installed {
+                command: Some("/opt/srv".to_string())
+            }
         );
     }
 
@@ -1104,7 +1170,9 @@ mod tests {
         let (_dir, path) = temp_toml("[mcp_servers.obsidian]\ncommand = \"npx\"\n");
         assert_eq!(
             check_status(&path, &ConfigFormat::Codex),
-            InstallStatus::Installed
+            InstallStatus::Installed {
+                command: Some("npx".to_string())
+            }
         );
     }
 
@@ -1228,7 +1296,9 @@ mod tests {
         );
         assert_eq!(
             check_status(&path, &ConfigFormat::Goose),
-            InstallStatus::Installed
+            InstallStatus::Installed {
+                command: Some("npx".to_string())
+            }
         );
     }
 

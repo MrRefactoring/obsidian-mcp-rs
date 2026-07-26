@@ -94,6 +94,8 @@ Three separate reasons, and losing any one of them is a regression:
 
 Updating is re-running `install`, which replaces the copy while the configured path stays put. `list` reports the installed copy's version against this package's, because the copy only changes when `install` runs and that skew is otherwise invisible. `uninstall` removes the binary once no config still points at it.
 
+**`InstallStatus::Installed` carries the command the entry actually runs, and every consumer must ask.** An entry existing is not the same as the server working: a config written before 0.7.0 runs `npx`, and one left by a build that has since moved names a file that is not there. Both were reported as a bare `installed` — including, observed on a real machine, a config pointing at a deleted binary, dead for weeks with nothing in the CLI willing to say so. `install` cannot be the one to say it either: it declines to overwrite an entry it did not write (that entry may be hand-tuned), so it prints one line and moves on, and that line is buried in a wall of per-client output. `list` is therefore the only standing account, and `points_at_installed_server` is what it and `remove_binary_if_unused` both go through. Adding a config backend means extracting the command in its `check_status` too — returning `Installed { command: None }` from a format that has one is a silent false `outdated`.
+
 ### Multi-vault model
 
 `VaultManager` keys each vault by its directory basename. Basename collisions are disambiguated as `<name>-2`, `<name>-3`, ... with a `tracing::warn!`. The MCP client refers to vaults by these names via the `vault` parameter on every tool.

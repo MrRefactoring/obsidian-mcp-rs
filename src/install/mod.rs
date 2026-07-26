@@ -2,7 +2,7 @@ mod binary;
 pub mod clients;
 mod writer;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use console::style;
@@ -117,16 +117,34 @@ pub fn run_uninstall(args: UninstallArgs) -> Result<()> {
     }
 }
 
+/// Does this config entry launch the server `install` placed, or something else?
+///
+/// The distinction is the whole reason [`InstallStatus::Installed`] carries a
+/// command: an entry written before 0.7.0 runs `npx`, and one left behind by a
+/// build that has since moved names a file that is not there. Both are present
+/// and neither is us.
+///
+/// When we cannot work out where the server would live, there are no grounds to
+/// call anything stale — say nothing rather than cry wolf.
+fn points_at_installed_server(command: Option<&str>) -> bool {
+    let Some(stable) = binary::stable_path() else {
+        return true;
+    };
+    command.is_some_and(|cmd| Path::new(cmd) == stable)
+}
+
 /// Delete the installed server once no client config still points at it.
 ///
 /// Removing it while another client is still configured would leave that client
 /// with a config naming a file that is not there — a broken server rather than
-/// an uninstalled one.
+/// an uninstalled one. An entry that runs something else is not such a client:
+/// it never referenced this copy, so keeping the copy for its sake preserves a
+/// file nothing will ever launch.
 fn remove_binary_if_unused(dry_run: bool) -> Result<()> {
     let still_used = all_targets().iter().any(|t| {
         matches!(
             check_status(&t.config_path, &t.format),
-            InstallStatus::Installed
+            InstallStatus::Installed { command } if points_at_installed_server(command.as_deref())
         )
     });
     if still_used {
@@ -152,6 +170,15 @@ fn remove_binary_if_unused(dry_run: bool) -> Result<()> {
     Ok(())
 }
 
+/// What an entry's command identifies as, short enough for a status line:
+/// `npx`, or the name of whatever binary it points at. The absolute path is
+/// noise next to a config path that is already on the same row.
+fn command_label(command: &str) -> String {
+    Path::new(command)
+        .file_name()
+        .map_or_else(|| command.to_string(), |n| n.to_string_lossy().into_owned())
+}
+
 pub fn run_list() -> Result<()> {
     let targets = all_targets();
     println!();
@@ -163,10 +190,31 @@ pub fn run_list() -> Result<()> {
     for t in &targets {
         let status = check_status(&t.config_path, &t.format);
         let (icon, label, path_hint) = match (&status, t.is_local) {
-            (InstallStatus::Installed, _) => (
-                style("✓").green().bold().to_string(),
-                style("installed").green().to_string(),
-                display_path(&t.config_path),
+            (InstallStatus::Installed { command }, _)
+                if points_at_installed_server(command.as_deref()) =>
+            {
+                (
+                    style("✓").green().bold().to_string(),
+                    style("installed").green().to_string(),
+                    display_path(&t.config_path),
+                )
+            }
+            // The key is there, so `install` leaves it alone unless it is given
+            // --force, and it says so in one line the rest of that run buries.
+            // This row is the only standing account of a config that is present
+            // and does not work.
+            (InstallStatus::Installed { command }, _) => (
+                style("!").yellow().bold().to_string(),
+                style("outdated ").yellow().to_string(),
+                format!(
+                    "{} — {}; re-run `install --force`",
+                    display_path(&t.config_path),
+                    match command.as_deref() {
+                        Some(cmd) =>
+                            format!("runs `{}`, not the installed server", command_label(cmd)),
+                        None => "entry names no command at all".to_string(),
+                    }
+                ),
             ),
             (InstallStatus::NotInstalled, _) => (
                 style("✗").yellow().to_string(),
@@ -387,7 +435,15 @@ fn interactive_uninstall(dry_run: bool, force: bool) -> Result<()> {
 
     let installed: Vec<InstallTarget> = all_targets()
         .into_iter()
-        .filter(|t| check_status(&t.config_path, &t.format) == InstallStatus::Installed)
+        // Deliberately every entry, not only the ones pointing at our copy: a
+        // stale `npx` entry is exactly what someone running `uninstall` wants
+        // gone, and refusing to list it would leave it unreachable.
+        .filter(|t| {
+            matches!(
+                check_status(&t.config_path, &t.format),
+                InstallStatus::Installed { .. }
+            )
+        })
         .collect();
 
     if installed.is_empty() {
@@ -697,6 +753,55 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
     use tempfile::TempDir;
+
+    // ── points_at_installed_server ────────────────────────────────────────────
+
+    #[test]
+    fn the_installed_server_is_recognised_as_itself() {
+        let Some(stable) = binary::stable_path() else {
+            return;
+        };
+        assert!(points_at_installed_server(Some(&stable.to_string_lossy())));
+    }
+
+    /// Every one of these was reported as a plain "installed" before the status
+    /// carried a command: an npx entry from before 0.7.0, a hardcoded path into
+    /// the npx cache, a stale development build, and an entry with no command.
+    #[test]
+    fn an_entry_running_anything_else_is_not_the_installed_server() {
+        if binary::stable_path().is_none() {
+            return;
+        }
+        for command in [
+            Some("npx"),
+            Some("/Users/x/.nvm/versions/node/v24.13.1/bin/npx"),
+            Some("/Users/x/repos/obsidian-vault-mcp/target/release/obsidian-vault-mcp"),
+            None,
+        ] {
+            assert!(
+                !points_at_installed_server(command),
+                "{command:?} should not pass as the installed server"
+            );
+        }
+    }
+
+    /// Without a data directory there is no path to compare against, and a row
+    /// reading "outdated" for every client would be worse than one that stays
+    /// quiet.
+    #[test]
+    fn nothing_is_called_stale_when_the_server_has_no_home() {
+        assert!(points_at_installed_server(Some("npx")) == binary::stable_path().is_none());
+    }
+
+    #[test]
+    fn a_command_is_labelled_by_its_binary_not_its_path() {
+        assert_eq!(command_label("npx"), "npx");
+        assert_eq!(
+            command_label("/Users/x/.nvm/versions/node/v24.13.1/bin/npx"),
+            "npx"
+        );
+        assert_eq!(command_label(""), "");
+    }
 
     // ── resolve_targets ───────────────────────────────────────────────────────
 
