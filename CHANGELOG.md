@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.7.1] - 2026-07-26
+
+0.7.0 moved configs off `npx` and onto a path to a binary the installer places. It did not move anyone who was *already* installed, and nothing said so. This release makes that visible, and documents the one command that completes the migration.
+
+### Fixed
+
+- **`list` reported a config that was present and did not work as `installed`.** The check asked whether an `obsidian` key existed and never what it launched, so three unrelated states rendered identically: an entry this installer wrote, one left from the `npx` era, and — found on a real machine — one naming a binary that had been deleted, dead for weeks with nothing in the CLI willing to mention it.
+
+  This matters most for the 0.7.0 upgrade, because `install` cannot be the one to mention it either. It declines to overwrite an entry it did not write — that entry may be something you tuned by hand, and discarding it silently is worse than doing nothing — so it prints a single `already installed … with different settings` line and moves on. That line lands between the clients it *did* write and the closing "restart your client", which is an easy place to miss it. Miss it, and you believe you picked up 0.7.0 while your client still starts `npx` and none of the process-lifecycle fixes apply.
+
+  `InstallStatus::Installed` now carries the command the entry runs, read per config format — including opencode, which stores command and arguments as one array with the binary at its head. `list` renders a mismatch as `outdated`, naming what the entry runs and what to do about it:
+
+  ```
+  ! Claude Code – global (~/.claude.json)   outdated   ~/.claude.json — runs `npx`, not the installed server; re-run `install --force`
+  ```
+
+  Nothing is called stale when the server's own location cannot be resolved: a row reading `outdated` for every client would be worse than one that stays quiet.
+
+- **`uninstall` kept the server binary alive for configs that never referenced it.** Removing the copy while another client is still configured would leave that client naming a file that is not there, so the copy is kept — but an entry running `npx`, or an old build elsewhere, was never such a client. It now has to actually point at the installed copy to count. Entries are still *offered* for removal regardless of what they launch: a leftover `npx` entry is exactly what someone running `uninstall` wants gone.
+
+### Changed
+
+- **Both READMEs gained an upgrade path for configs written before 0.7.0** — why `install` leaves the entry alone, what the easily-missed warning looks like, `--force`, and the `.bak` every backend takes before writing. The existing text promised that the configured path never changes and no config goes stale; that holds only for configs written after 0.7.0, which is to say for almost nobody upgrading, and it now carries the exception.
+
+
 ## [0.7.0] - 2026-07-25
 
 A lifecycle release. The server used to depend on its client behaving well — closing stdin on the way out, being the only one running, being the only thing writing to the vault. None of those held in practice, and each one had a consequence: processes that outlived their client and kept write access to someone's notes, two live servers silently losing each other's edits, and a log that quietly copied the vault into a plaintext file on disk. All three are closed here. The installer also stops writing `npx` into client configs, which is what made the first one fixable at all.
