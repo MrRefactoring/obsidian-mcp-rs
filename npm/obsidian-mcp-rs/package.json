@@ -56,7 +56,7 @@
     "@obsidian-mcp-rs/win32-x64": "0.7.1"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0",
+    "@types/node": "^26.1.2",
     "@vitest/coverage-v8": "^4.1.10",
     "typescript": "^6.0.0",
     "vitest": "^4.1.10"
