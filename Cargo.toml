@@ -13,7 +13,7 @@ keywords = ["obsidian", "mcp", "notes", "vault", "ai"]
 categories = ["command-line-utilities", "filesystem"]
 
 [dependencies]
-rmcp = { version = "2.2", features = ["server", "transport-io", "macros"] }
+rmcp = { version = "3.0", features = ["server", "transport-io", "macros"] }
 axum = { version = "0.8", optional = true }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std"] }
 serde = { version = "1", features = ["derive"] }
