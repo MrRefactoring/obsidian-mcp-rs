@@ -8,7 +8,8 @@
 - Supports multiple vaults simultaneously via CLI arguments
 - Ships as a single static binary — no runtime required
 - stdio by default; Streamable HTTP (`--http`) available via the optional `http` cargo feature
-- Distributed as an npm package (`obsidian-mcp-rs`) with platform-specific binaries via optional dependencies
+- Distributed as an npm package (`obsidian-mcp-rs`) with platform-specific binaries via optional dependencies, and on crates.io
+- Installs itself into 14 AI-client configs and keeps itself updated from GitHub Releases
 
 ## Tools
 
@@ -31,21 +32,12 @@
 ## Usage
 
 ```bash
-npx obsidian-mcp-rs /path/to/vault
+npx -y obsidian-mcp-rs install claude-code /path/to/vault
 ```
 
-MCP config (Claude Desktop / Cursor / Claude Code):
+`install` copies the server to a fixed per-user path and writes that absolute path into the client config. Node is not in the runtime path afterwards, and the configured path never changes. The installed copy keeps itself up to date: it checks for a new release at most once a day and replaces itself 48 hours after one ships. `install --no-auto-update` turns that off; `obsidian-mcp-rs update` takes a release immediately.
 
-```json
-{
-  "mcpServers": {
-    "obsidian": {
-      "command": "npx",
-      "args": ["-y", "obsidian-mcp-rs", "/path/to/vault"]
-    }
-  }
-}
-```
+Configs are written for you rather than by hand — an entry that runs `npx` starts three processes per client, of which a client terminating "the server" kills only the first.
 
 ## Tech stack
 

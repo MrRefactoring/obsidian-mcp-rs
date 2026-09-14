@@ -45,7 +45,7 @@
 
 **The fastest way: just ask your AI agent to install it.** If you already work inside an agentic client (Claude Code, Cursor, Windsurf, …), you never touch a config file — paste one prompt and let the agent run the installer for you. Swap in your own vault path:
 
-> Install the **obsidian-mcp-rs** MCP server for this editor. My Obsidian vault is at `~/Documents/Obsidian/MyVault`. Run `npx -y obsidian-mcp-rs install claude-code ~/Documents/Obsidian/MyVault` (use `cursor`, `windsurf`, `vscode`, `claude`, … for other clients). It copies the server to a fixed location and writes that path into my client config — so tell me where it landed, and remind me that updating means re-running this same command, not `npm update`. Then tell me to restart the session and approve the server if the client asks.
+> Install the **obsidian-mcp-rs** MCP server for this editor. My Obsidian vault is at `~/Documents/Obsidian/MyVault`. Run `npx -y obsidian-mcp-rs install claude-code ~/Documents/Obsidian/MyVault` (use `cursor`, `windsurf`, `vscode`, `claude`, … for other clients). It copies the server to a fixed location and writes that path into my client config — so tell me where it landed, and tell me whether it said the server will keep itself up to date. Then tell me to restart the session and approve the server if the client asks.
 
 > **Heads-up:** clients read MCP config at **session start**, so the agent can write it but can't hot-load it. After it installs the server, **restart** the client — and in Claude Code approve a project-scoped `.mcp.json` server via the `/mcp` panel — before the 15 tools appear.
 
@@ -86,6 +86,7 @@ Other management commands:
 
 ```bash
 npx obsidian-mcp-rs list       # installation status across all clients, and which server version is installed
+npx obsidian-mcp-rs update     # take the latest release now instead of waiting for the daily check
 npx obsidian-mcp-rs uninstall  # interactive removal wizard
 npx obsidian-mcp-rs uninstall claude --dry-run  # preview changes without writing
 ```
@@ -106,16 +107,35 @@ Your config therefore runs **one process** — the server itself, as a direct ch
 
 ### Updating
 
+**The server keeps itself up to date.** Once `install` has placed it, it checks for a new release at most once a day, in the background, and replaces itself when it finds one. Nothing is asked of you, and nothing is interrupted — the new version is what your client starts **next time it launches**.
+
+Four things it deliberately will not do:
+
+- **It waits 48 hours after a release ships.** If a release turns out to be broken, that window is when it gets withdrawn — so the bad one never reaches you.
+- **It only ever replaces the copy `install` placed.** A binary from `cargo install`, from a distribution package, or the one `npx` caches belongs to whatever put it there. Those never update themselves.
+- **It never asks the network more than once a day**, no matter how many times your client restarts the server — and a failed check is silent, so an offline or firewalled machine is never slowed down or broken by it.
+- **It verifies what it downloads** against the checksum published with the release, and runs the new binary once before installing it. Anything that does not answer with the version it claims is thrown away.
+
+Turning it off, at install time or any time after:
+
 ```bash
-npx obsidian-mcp-rs@latest install    # same command you used the first time
+npx obsidian-mcp-rs@latest install --no-auto-update
 ```
 
-That replaces the installed binary in place. **The path in your configs never changes**, so nothing needs re-pointing and no config goes stale. (One exception, and it catches everyone who installed early: a config written before 0.7.0 does not hold that path yet, and `install` will not overwrite it on its own — see [below](#upgrading-from-a-config-written-before-070).)
+The interactive wizard asks instead of assuming, and offers your current choice as the default. The answer is remembered; `install --auto-update` takes it back. An install that says nothing about auto-update changes nothing about it, so configuring a second client will not switch it back on.
 
-Two things worth knowing:
+To take a release now rather than wait for the check:
 
-- **`npm update` alone does not update the installed server.** The copy your client runs only changes when `install` runs. `npx obsidian-mcp-rs list` prints the installed version next to this package's, and says so when they drift apart.
-- **On Windows, quit your AI clients first.** Windows refuses to overwrite a running executable; if a client still has the server open the installer will say so and ask you to close it.
+```bash
+obsidian-mcp-rs update           # take the latest release
+obsidian-mcp-rs update --check   # just say what is available
+```
+
+To go back to an older release, install it — `npx obsidian-mcp-rs@0.7.1 install`. The path in your configs never changes, so nothing needs re-pointing either way. (One exception, and it catches everyone who installed early: a config written before 0.7.0 does not hold that path yet, so none of this reaches it — see [below](#upgrading-from-a-config-written-before-070).)
+
+`npx obsidian-mcp-rs list` prints where the server is, which version it is, and whether auto-update is on.
+
+**On Windows, quit your AI clients before running `install`.** Windows refuses to overwrite a running executable; if a client still has the server open the installer will say so and ask you to close it. (`update` is not affected — it renames rather than overwrites.)
 
 `uninstall` removes the binary too, once no client config still points at it.
 

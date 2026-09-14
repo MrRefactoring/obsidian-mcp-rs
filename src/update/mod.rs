@@ -1,4 +1,6 @@
+mod consent;
 mod source;
+mod state;
 mod target;
 mod version;
 
@@ -12,6 +14,9 @@ use sha2::{Digest, Sha256};
 use crate::install::binary;
 use crate::vault::lock;
 
+pub use consent::{
+    forget as forget_consent, is_enabled as auto_update_enabled, set as set_consent,
+};
 pub use source::{Release, Source};
 pub use target::asset_name;
 pub use version::Version;
@@ -57,6 +62,65 @@ pub fn decide(current: Version, release: &Release, now: DateTime<Utc>) -> Decisi
         return Decision::Soaking { to, ready_at };
     }
     Decision::Take { to }
+}
+
+pub fn last_seen_release() -> Option<Version> {
+    state::read()?.latest
+}
+
+pub fn announce_installation() {
+    match installed_copy() {
+        Ok(path) => tracing::debug!(
+            path = %path.display(),
+            auto_update = consent::is_enabled(),
+            "this server is the installed copy"
+        ),
+        Err(_) => tracing::info!(
+            "this server was not placed by `install`, so it will not update itself — \
+             run `obsidian-mcp-rs install` to manage it from here"
+        ),
+    }
+}
+
+pub fn watch_for_updates() {
+    std::thread::spawn(|| match check_and_apply() {
+        Ok(Some(to)) => tracing::info!(
+            %to,
+            "replaced the installed server; the next client launch will use it"
+        ),
+        Ok(None) => {}
+        Err(e) => tracing::debug!(error = %e, "update check did not finish"),
+    });
+}
+
+fn check_and_apply() -> Result<Option<Version>> {
+    if !consent::is_enabled() {
+        return Ok(None);
+    }
+    let Ok(dest) = installed_copy() else {
+        return Ok(None);
+    };
+    if target::asset_name().is_none() {
+        return Ok(None);
+    }
+
+    let now = Utc::now();
+    if !state::due(state::read().as_ref(), now) {
+        return Ok(None);
+    }
+
+    let source = Source::from_env();
+    let fetched = source.latest();
+    state::record(fetched.as_ref().ok().and_then(|r| Version::parse(&r.tag)));
+    let release = fetched?;
+
+    match decide(Version::current(), &release, now) {
+        Decision::Take { to } => {
+            apply(&source, &release, to, &dest)?;
+            Ok(Some(to))
+        }
+        _ => Ok(None),
+    }
 }
 
 pub fn run(args: UpdateArgs) -> Result<()> {

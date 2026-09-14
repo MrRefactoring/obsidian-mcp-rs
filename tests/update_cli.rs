@@ -2,7 +2,8 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Child, Command, Output, Stdio};
+use std::time::Duration;
 
 const NEW_VERSION: &str = "9.9.9";
 
@@ -175,6 +176,21 @@ fn data_local(home: &Path) -> PathBuf {
     home.join("AppData").join("Local")
 }
 
+#[cfg(target_os = "macos")]
+fn cache_home(home: &Path) -> PathBuf {
+    home.join("Library").join("Caches")
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn cache_home(home: &Path) -> PathBuf {
+    home.join(".cache")
+}
+
+#[cfg(windows)]
+fn cache_home(home: &Path) -> PathBuf {
+    home.join("AppData").join("Local")
+}
+
 fn exe_name() -> &'static str {
     if cfg!(windows) {
         "obsidian-mcp-rs.exe"
@@ -343,4 +359,127 @@ fn a_feed_that_redirects_off_its_own_host_is_refused() {
         said(&out)
     );
     assert_eq!(std::fs::read(&it.exe).unwrap(), before);
+}
+
+#[cfg(unix)]
+fn spawn_server(it: &Installed, endpoint: &str, vault: &Path) -> Child {
+    Command::new(&it.exe)
+        .arg(vault)
+        .env("OBSIDIAN_MCP_UPDATE_ENDPOINT", endpoint)
+        .env("HOME", &it.home)
+        .env("XDG_DATA_HOME", data_local(&it.home))
+        .env("XDG_CACHE_HOME", cache_home(&it.home))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("start the server")
+}
+
+#[cfg(unix)]
+fn wait_until(deadline: Duration, mut done: impl FnMut() -> bool) -> bool {
+    let started = std::time::Instant::now();
+    while started.elapsed() < deadline {
+        if done() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    false
+}
+
+#[cfg(unix)]
+fn stop(mut server: Child) {
+    drop(server.stdin.take());
+    let _ = server.wait();
+}
+
+#[cfg(unix)]
+#[test]
+fn a_running_server_replaces_itself_without_being_asked() {
+    let body = replacement_binary();
+    let it = install_into_a_temporary_home();
+    let base = feed("v9.9.9", "2020-01-01T00:00:00Z", &body);
+    let vault = tempfile::tempdir().unwrap();
+
+    let server = spawn_server(&it, &base, vault.path());
+    let replaced = wait_until(Duration::from_secs(20), || {
+        std::fs::read(&it.exe).is_ok_and(|b| b == body)
+    });
+    stop(server);
+
+    assert!(
+        replaced,
+        "the server did not update itself in the background"
+    );
+
+    let state = cache_home(&it.home)
+        .join("obsidian-mcp-rs")
+        .join("update-check.json");
+    let recorded = std::fs::read_to_string(&state).expect("the check should have been recorded");
+    assert!(recorded.contains("9.9.9"), "unexpected state: {recorded}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_server_that_was_opted_out_leaves_itself_alone() {
+    let body = replacement_binary();
+    let it = install_into_a_temporary_home();
+    let before = std::fs::read(&it.exe).unwrap();
+    std::fs::write(
+        data_local(&it.home)
+            .join("obsidian-mcp-rs")
+            .join("no-auto-update"),
+        b"",
+    )
+    .unwrap();
+
+    let base = feed("v9.9.9", "2020-01-01T00:00:00Z", &body);
+    let vault = tempfile::tempdir().unwrap();
+
+    let server = spawn_server(&it, &base, vault.path());
+    let state = cache_home(&it.home)
+        .join("obsidian-mcp-rs")
+        .join("update-check.json");
+    let looked = wait_until(Duration::from_secs(5), || state.exists());
+    stop(server);
+
+    assert!(
+        !looked,
+        "opting out should stop the check before it reaches the network"
+    );
+    assert_eq!(std::fs::read(&it.exe).unwrap(), before, "it updated anyway");
+}
+
+#[cfg(unix)]
+#[test]
+fn configuring_another_client_does_not_switch_auto_update_back_on() {
+    let it = install_into_a_temporary_home();
+    let vault = tempfile::tempdir().unwrap();
+    let marker = data_local(&it.home)
+        .join("obsidian-mcp-rs")
+        .join("no-auto-update");
+
+    let install = |extra: &[&str]| {
+        Command::new(&it.exe)
+            .args(["install", "claude-code", "--global", "--force"])
+            .args(extra)
+            .arg(vault.path())
+            .env("HOME", &it.home)
+            .env("XDG_DATA_HOME", data_local(&it.home))
+            .output()
+            .expect("run the installer")
+    };
+
+    assert!(install(&["--no-auto-update"]).status.success());
+    assert!(marker.exists(), "opting out was not recorded");
+
+    assert!(install(&[]).status.success());
+    assert!(
+        marker.exists(),
+        "a later install with no opinion about auto-update turned it back on"
+    );
+
+    assert!(install(&["--auto-update"]).status.success());
+    assert!(!marker.exists(), "opting back in did not take");
 }

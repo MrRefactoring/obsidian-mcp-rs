@@ -1,5 +1,46 @@
 # Changelog
 
+## [Unreleased]
+
+The server used to sit at whatever version you last ran `install` from, and nothing said so out loud. It now keeps itself current.
+
+### Added
+
+- **The installed server updates itself.** Once `install` has placed it, it asks GitHub Releases for the latest version at most once a day, in the background, and replaces itself with it. Nothing blocks startup, a failed check is silent, and the new binary is what your client starts the next time it launches — a running server is never swapped out from under a session.
+
+  It is deliberately narrow about what it touches. **Only the copy `install` placed** — compared by resolved file, not by path string, so the same file reached by a different route still counts. A `cargo install` binary, a distribution package, or the one `npx` keeps in its own cache belongs to whatever put it there, and `npx` in particular caches under a directory name it rewrites on its own schedule. Those are left alone, and a server running from one says so once in its log.
+
+  It also waits. A release is not taken until **48 hours** after it ships, which is the window in which a bad one gets withdrawn — and withdrawing means marking the release as a prerelease, which takes it out of `releases/latest`. That makes the switch work, but only because the updater follows `releases/latest` **downwards as well as up**: refusing to go back would leave everyone who had already taken the bad release stranded on it, with the withdrawal doing nothing for exactly the people it exists for. Downgrade protection guards against an attacker who can publish releases, and anyone who can do that publishes a higher version instead.
+
+  Downloads are checked against the `checksums.txt` published with the release and the new binary is run once with `--version` before it is installed; anything that answers with a version other than the one it claimed is discarded and nothing is replaced. Redirects are followed only within `github.com` and `githubusercontent.com`. The checksum is an integrity check and is described as one — it and the binary arrive over the same connection from the same origin, so it catches a corrupted transfer, not an adversary. What stands between a compromised release and your vault is the 48 hours.
+
+  Concurrency goes through an advisory lock of its own rather than the one that serialises vault writes, which would otherwise stall every write in every server for the length of a download; the second of two racing processes re-reads the installed version after taking it and does nothing. Duplicate servers launched together share one check, because the once-a-day stamp is on disk rather than in the process.
+
+- **`obsidian-mcp-rs update`**, for taking a release now instead of waiting — and `update --check` for asking without taking. This is also the whole engine the background check runs on, so it is the same code path either way.
+
+- **Auto-update is on by default, and `install` says so.** The interactive wizard asks, defaulting to whatever you chose last time; `install --no-auto-update` and `install --auto-update` answer for it. The choice is remembered next to the installed binary, and an install that says nothing about auto-update changes nothing about it — otherwise configuring a second client would silently switch it back on for someone who had turned it off. `install` is the only moment in this system with a person at a terminal — a stdio MCP server has no channel to ask through, since stdout carries the protocol and no client surfaces the alternatives — so the consent is taken there, from exactly the people the updater can reach.
+
+### Changed
+
+- **`list` no longer assumes the installed copy is the one that lags.** It compared the copy against the package you happened to run `list` from, with a string equality that ranked `0.10.0` below `0.9.9`, and its only advice was "run `install` again". With auto-update the copy can be *ahead* of the package, and that advice would quietly downgrade the server you are running. Versions are now compared as versions, the drift is named in whichever direction it runs, and the row says whether auto-update is on.
+
+- **`install` places the binary atomically.** `fs::copy` truncates the destination and then fills it, so a client that launched the server mid-install would exec however many bytes had landed — at a path every config names permanently. The new copy is assembled as a sibling and renamed into place.
+
+- **Release assets are named after their target triple.** They carried the artifact directory's name before, `binary-` prefix and all, which is how `obsidian-mcp-rs-binary-darwin-arm64-obsidian-mcp-rs` came to be published seven times. `checksums.txt` recorded paths rather than names, so `sha256sum -c` could not be run from the directory the assets were downloaded into. Neither could have been addressed by a client that has to find its own binary by name.
+
+- **A partial release now fails instead of shipping.** Platform packages published with `|| true`, so a failed publish produced a release in which the wrapper claimed a version one of its platform packages did not have, silently. A missing build artifact fails the job, a failed publish fails the job, and re-running a partly-completed release skips what is already on the registry rather than ignoring errors.
+
+- **The release tag must be reachable from `master`.** Tags are not covered by branch protection, so a token with `contents: write` could push a tag at any commit — including one never proposed to the repository — and the release workflow would build and publish it.
+
+- **Published to crates.io**, which the README has recommended for some time without it being true, and build provenance attestations are now produced for every release asset.
+
+### Fixed
+
+- **Both READMEs claimed the parent-liveness watch did not cover Windows.** It has since it was written: the Unix side polls `getppid`, the Windows side waits on a handle to the parent process object.
+
+- **`llms.txt` still described the pre-0.7.0 setup**, handing models a config that runs `npx` — the one `list` reports as `outdated`.
+
+
 ## [0.7.1] - 2026-07-26
 
 0.7.0 moved configs off `npx` and onto a path to a binary the installer places. It did not move anyone who was *already* installed, and nothing said so. This release makes that visible, and documents the one command that completes the migration.
