@@ -1,4 +1,4 @@
-mod binary;
+pub(crate) mod binary;
 pub mod clients;
 mod writer;
 

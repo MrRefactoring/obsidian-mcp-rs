@@ -2,7 +2,7 @@ mod cache;
 mod frontmatter;
 mod info;
 mod links;
-mod lock;
+pub(crate) mod lock;
 mod patch;
 mod path;
 mod periodic;

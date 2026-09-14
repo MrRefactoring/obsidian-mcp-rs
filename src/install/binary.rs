@@ -142,7 +142,7 @@ fn in_use_hint(e: std::io::Error, path: &Path) -> anyhow::Error {
     }
 }
 
-fn is_same_file(a: &Path, b: &Path) -> bool {
+pub(crate) fn is_same_file(a: &Path, b: &Path) -> bool {
     match (a.canonicalize(), b.canonicalize()) {
         (Ok(a), Ok(b)) => a == b,
         _ => false,
