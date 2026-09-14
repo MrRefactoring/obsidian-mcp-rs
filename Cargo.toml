@@ -11,6 +11,7 @@ homepage = "https://github.com/MrRefactoring/obsidian-mcp-rs"
 readme = "README.md"
 keywords = ["obsidian", "mcp", "notes", "vault", "ai"]
 categories = ["command-line-utilities", "filesystem"]
+exclude = ["/npm", "/assets", "/scripts", "/.github"]
 
 [dependencies]
 rmcp = { version = "2.2", features = ["server", "transport-io", "macros"] }

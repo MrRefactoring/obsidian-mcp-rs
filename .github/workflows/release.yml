@@ -8,13 +8,32 @@ on:
 permissions:
   contents: write
   id-token: write
+  attestations: write
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  guard:
+    name: Tag is on master
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Refuse to build a tag that is not on master
+        run: |
+          git fetch --no-tags origin +refs/heads/master:refs/remotes/origin/master
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/master; then
+            echo "::error::tag $GITHUB_REF_NAME points at $GITHUB_SHA, which is not reachable from master"
+            exit 1
+          fi
+          echo "$GITHUB_REF_NAME -> $GITHUB_SHA is on master"
+
   build:
     name: Build (${{ matrix.target }})
+    needs: guard
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -23,37 +42,30 @@ jobs:
           - target: aarch64-apple-darwin
             os: macos-latest
             binary: obsidian-mcp-rs
-            npm_dir: darwin-arm64
             use_cross: false
           - target: x86_64-apple-darwin
             os: macos-latest
             binary: obsidian-mcp-rs
-            npm_dir: darwin-x64
             use_cross: false
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             binary: obsidian-mcp-rs
-            npm_dir: linux-x64
             use_cross: false
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
             binary: obsidian-mcp-rs
-            npm_dir: linux-arm64
             use_cross: true
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
             binary: obsidian-mcp-rs
-            npm_dir: linux-x64-musl
             use_cross: true
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             binary: obsidian-mcp-rs.exe
-            npm_dir: win32-x64
             use_cross: false
           - target: aarch64-pc-windows-msvc
             os: windows-latest
             binary: obsidian-mcp-rs.exe
-            npm_dir: win32-arm64
             use_cross: false
 
     steps:
@@ -79,17 +91,12 @@ jobs:
         if: matrix.use_cross
         run: cross build --release --target ${{ matrix.target }}
 
-      - name: Prepare artifact
-        shell: bash
-        run: |
-          mkdir -p artifacts/${{ matrix.npm_dir }}
-          cp target/${{ matrix.target }}/release/${{ matrix.binary }} artifacts/${{ matrix.npm_dir }}/
-
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
-          name: binary-${{ matrix.npm_dir }}
-          path: artifacts/${{ matrix.npm_dir }}/${{ matrix.binary }}
+          name: binary-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/${{ matrix.binary }}
+          if-no-files-found: error
           retention-days: 1
 
   github-release:
@@ -104,18 +111,29 @@ jobs:
         with:
           path: artifacts
 
-      - name: Create checksums and release assets
+      - name: Name the assets after their target triple
         run: |
+          set -euo pipefail
           mkdir -p release-assets
-          for dir in artifacts/*/; do
-            platform=$(basename "$dir")
+          for dir in artifacts/binary-*/; do
+            triple="$(basename "$dir")"
+            triple="${triple#binary-}"
             for file in "$dir"*; do
-              fname=$(basename "$file")
-              asset="obsidian-mcp-rs-${platform}-${fname}"
-              cp "$file" "release-assets/${asset}"
-              sha256sum "release-assets/${asset}" >> "release-assets/checksums.txt"
+              case "$file" in
+                *.exe) ext=".exe" ;;
+                *)     ext="" ;;
+              esac
+              cp "$file" "release-assets/obsidian-mcp-rs-${triple}${ext}"
             done
           done
+          cd release-assets
+          sha256sum obsidian-mcp-rs-* > checksums.txt
+          cat checksums.txt
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: "release-assets/obsidian-mcp-rs-*"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
@@ -141,16 +159,25 @@ jobs:
           path: artifacts
 
       - name: Copy binaries into platform packages
-        shell: bash
         run: |
-          platforms=(darwin-arm64 darwin-x64 linux-arm64 linux-x64 linux-x64-musl win32-arm64 win32-x64)
-          for platform in "${platforms[@]}"; do
-            src="artifacts/binary-${platform}"
-            dest="npm/${platform}"
-            if [ -d "$src" ]; then
-              cp "$src"/* "$dest/"
-              chmod +x "$dest"/obsidian-mcp-rs 2>/dev/null || true
+          set -euo pipefail
+          for pair in \
+            aarch64-apple-darwin:darwin-arm64 \
+            x86_64-apple-darwin:darwin-x64 \
+            aarch64-unknown-linux-gnu:linux-arm64 \
+            x86_64-unknown-linux-gnu:linux-x64 \
+            x86_64-unknown-linux-musl:linux-x64-musl \
+            aarch64-pc-windows-msvc:win32-arm64 \
+            x86_64-pc-windows-msvc:win32-x64
+          do
+            src="artifacts/binary-${pair%%:*}"
+            dest="npm/${pair##*:}"
+            if [ ! -d "$src" ]; then
+              echo "::error::no artifact for ${pair%%:*} — refusing to publish a partial release"
+              exit 1
             fi
+            cp "$src"/* "$dest/"
+            chmod +x "$dest"/obsidian-mcp-rs 2>/dev/null || true
           done
 
       - name: Copy README to npm package
@@ -166,16 +193,37 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          platforms=(darwin-arm64 darwin-x64 linux-arm64 linux-x64 linux-x64-musl win32-arm64 win32-x64)
-          for platform in "${platforms[@]}"; do
-            cd npm/$platform
-            npm publish --access public --provenance || true
-            cd ../..
+          set -euo pipefail
+          for dir in darwin-arm64 darwin-x64 linux-arm64 linux-x64 linux-x64-musl win32-arm64 win32-x64; do
+            ( cd "npm/$dir" && ../../.github/publish-npm.sh )
           done
 
       - name: Publish main package
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
+          set -euo pipefail
           cd npm/obsidian-mcp-rs
-          npm publish --access public --provenance
+          ../../.github/publish-npm.sh
+
+  crates-publish:
+    name: Publish to crates.io
+    needs: github-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          if curl -sfL -A "obsidian-mcp-rs release" \
+               "https://crates.io/api/v1/crates/obsidian-mcp-rs/$version" >/dev/null; then
+            echo "obsidian-mcp-rs $version is already on crates.io; skipping"
+          else
+            cargo publish --locked
+          fi
