@@ -153,7 +153,7 @@ Every backend copies the previous file to `<config>.bak` before writing, so this
 ### Known issues that are not ours
 
 - **Duplicate server processes on Claude Desktop.** Claude Desktop can spawn more than one copy of the same MCP server per launch ([claude-code#36616](https://github.com/anthropics/claude-code/issues/36616)). Nothing this server does causes it, and nothing it does can prevent it. It is safe: concurrent servers on one vault are serialised so they cannot lose each other's edits, and any that outlive their client exit on their own.
-- **Orphaned MCP processes generally.** Several clients fail to terminate stdio MCP servers on unclean exit ([#22612](https://github.com/anthropics/claude-code/issues/22612), [#1935](https://github.com/anthropics/claude-code/issues/1935), [#40667](https://github.com/anthropics/claude-code/issues/40667)). This server watches the process that started it and exits when it goes, so it does not accumulate — on macOS and Linux. On Windows that backstop is not yet in place.
+- **Orphaned MCP processes generally.** Several clients fail to terminate stdio MCP servers on unclean exit ([#22612](https://github.com/anthropics/claude-code/issues/22612), [#1935](https://github.com/anthropics/claude-code/issues/1935), [#40667](https://github.com/anthropics/claude-code/issues/40667)). This server watches the process that started it and exits when it goes, on all three platforms: a `getppid` poll on macOS and Linux, a wait on the parent's process handle on Windows.
 - **Two devices, one synced vault.** Writes are serialised per machine. Two computers editing the same cloud-synced vault at once is a sync conflict, and it belongs to iCloud / Obsidian Sync rather than to this server.
 
 ## Features
