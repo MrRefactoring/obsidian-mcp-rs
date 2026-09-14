@@ -59,8 +59,29 @@ pub(crate) fn install() -> Result<PathBuf> {
     std::fs::create_dir_all(parent)
         .with_context(|| format!("could not create {}", parent.display()))?;
 
-    std::fs::copy(&src, &dest).map_err(|e| in_use_hint(e, &dest))?;
+    place(&src, &dest)?;
     Ok(dest)
+}
+
+fn staging_path(dest: &Path) -> PathBuf {
+    let mut name = dest.as_os_str().to_owned();
+    name.push(".new");
+    PathBuf::from(name)
+}
+
+fn place(src: &Path, dest: &Path) -> Result<()> {
+    let staged = staging_path(dest);
+    let _ = std::fs::remove_file(&staged);
+
+    if let Err(e) = std::fs::copy(src, &staged) {
+        let _ = std::fs::remove_file(&staged);
+        return Err(in_use_hint(e, dest));
+    }
+    if let Err(e) = std::fs::rename(&staged, dest) {
+        let _ = std::fs::remove_file(&staged);
+        return Err(in_use_hint(e, dest));
+    }
+    Ok(())
 }
 
 /// Remove the installed copy, and the directory if that leaves it empty.
@@ -75,6 +96,7 @@ pub(crate) fn uninstall() -> Result<Option<PathBuf>> {
         return Ok(None);
     }
     std::fs::remove_file(&path).map_err(|e| in_use_hint(e, &path))?;
+    let _ = std::fs::remove_file(staging_path(&path));
     if let Some(parent) = path.parent() {
         // Best effort: only succeeds when it is empty, which is what we want.
         let _ = std::fs::remove_dir(parent);
@@ -184,6 +206,80 @@ mod tests {
         assert!(!is_same_file(&a, &b));
         // A path that does not exist cannot be "the same file" as anything.
         assert!(!is_same_file(&a, &dir.path().join("missing")));
+    }
+
+    #[test]
+    fn placing_replaces_the_destination_and_leaves_no_staging_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        let dest = dir.path().join("dest");
+        std::fs::write(&src, b"new").unwrap();
+        std::fs::write(&dest, b"old").unwrap();
+
+        place(&src, &dest).unwrap();
+
+        assert_eq!(std::fs::read(&dest).unwrap(), b"new");
+        assert!(!staging_path(&dest).exists());
+    }
+
+    #[test]
+    fn placing_creates_a_destination_that_was_not_there() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        let dest = dir.path().join("dest");
+        std::fs::write(&src, b"new").unwrap();
+
+        place(&src, &dest).unwrap();
+
+        assert_eq!(std::fs::read(&dest).unwrap(), b"new");
+        assert!(!staging_path(&dest).exists());
+    }
+
+    #[test]
+    fn a_staging_file_left_by_a_crashed_run_does_not_corrupt_the_next_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        let dest = dir.path().join("dest");
+        std::fs::write(&src, b"new").unwrap();
+        std::fs::write(staging_path(&dest), b"half of an older attempt").unwrap();
+
+        place(&src, &dest).unwrap();
+
+        assert_eq!(std::fs::read(&dest).unwrap(), b"new");
+        assert!(!staging_path(&dest).exists());
+    }
+
+    #[test]
+    fn a_failed_place_leaves_neither_litter_nor_a_damaged_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("dest");
+        std::fs::write(&dest, b"old").unwrap();
+
+        assert!(place(&dir.path().join("missing"), &dest).is_err());
+
+        assert_eq!(std::fs::read(&dest).unwrap(), b"old");
+        assert!(!staging_path(&dest).exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_executable_bit_survives_being_placed() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        let dest = dir.path().join("dest");
+        std::fs::write(&src, b"#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&src, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        place(&src, &dest).unwrap();
+
+        let mode = std::fs::metadata(&dest).unwrap().permissions().mode();
+        assert_ne!(
+            mode & 0o111,
+            0,
+            "the placed copy is not executable: {mode:o}"
+        );
     }
 
     #[test]
