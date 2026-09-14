@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.8.0] - 2026-09-14
 
 The server used to sit at whatever version you last ran `install` from, and nothing said so out loud. It now keeps itself current.
 
