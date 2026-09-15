@@ -45,7 +45,7 @@
 
 **The fastest way: just ask your AI agent to install it.** If you already work inside an agentic client (Claude Code, Cursor, Windsurf, …), you never touch a config file — paste one prompt and let the agent run the installer for you. Swap in your own vault path:
 
-> Install the **obsidian-mcp-rs** MCP server for this editor. My Obsidian vault is at `~/Documents/Obsidian/MyVault`. Run `npx -y obsidian-mcp-rs install claude-code ~/Documents/Obsidian/MyVault` (use `cursor`, `windsurf`, `vscode`, `claude`, … for other clients). It copies the server to a fixed location and writes that path into my client config — so tell me where it landed, and remind me that updating means re-running this same command, not `npm update`. Then tell me to restart the session and approve the server if the client asks.
+> Install the **obsidian-mcp-rs** MCP server for this editor. My Obsidian vault is at `~/Documents/Obsidian/MyVault`. Run `npx -y obsidian-mcp-rs install claude-code ~/Documents/Obsidian/MyVault` (use `cursor`, `windsurf`, `vscode`, `claude`, … for other clients). It copies the server to a fixed location and writes that path into my client config — so tell me where it landed, and tell me whether it said the server will keep itself up to date. Then tell me to restart the session and approve the server if the client asks.
 
 > **Heads-up:** clients read MCP config at **session start**, so the agent can write it but can't hot-load it. After it installs the server, **restart** the client — and in Claude Code approve a project-scoped `.mcp.json` server via the `/mcp` panel — before the 15 tools appear.
 
@@ -106,16 +106,41 @@ Your config therefore runs **one process** — the server itself, as a direct ch
 
 ### Updating
 
+**The server keeps itself up to date, from 0.8.0 onwards.** Once `install` has placed it, it checks for a new release at most once a day, in the background, and replaces itself when it finds one.
+
+> Auto-update ships *in* 0.8.0, so it cannot bring you 0.8.0 — an older copy does not know how. Run `npx obsidian-mcp-rs@latest install` once and it takes over from there. `npx obsidian-mcp-rs list` says so if your copy predates it. Nothing is asked of you, and nothing is interrupted — the new version is what your client starts **next time it launches**.
+
+Four things it deliberately will not do:
+
+- **It waits 48 hours after a release ships.** If a release turns out to be broken, that window is when it gets withdrawn — so the bad one never reaches you.
+- **It only ever replaces the copy `install` placed.** A binary from `cargo install`, from a distribution package, or the one `npx` caches belongs to whatever put it there. Those never update themselves.
+- **It asks the network at most once a day per machine**, no matter how many times your client restarts the server — and a failed check is silent, so an offline or firewalled machine is never slowed down or broken by it.
+- **It verifies what it downloads** against the checksum published with the release, and runs the new binary once before installing it. Anything that does not answer with the version it claims is thrown away.
+
+Turning it off goes through an install, because that is where the answer is recorded:
+
 ```bash
-npx obsidian-mcp-rs@latest install    # same command you used the first time
+npx obsidian-mcp-rs@latest install claude ~/vault --no-auto-update
 ```
 
-That replaces the installed binary in place. **The path in your configs never changes**, so nothing needs re-pointing and no config goes stale. (One exception, and it catches everyone who installed early: a config written before 0.7.0 does not hold that path yet, and `install` will not overwrite it on its own — see [below](#upgrading-from-a-config-written-before-070).)
+Name the client and the vault. The bare `install --no-auto-update` starts the interactive wizard, and the wizard only records your answer once you have picked a client — so backing out of it changes nothing. The wizard asks instead of assuming and offers your current choice as the default. The answer is remembered; the same command with `--auto-update` takes it back. An install that says nothing about auto-update changes nothing about it, so configuring a second client will not switch it back on.
 
-Two things worth knowing:
+To take a release now rather than wait for the check, run **the installed copy** — `update` acts on the binary that is running it, and the copy in npm's cache is not the one in your configs. `npx obsidian-mcp-rs list` prints the path:
 
-- **`npm update` alone does not update the installed server.** The copy your client runs only changes when `install` runs. `npx obsidian-mcp-rs list` prints the installed version next to this package's, and says so when they drift apart.
-- **On Windows, quit your AI clients first.** Windows refuses to overwrite a running executable; if a client still has the server open the installer will say so and ask you to close it.
+```bash
+# macOS; see the table above for Linux and Windows
+"$HOME/Library/Application Support/obsidian-mcp-rs/bin/obsidian-mcp-rs" update           # take the latest release
+"$HOME/Library/Application Support/obsidian-mcp-rs/bin/obsidian-mcp-rs" update --check   # just say what is available
+"$HOME/Library/Application Support/obsidian-mcp-rs/bin/obsidian-mcp-rs" update --force   # take it even inside the 48-hour hold
+```
+
+**What the check sends.** One `GET` to `api.github.com` per day, carrying what any HTTP request carries — your IP address — and a `User-Agent` of `obsidian-mcp-rs/<version>`. An actual update then downloads the binary from `github.com`, which redirects to `githubusercontent.com`. Nothing about your vaults, your notes, your client or your machine is sent, and nothing identifies you across days beyond what GitHub can infer from an address. It honours `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`. If that is one request too many, `--no-auto-update` stops it entirely.
+
+To go back to an older release, install it with auto-update off — `npx obsidian-mcp-rs@0.8.1 install claude ~/vault --no-auto-update`. Without that flag the daily check follows `releases/latest` in both directions and puts the newer one back within a day, which is deliberate: withdrawing a bad release means dropping it out of `releases/latest`, and everyone who already took it has to be able to come back down. The path in your configs never changes, so nothing needs re-pointing either way. (One exception, and it catches everyone who installed early: a config written before 0.7.0 does not hold that path yet, so none of this reaches it — see [below](#upgrading-from-a-config-written-before-070).)
+
+`npx obsidian-mcp-rs list` prints where the server is, which version it is, and whether auto-update is on.
+
+**On Windows, quit your AI clients before running `install`.** Windows refuses to overwrite a running executable; if a client still has the server open the installer will say so and ask you to close it. (`update` is not affected — it renames rather than overwrites.)
 
 `uninstall` removes the binary too, once no client config still points at it.
 
@@ -153,7 +178,7 @@ Every backend copies the previous file to `<config>.bak` before writing, so this
 ### Known issues that are not ours
 
 - **Duplicate server processes on Claude Desktop.** Claude Desktop can spawn more than one copy of the same MCP server per launch ([claude-code#36616](https://github.com/anthropics/claude-code/issues/36616)). Nothing this server does causes it, and nothing it does can prevent it. It is safe: concurrent servers on one vault are serialised so they cannot lose each other's edits, and any that outlive their client exit on their own.
-- **Orphaned MCP processes generally.** Several clients fail to terminate stdio MCP servers on unclean exit ([#22612](https://github.com/anthropics/claude-code/issues/22612), [#1935](https://github.com/anthropics/claude-code/issues/1935), [#40667](https://github.com/anthropics/claude-code/issues/40667)). This server watches the process that started it and exits when it goes, so it does not accumulate — on macOS and Linux. On Windows that backstop is not yet in place.
+- **Orphaned MCP processes generally.** Several clients fail to terminate stdio MCP servers on unclean exit ([#22612](https://github.com/anthropics/claude-code/issues/22612), [#1935](https://github.com/anthropics/claude-code/issues/1935), [#40667](https://github.com/anthropics/claude-code/issues/40667)). This server watches the process that started it and exits when it goes, on all three platforms: a `getppid` poll on macOS and Linux, a wait on the parent's process handle on Windows.
 - **Two devices, one synced vault.** Writes are serialised per machine. Two computers editing the same cloud-synced vault at once is a sync conflict, and it belongs to iCloud / Obsidian Sync rather than to this server.
 
 ## Features

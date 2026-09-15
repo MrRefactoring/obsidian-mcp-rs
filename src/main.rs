@@ -7,6 +7,7 @@ use clap::{Parser, Subcommand};
 use obsidian_mcp_rs::handler::ObsidianHandler;
 use obsidian_mcp_rs::install;
 use obsidian_mcp_rs::parent;
+use obsidian_mcp_rs::update;
 use obsidian_mcp_rs::vault::VaultManager;
 use rmcp::ServiceExt;
 
@@ -75,6 +76,9 @@ enum Commands {
 
     /// Show installation status across all detected AI clients.
     List,
+
+    /// Update the installed server to the latest release.
+    Update(update::UpdateArgs),
 
     /// Show the log file location and its most recent entries.
     /// Use this when reporting a bug.
@@ -310,6 +314,7 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Install(args)) => install::run_install(args)?,
         Some(Commands::Uninstall(args)) => install::run_uninstall(args)?,
         Some(Commands::List) => install::run_list()?,
+        Some(Commands::Update(args)) => update::run(args)?,
         Some(Commands::Logs { log_file }) => run_logs(log_file)?,
         None => {
             if cli.vaults.is_empty() {
@@ -404,6 +409,10 @@ async fn run_server(vaults: Vec<PathBuf>, no_edit: bool) -> anyhow::Result<()> {
 
     let manager = VaultManager::new(vaults);
     let handler = ObsidianHandler::with_options(manager, no_edit);
+
+    update::announce_installation();
+    update::install_pending();
+    update::watch_for_updates();
 
     let transport = (tokio::io::stdin(), tokio::io::stdout());
     let service = handler.serve(transport).await?;

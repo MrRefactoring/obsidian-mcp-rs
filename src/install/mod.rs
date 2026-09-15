@@ -1,13 +1,15 @@
-mod binary;
+pub(crate) mod binary;
 pub mod clients;
 mod writer;
 
+use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use console::style;
 use dialoguer::{Confirm, Input, MultiSelect, theme::ColorfulTheme};
 
+use crate::update;
 use clap::ValueEnum as _;
 use clients::{InstallTarget, all_targets, display_path, expand_tilde};
 use writer::{
@@ -42,6 +44,14 @@ pub struct InstallArgs {
     /// Embed --no-edit in the generated config so the server starts in read-only mode
     #[arg(long)]
     pub no_edit: bool,
+
+    /// Do not let the installed server update itself.
+    #[arg(long)]
+    pub no_auto_update: bool,
+
+    /// Let the installed server update itself, undoing an earlier --no-auto-update.
+    #[arg(long, conflicts_with = "no_auto_update")]
+    pub auto_update: bool,
 }
 
 #[derive(Debug, clap::Args)]
@@ -66,7 +76,7 @@ pub struct UninstallArgs {
 
 pub fn run_install(args: InstallArgs) -> Result<()> {
     match &args.client {
-        None => interactive_install(args.dry_run, args.force, args.no_edit),
+        None => interactive_install(args.dry_run, args.force, args.no_edit, args.consent()),
         Some(kind) => {
             if args.vaults.is_empty() {
                 bail!(
@@ -81,7 +91,7 @@ pub fn run_install(args: InstallArgs) -> Result<()> {
             if targets.is_empty() {
                 bail!("No config path found for this client on your system.");
             }
-            let launch = prepare_launch(&vaults, args.no_edit, args.dry_run)?;
+            let launch = prepare_launch(&vaults, args.no_edit, args.dry_run, args.consent())?;
             let mut wrote_any = false;
             for target in &targets {
                 wrote_any |= install_one(target, &launch, args.dry_run, args.force)?;
@@ -161,6 +171,7 @@ fn remove_binary_if_unused(dry_run: bool) -> Result<()> {
         return Ok(());
     }
     if let Some(removed) = binary::uninstall()? {
+        update::forget_consent();
         println!(
             "  {} removed the server at {}",
             style("✓").green(),
@@ -253,12 +264,13 @@ pub fn run_list() -> Result<()> {
     Ok(())
 }
 
-/// Show where the server itself lives, and whether it has fallen behind.
+/// Show where the server itself lives, whether it keeps itself current, and
+/// where it stands against the package and the last release we saw.
 ///
-/// The copy in the configs only changes when `install` runs, so updating the npm
-/// package alone leaves it on the old version. That skew is otherwise invisible,
-/// and it is exactly what someone debugging "I updated but nothing changed"
-/// needs to see.
+/// Auto-update inverted the question this used to answer. The copy could only
+/// ever lag the package, so "run `install` again" was the only advice worth
+/// giving; now the copy can be *ahead*, and telling someone to re-run `install`
+/// from an older package would quietly downgrade the server they are running.
 fn report_installed_binary() {
     let Some(path) = binary::stable_path() else {
         return;
@@ -267,36 +279,75 @@ fn report_installed_binary() {
         println!(
             "  {} {}",
             style("server:").bold(),
-            style("not installed yet — run `obsidian-mcp-rs install`").dim()
+            style("not installed yet — run `npx obsidian-mcp-rs install`").dim()
         );
         println!();
         return;
     }
 
-    let running = env!("CARGO_PKG_VERSION");
-    let installed = binary::installed_version();
-    print!(
-        "  {} {}",
+    let reported = binary::installed_version();
+    println!(
+        "  {} {}  {}",
         style("server:").bold(),
-        style(display_path(&path)).cyan()
+        style(display_path(&path)).cyan(),
+        match reported.as_deref() {
+            Some(v) => style(format!("v{v}")).dim().to_string(),
+            None => style("(version unknown)").dim().to_string(),
+        }
     );
-    match installed.as_deref() {
-        Some(v) if v == running => println!("  {}", style(format!("v{v}")).dim()),
-        Some(v) => println!(
-            "  {}",
-            style(format!(
-                "v{v} — this package is v{running}; run `install` again to update it"
-            ))
-            .yellow()
-        ),
-        None => println!("  {}", style("(version unknown)").dim()),
+    println!(
+        "  {} {}",
+        style("auto-update:").bold(),
+        if update::auto_update_enabled() {
+            style("on").green().to_string()
+        } else {
+            style("off — `install --auto-update` turns it back on")
+                .yellow()
+                .to_string()
+        }
+    );
+
+    if let Some(installed) = reported.as_deref().and_then(update::Version::parse) {
+        if update::predates_self_update(installed) {
+            println!(
+                "  {} this copy predates self-update ({}) — run `install` once to pick it up",
+                style("!").yellow().bold(),
+                update::SELF_UPDATING_SINCE
+            );
+        }
+        report_drift(installed, &path);
     }
     println!();
 }
 
+fn report_drift(installed: update::Version, path: &std::path::Path) {
+    let package = update::Version::current();
+    match installed.cmp(&package) {
+        Ordering::Less => println!(
+            "  {} the copy is v{installed}, this package is v{package} — run `install` again to update it",
+            style("!").yellow().bold()
+        ),
+        Ordering::Greater => println!(
+            "  {} the copy is v{installed}, ahead of this package (v{package}) — it updated itself",
+            style("→").cyan()
+        ),
+        Ordering::Equal => {}
+    }
+
+    if let Some(latest) = update::last_seen_release()
+        && latest != installed
+    {
+        println!(
+            "  {} latest release seen: v{latest} — {} takes it now",
+            style("→").cyan(),
+            style(format!("`{} update`", display_path(path))).cyan()
+        );
+    }
+}
+
 // ── Interactive install wizard ────────────────────────────────────────────────
 
-fn interactive_install(dry_run: bool, force: bool, no_edit: bool) -> Result<()> {
+fn interactive_install(dry_run: bool, force: bool, no_edit: bool, consent: Consent) -> Result<()> {
     if !console::user_attended() {
         bail!(
             "Interactive mode requires a TTY.\n\
@@ -405,7 +456,7 @@ fn interactive_install(dry_run: bool, force: bool, no_edit: bool) -> Result<()> 
         println!();
     }
 
-    let launch = prepare_launch(&vaults, no_edit, dry_run)?;
+    let launch = prepare_launch(&vaults, no_edit, dry_run, consent)?;
     let mut wrote_any = false;
     for &i in &chosen {
         if install_one(&targets[i], &launch, dry_run, force)? {
@@ -481,6 +532,45 @@ fn interactive_uninstall(dry_run: bool, force: bool) -> Result<()> {
 
 // ── Per-target helpers ────────────────────────────────────────────────────────
 
+/// What this `install` run should do about auto-update.
+///
+/// `Keep` is the default for a non-interactive run, and it is load-bearing:
+/// configuring a second client would otherwise silently switch auto-update back
+/// on for someone who had turned it off, because that run carries no flag
+/// saying anything about it. Saying nothing has to mean changing nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Consent {
+    On,
+    Off,
+    Keep,
+    Ask,
+}
+
+impl InstallArgs {
+    fn consent(&self) -> Consent {
+        match (self.auto_update, self.no_auto_update, self.client.is_some()) {
+            (true, _, _) => Consent::On,
+            (_, true, _) => Consent::Off,
+            (_, _, true) => Consent::Keep,
+            _ => Consent::Ask,
+        }
+    }
+}
+
+fn settle_consent(choice: Consent) -> Result<bool> {
+    let enabled = match choice {
+        Consent::On => true,
+        Consent::Off => false,
+        Consent::Keep => return Ok(update::auto_update_enabled()),
+        Consent::Ask => Confirm::with_theme(&ColorfulTheme::default())
+            .with_prompt("Let the server keep itself up to date? (checks GitHub once a day)")
+            .default(update::auto_update_enabled())
+            .interact()?,
+    };
+    update::set_consent(enabled)?;
+    Ok(enabled)
+}
+
 /// Place the binary, and describe how a config should invoke it.
 ///
 /// Configs get an absolute path to a copy this installer owns, never `npx`.
@@ -491,7 +581,12 @@ fn interactive_uninstall(dry_run: bool, force: bool) -> Result<()> {
 /// A dry run copies nothing but still reports the path a real run would write,
 /// because a preview that shows something other than what would happen is worse
 /// than no preview.
-fn prepare_launch(vaults: &[PathBuf], no_edit: bool, dry_run: bool) -> Result<Launch> {
+fn prepare_launch(
+    vaults: &[PathBuf],
+    no_edit: bool,
+    dry_run: bool,
+    consent: Consent,
+) -> Result<Launch> {
     let binary_path = if dry_run {
         binary::stable_path()
             .context("no per-user data directory on this system to install the server into")?
@@ -503,6 +598,19 @@ fn prepare_launch(vaults: &[PathBuf], no_edit: bool, dry_run: bool) -> Result<La
             style("✓").green(),
             style(display_path(&installed)).cyan()
         );
+        if settle_consent(consent)? {
+            println!(
+                "  {} it will replace itself with new releases, {}",
+                style("✓").green(),
+                style("48h after each one ships").dim()
+            );
+        } else {
+            println!(
+                "  {} it will not update itself; run {} when you want a new release",
+                style("○").dim(),
+                style("`obsidian-mcp-rs update`").cyan()
+            );
+        }
         installed
     };
 
@@ -895,6 +1003,8 @@ mod tests {
             dry_run: false,
             force: false,
             no_edit: false,
+            no_auto_update: false,
+            auto_update: false,
         };
         assert!(run_install(args).is_err());
     }
@@ -909,6 +1019,8 @@ mod tests {
             dry_run: true,
             force: false,
             no_edit: false,
+            no_auto_update: false,
+            auto_update: false,
         };
         // Dry run: succeeds without writing
         assert!(run_install(args).is_ok());
@@ -938,6 +1050,8 @@ mod tests {
             dry_run: false,
             force: false,
             no_edit: false,
+            no_auto_update: false,
+            auto_update: false,
         };
         // No TTY in test environment → bail immediately
         let result = run_install(args);

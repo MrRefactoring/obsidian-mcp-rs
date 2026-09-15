@@ -11,6 +11,7 @@ homepage = "https://github.com/MrRefactoring/obsidian-mcp-rs"
 readme = "README.md"
 keywords = ["obsidian", "mcp", "notes", "vault", "ai"]
 categories = ["command-line-utilities", "filesystem"]
+exclude = ["/npm", "/assets", "/scripts", "/.github"]
 
 [dependencies]
 rmcp = { version = "2.2", features = ["server", "transport-io", "macros"] }
@@ -36,6 +37,9 @@ serde_yaml_ng = "0.10"
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 regex = "1.13.1"
 jsonc-parser = { version = "0.33", default-features = false, features = ["cst", "serde_json"] }
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+sha2 = "0.11"
+self-replace = "1.5"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

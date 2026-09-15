@@ -116,14 +116,25 @@ jobs:
         include:
           - target: aarch64-apple-darwin
             os: macos-latest
+            use_cross: false
           - target: x86_64-apple-darwin
             os: macos-latest
+            use_cross: false
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
+            use_cross: false
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            use_cross: true
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
+            use_cross: true
           - target: x86_64-pc-windows-msvc
             os: windows-latest
+            use_cross: false
+          - target: aarch64-pc-windows-msvc
+            os: windows-latest
+            use_cross: false
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -132,7 +143,32 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
-      - run: cargo check --target ${{ matrix.target }}
+
+      - name: Install cross
+        if: matrix.use_cross
+        uses: taiki-e/install-action@cross
+
+      - name: Build (native)
+        if: "!matrix.use_cross"
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Build (cross)
+        if: matrix.use_cross
+        run: cross build --release --target ${{ matrix.target }}
+
+  check-gate:
+    name: Check
+    runs-on: ubuntu-latest
+    needs: [check-targets]
+    if: always()
+    steps:
+      - name: Require every release target to have checked
+        run: |
+          if [ "${{ needs.check-targets.result }}" != "success" ]; then
+            echo "Check matrix result: ${{ needs.check-targets.result }}"
+            exit 1
+          fi
+          echo "All release targets check."
 
   npm-build:
     name: npm wrapper build + test

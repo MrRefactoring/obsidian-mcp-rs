@@ -27,7 +27,8 @@ cargo clippy -- -D warnings
 # Coverage (matches CI)
 cargo llvm-cov --lcov --output-path lcov-rust.info
 
-# Cross-platform check (CI matrix: aarch64/x86_64 darwin, x86_64 linux gnu+musl, x86_64 windows-msvc)
+# Cross-platform check (CI matrix mirrors release: aarch64/x86_64 darwin,
+# aarch64/x86_64 linux gnu, x86_64 linux musl, aarch64/x86_64 windows-msvc)
 cargo check --target <triple>
 
 # npm wrapper (in npm/obsidian-mcp-rs/)
@@ -59,13 +60,14 @@ Two traps that already bit this code once, both pinned by tests:
 
 | Module       | Role                                                                                                                 |
 |--------------|----------------------------------------------------------------------------------------------------------------------|
-| `lib.rs`     | crate root — re-exports `error`/`handler`/`install`/`tools`/`vault` as the public library surface                    |
-| `main.rs`    | thin bin over the lib: clap CLI, log setup, dispatches to `install`/`uninstall`/`list`/`logs` subcommands or starts the MCP server |
+| `lib.rs`     | crate root — re-exports `error`/`handler`/`install`/`tools`/`update`/`vault` as the public library surface                    |
+| `main.rs`    | thin bin over the lib: clap CLI, log setup, dispatches to `install`/`uninstall`/`list`/`update`/`logs` subcommands or starts the MCP server |
 | `handler.rs` | `ObsidianHandler` with `#[tool_router]` macro — 15 MCP tools, thin wrappers over `vault`                             |
 | `parent.rs`  | parent-liveness watch — exits when the client that spawned us dies without closing stdin (`getppid` poll on Unix, parent-handle wait on Windows) |
 | `vault/`     | `VaultManager` (`mod.rs`) + submodules: `path` (**`safe_join` sandbox**), `frontmatter` (parse + line-surgery edits), `tags`, `patch` (heading/block targets + outline), `links`, `search`, `info` (tags/recent/stats), `periodic` (Obsidian's daily-note settings), `walk` (`md_files` via `ignore`). Vault walks run in parallel with `rayon` |
 | `tools/*.rs` | `serde` + `schemars::JsonSchema` param structs only — one per tool                                                   |
-| `install/`   | Writes/removes MCP-server entries in 14 AI-client configs (JSON / TOML for Codex / YAML for Goose). `binary` places the server itself; `writer::Launch` is the one description of what an entry runs |
+| `install/`   | Writes/removes MCP-server entries in 16 AI-client configs (JSON / TOML for Codex / YAML for Goose). `binary` places the server itself; `writer::Launch` is the one description of what an entry runs |
+| `update/`    | Self-update: `version` (semver), `target` (this build's triple → asset name), `source` (release feed + downloads), `consent` (the opt-out marker), `state` (the once-a-day stamp). `mod.rs` decides and applies |
 | `error.rs`   | `VaultError` + `From<VaultError> for rmcp::ErrorData`                                                                |
 
 Tools are wired via the `#[tool_router]` / `#[tool_handler]` rmcp macros — adding a new tool means: new `tools/foo.rs` with a `Params` struct, plus a method on `ObsidianHandler` annotated `#[tool(name = "foo")]`.
@@ -92,9 +94,26 @@ Three separate reasons, and losing any one of them is a regression:
 
 `writer::Launch` is the single description of command + args; all four backends (JSON/TOML/YAML) encode it and status detection compares against it. It compares the **command as well as the args** — an entry left from the npx era has the right trailing arguments and entirely the wrong command, and comparing args alone reported it as already installed.
 
-Updating is re-running `install`, which replaces the copy while the configured path stays put. `list` reports the installed copy's version against this package's, because the copy only changes when `install` runs and that skew is otherwise invisible. `uninstall` removes the binary once no config still points at it.
+The configured path stays put forever, which is what lets the copy be replaced underneath it — by `install`, by `update`, or by the server updating itself. Because the copy no longer only changes when `install` runs, it can be *ahead* of the package as well as behind, so `list` compares them as versions rather than as strings and names the drift in whichever direction it runs. `uninstall` removes the binary once no config still points at it.
 
 **`InstallStatus::Installed` carries the command the entry actually runs, and every consumer must ask.** An entry existing is not the same as the server working: a config written before 0.7.0 runs `npx`, and one left by a build that has since moved names a file that is not there. Both were reported as a bare `installed` — including, observed on a real machine, a config pointing at a deleted binary, dead for weeks with nothing in the CLI willing to say so. `install` cannot be the one to say it either: it declines to overwrite an entry it did not write (that entry may be hand-tuned), so it prints one line and moves on, and that line is buried in a wall of per-client output. `list` is therefore the only standing account, and `points_at_installed_server` is what it and `remove_binary_if_unused` both go through. Adding a config backend means extracting the command in its `check_status` too — returning `Installed { command: None }` from a format that has one is a silent false `outdated`.
+
+### Auto-update (do not regress)
+
+The installed copy replaces itself from GitHub Releases, on by default. Six things here look like defects and are not; the full reasoning, with the alternatives that were rejected, is in the `Decision - Auto-update` ADR.
+
+- **Going *down* is deliberate.** `update` follows `releases/latest` in both directions. Withdrawing a bad release means marking it a prerelease, which drops it out of `releases/latest` — so refusing to move backwards would strand everyone who already took the bad one, on the bad one, with the withdrawal doing nothing for exactly the people it exists for. Downgrade protection guards against an attacker who can publish releases, and such an attacker publishes a *higher* version instead.
+- **The asset names are a cross-file contract.** `update::target` builds `obsidian-mcp-rs-<triple>[.exe]` and `release.yml` uploads exactly that. Renaming assets breaks every updater already in the field, and no test can catch it because both sides change together. Old names cannot be dropped, only added to.
+- **`is_same_file`, not `==`.** The guard that keeps us off a cargo-, distro- or npx-managed binary compares resolved files. `stable_path()` and `current_exe()` routinely spell the same file differently (`/Users/x` vs `/System/Volumes/Data/Users/x`), and a string comparison refuses to update precisely where it should.
+- **`update.lock` is not `write.lock`.** Sharing the vault write lock would stall every write in every server for the length of a 7 MB download.
+- **A build with extra features must not replace itself.** Releases are built with default features, so a binary carrying `http` would *lose* it by being updated — `--http` silently becomes "this build has no HTTP transport". `matches_published_builds()` refuses in that case. This is the hole the "only touch what `install` placed" guard does not cover: the binary is ours, at our path, and still not interchangeable with what we would fetch. Any future non-default feature has to be added to that check.
+- **The background path never calls `self_replace`; the `update` subcommand does.** On Windows `self_replace` renames the executable aside, copies the new one in and renames it back, and `parent::watch_parent` answers a dead client with `std::process::exit(0)` — uncatchable, and no chance for the thread to finish. Land in that window and the path all 14 configs name is empty with nothing to retry from. So a background update leaves a verified binary at `<dest>.pending` and `install_pending()` puts it in place at the next start, before anything is served. `Swap::Now` vs `Swap::AtNextStart` is that distinction; do not collapse it.
+- **`OBSIDIAN_MCP_UPDATE_ENDPOINT` is loopback-only.** It exists for the integration tests, and it replaces the GitHub allowlist wholesale — the host it names supplies both the binary and the `checksums.txt` it is verified against, and `smoke_test` *executes* the download before the swap. It is reachable in a release build (an `env` entry in a client config, a shell profile, a launchd plist), so `from_env` ignores any authority that is not `127.0.0.1`, `::1` or `localhost` and falls back to GitHub. Widening it re-opens the hole.
+- **Consent has three states, not two.** `Consent::Keep` exists because an `install` run that carries no auto-update flag must change nothing: configuring a second client would otherwise silently switch auto-update back on for someone who had turned it off.
+
+`update --force` lifts the 48-hour hold; nothing lifts it on the unattended path. Without the flag the real update path cannot be exercised until two days after a release, which would make its first live run an unattended one on other people's machines.
+
+The background check is a detached thread started *before* the MCP handshake (a client that connects slowly or never still gets checked), it never writes to stdout, and every failure is a `debug!` and silence — an offline machine must never be slowed or broken by it. Both of those are pinned by tests.
 
 ### Multi-vault model
 
@@ -106,7 +125,7 @@ Updating is re-running `install`, which replaces the copy while the configured p
 
 ### CI gates that block merge
 
-`cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`, `cargo check` across the 5-target matrix, and the npm wrapper's `build` + `vitest`. Coverage from both Rust (`llvm-cov`) and TypeScript (`vitest --coverage`) is uploaded to Codecov as separate flags.
+`cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`, `cargo check` across the 7-target matrix, and the npm wrapper's `build` + `vitest`. **That matrix mirrors `release.yml`'s build matrix exactly — same targets, and `cross` on the same two of them.** They used to differ, which was harmless while the crate was pure Rust and stopped being so the moment `rustls` pulled in `ring`: its C code needs a cross toolchain the bare runner does not have, so a green musl check no longer meant a buildable musl release. Adding a release target without adding it here puts the first build attempt on a pushed tag. Coverage from both Rust (`llvm-cov`) and TypeScript (`vitest --coverage`) is uploaded to Codecov as separate flags.
 
 ## Conventions worth knowing
 

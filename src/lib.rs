@@ -11,4 +11,5 @@ pub mod http;
 pub mod install;
 pub mod parent;
 pub mod tools;
+pub mod update;
 pub mod vault;

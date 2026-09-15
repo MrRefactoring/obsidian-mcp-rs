@@ -59,8 +59,119 @@ pub(crate) fn install() -> Result<PathBuf> {
     std::fs::create_dir_all(parent)
         .with_context(|| format!("could not create {}", parent.display()))?;
 
-    std::fs::copy(&src, &dest).map_err(|e| in_use_hint(e, &dest))?;
+    place(&src, &dest)?;
     Ok(dest)
+}
+
+/// The staging name is per-process on purpose. A fixed `<dest>.new` lets two
+/// concurrent `install` runs unlink each other's half-written file and rename
+/// the survivor into the path every config names forever.
+const STAGING_PREFIX: &str = ".new.";
+
+fn staging_path(dest: &Path) -> PathBuf {
+    let mut name = dest.as_os_str().to_owned();
+    name.push(format!("{STAGING_PREFIX}{}", std::process::id()));
+    PathBuf::from(name)
+}
+
+fn place(src: &Path, dest: &Path) -> Result<()> {
+    let staged = staging_path(dest);
+
+    if let Err(e) = copy_durably(src, &staged) {
+        let _ = std::fs::remove_file(&staged);
+        return Err(in_use_hint(e, dest));
+    }
+    if let Err(e) = swap_into_place(&staged, dest) {
+        let _ = std::fs::remove_file(&staged);
+        return Err(in_use_hint(e, dest));
+    }
+    if let Some(parent) = dest.parent() {
+        sync_dir(parent);
+    }
+    Ok(())
+}
+
+/// `fs::copy` returns once the bytes are in the page cache, and `rename` only
+/// commits metadata — so a power cut right after `install` can leave a
+/// zero-length file at the path every config names permanently.
+fn copy_durably(src: &Path, dest: &Path) -> std::io::Result<()> {
+    std::fs::copy(src, dest)?;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(dest)?
+        .sync_all()
+}
+
+/// Windows refuses to rename over a running executable, so the file is moved
+/// aside first and put back if the second rename fails. On Unix the first
+/// rename always succeeds and the rest is never reached.
+fn swap_into_place(staged: &Path, dest: &Path) -> std::io::Result<()> {
+    let first = match std::fs::rename(staged, dest) {
+        Ok(()) => return Ok(()),
+        Err(e) => e,
+    };
+    if !dest.exists() {
+        return Err(first);
+    }
+
+    let mut displaced = dest.as_os_str().to_owned();
+    displaced.push(format!(".old.{}", std::process::id()));
+    let displaced = PathBuf::from(displaced);
+    let _ = std::fs::remove_file(&displaced);
+
+    if std::fs::rename(dest, &displaced).is_err() {
+        return Err(first);
+    }
+    match std::fs::rename(staged, dest) {
+        Ok(()) => {
+            let _ = std::fs::remove_file(&displaced);
+            Ok(())
+        }
+        Err(second) => {
+            let _ = std::fs::rename(&displaced, dest);
+            Err(second)
+        }
+    }
+}
+
+#[cfg(unix)]
+fn sync_dir(dir: &Path) {
+    if let Ok(handle) = std::fs::File::open(dir) {
+        let _ = handle.sync_all();
+    }
+}
+
+#[cfg(not(unix))]
+fn sync_dir(_: &Path) {}
+
+/// Sweep every staging and displaced file beside `dest`, whichever run left it.
+///
+/// The pid in those names keeps concurrent runs from colliding while they work;
+/// it is deliberately *not* used here. This runs from `uninstall`, where the
+/// whole installation is going away, so litter from a run that died before it
+/// could clean up is exactly what has to go. The cost is that an `install`
+/// racing an `uninstall` can lose its half-written staging file — which is the
+/// lesser of the two, since that install is about to have its destination
+/// deleted anyway.
+fn sweep_leftovers(dest: &Path) {
+    let (Some(parent), Some(name)) = (dest.parent(), dest.file_name().and_then(|n| n.to_str()))
+    else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Ok(found) = entry.file_name().into_string() else {
+            continue;
+        };
+        let Some(suffix) = found.strip_prefix(name) else {
+            continue;
+        };
+        if suffix.starts_with(STAGING_PREFIX) || suffix.starts_with(".old.") {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 /// Remove the installed copy, and the directory if that leaves it empty.
@@ -75,6 +186,7 @@ pub(crate) fn uninstall() -> Result<Option<PathBuf>> {
         return Ok(None);
     }
     std::fs::remove_file(&path).map_err(|e| in_use_hint(e, &path))?;
+    sweep_leftovers(&path);
     if let Some(parent) = path.parent() {
         // Best effort: only succeeds when it is empty, which is what we want.
         let _ = std::fs::remove_dir(parent);
@@ -120,7 +232,7 @@ fn in_use_hint(e: std::io::Error, path: &Path) -> anyhow::Error {
     }
 }
 
-fn is_same_file(a: &Path, b: &Path) -> bool {
+pub(crate) fn is_same_file(a: &Path, b: &Path) -> bool {
     match (a.canonicalize(), b.canonicalize()) {
         (Ok(a), Ok(b)) => a == b,
         _ => false,
@@ -184,6 +296,80 @@ mod tests {
         assert!(!is_same_file(&a, &b));
         // A path that does not exist cannot be "the same file" as anything.
         assert!(!is_same_file(&a, &dir.path().join("missing")));
+    }
+
+    #[test]
+    fn placing_replaces_the_destination_and_leaves_no_staging_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        let dest = dir.path().join("dest");
+        std::fs::write(&src, b"new").unwrap();
+        std::fs::write(&dest, b"old").unwrap();
+
+        place(&src, &dest).unwrap();
+
+        assert_eq!(std::fs::read(&dest).unwrap(), b"new");
+        assert!(!staging_path(&dest).exists());
+    }
+
+    #[test]
+    fn placing_creates_a_destination_that_was_not_there() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        let dest = dir.path().join("dest");
+        std::fs::write(&src, b"new").unwrap();
+
+        place(&src, &dest).unwrap();
+
+        assert_eq!(std::fs::read(&dest).unwrap(), b"new");
+        assert!(!staging_path(&dest).exists());
+    }
+
+    #[test]
+    fn a_staging_file_left_by_a_crashed_run_does_not_corrupt_the_next_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        let dest = dir.path().join("dest");
+        std::fs::write(&src, b"new").unwrap();
+        std::fs::write(staging_path(&dest), b"half of an older attempt").unwrap();
+
+        place(&src, &dest).unwrap();
+
+        assert_eq!(std::fs::read(&dest).unwrap(), b"new");
+        assert!(!staging_path(&dest).exists());
+    }
+
+    #[test]
+    fn a_failed_place_leaves_neither_litter_nor_a_damaged_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("dest");
+        std::fs::write(&dest, b"old").unwrap();
+
+        assert!(place(&dir.path().join("missing"), &dest).is_err());
+
+        assert_eq!(std::fs::read(&dest).unwrap(), b"old");
+        assert!(!staging_path(&dest).exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_executable_bit_survives_being_placed() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        let dest = dir.path().join("dest");
+        std::fs::write(&src, b"#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&src, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        place(&src, &dest).unwrap();
+
+        let mode = std::fs::metadata(&dest).unwrap().permissions().mode();
+        assert_ne!(
+            mode & 0o111,
+            0,
+            "the placed copy is not executable: {mode:o}"
+        );
     }
 
     #[test]
