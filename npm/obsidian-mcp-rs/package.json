@@ -39,7 +39,10 @@
   "bin": {
     "obsidian-mcp-rs": "./bin/bin.js"
   },
-  "files": ["bin", "README.md"],
+  "files": [
+    "bin",
+    "README.md"
+  ],
   "scripts": {
     "build": "tsc",
     "prepublishOnly": "npm run build",
@@ -57,9 +60,9 @@
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "@vitest/coverage-v8": "^4.1.10",
+    "@vitest/coverage-v8": "^5.0.1",
     "typescript": "^6.0.0",
-    "vitest": "^4.1.10"
+    "vitest": "^5.0.1"
   },
   "engines": {
     "node": ">=22"
