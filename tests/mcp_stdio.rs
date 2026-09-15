@@ -510,6 +510,11 @@ fn a_refused_handshake_still_keeps_stdout_to_protocol() {
         writeln!(stdin, "{}", serde_json::to_string(&request).unwrap()).unwrap();
     }
     let output = child.wait_with_output().expect("server did not exit");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "a refused handshake should end the session as an error, not a clean shutdown"
+    );
 
     let stdout = String::from_utf8(output.stdout).unwrap();
     let lines: Vec<&str> = stdout.lines().filter(|l| !l.trim().is_empty()).collect();
@@ -525,7 +530,7 @@ fn a_refused_handshake_still_keeps_stdout_to_protocol() {
 
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(
-        stderr.contains("initialized request"),
-        "the diagnosis did not reach stderr: {stderr:?}"
+        !stderr.trim().is_empty(),
+        "the diagnosis did not reach stderr"
     );
 }

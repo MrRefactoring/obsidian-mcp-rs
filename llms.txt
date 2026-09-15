@@ -42,7 +42,7 @@ Configs are written for you rather than by hand — an entry that runs `npx` sta
 ## Tech stack
 
 - Language: Rust (stable)
-- MCP library: rmcp 2.2 (stdio transport)
+- MCP library: rmcp 3.3 (stdio transport)
 - CLI: clap
 - Distributed via npm optional dependencies pattern
 
