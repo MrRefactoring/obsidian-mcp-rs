@@ -27,7 +27,8 @@ cargo clippy -- -D warnings
 # Coverage (matches CI)
 cargo llvm-cov --lcov --output-path lcov-rust.info
 
-# Cross-platform check (CI matrix: aarch64/x86_64 darwin, x86_64 linux gnu+musl, x86_64 windows-msvc)
+# Cross-platform check (CI matrix mirrors release: aarch64/x86_64 darwin,
+# aarch64/x86_64 linux gnu, x86_64 linux musl, aarch64/x86_64 windows-msvc)
 cargo check --target <triple>
 
 # npm wrapper (in npm/obsidian-mcp-rs/)
@@ -122,7 +123,7 @@ The background check is a detached thread started *before* the MCP handshake (a 
 
 ### CI gates that block merge
 
-`cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`, `cargo check` across the 5-target matrix, and the npm wrapper's `build` + `vitest`. Coverage from both Rust (`llvm-cov`) and TypeScript (`vitest --coverage`) is uploaded to Codecov as separate flags.
+`cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`, `cargo check` across the 7-target matrix, and the npm wrapper's `build` + `vitest`. **That matrix mirrors `release.yml`'s build matrix exactly — same targets, and `cross` on the same two of them.** They used to differ, which was harmless while the crate was pure Rust and stopped being so the moment `rustls` pulled in `ring`: its C code needs a cross toolchain the bare runner does not have, so a green musl check no longer meant a buildable musl release. Adding a release target without adding it here puts the first build attempt on a pushed tag. Coverage from both Rust (`llvm-cov`) and TypeScript (`vitest --coverage`) is uploaded to Codecov as separate flags.
 
 ## Conventions worth knowing
 
