@@ -136,6 +136,18 @@ fn check_and_apply() -> Result<Option<Version>> {
         return Ok(None);
     }
 
+    // A staged release is already downloaded, checksummed and smoke-tested, so
+    // there is nothing here to do but wait for a restart.
+    //
+    // It survives one only when `install_pending` could not place it — on
+    // Windows, another live server holding the executable. This check decides
+    // against `Version::current()`, which is still the old binary in that case,
+    // so without this the next launch past the daily stamp would fetch and
+    // verify the same bytes again to reach the same staged file.
+    if pending_path(&dest).exists() {
+        return Ok(None);
+    }
+
     let now = Utc::now();
     if !state::due(state::read().as_ref(), now) {
         return Ok(None);
@@ -174,7 +186,13 @@ enum Swap {
     AtNextStart,
 }
 
-/// Put a release staged by an earlier run into place, before anything is served.
+/// Put a release staged by an earlier run into place, at startup.
+///
+/// This narrows the window `Swap::AtNextStart` exists for rather than closing
+/// it: `parent::watch_parent` is already armed by the time this runs, so a
+/// client that dies during the rename still lands in it. The difference is the
+/// size — milliseconds before the handshake, instead of any moment in a session
+/// that can last hours.
 pub fn install_pending() {
     let Ok(dest) = installed_copy() else {
         return;

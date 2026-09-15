@@ -144,8 +144,15 @@ fn sync_dir(dir: &Path) {
 #[cfg(not(unix))]
 fn sync_dir(_: &Path) {}
 
-/// Sweep staging and displaced files by prefix: they carry the pid of the run
-/// that made them, so only the one left by this process matches by name.
+/// Sweep every staging and displaced file beside `dest`, whichever run left it.
+///
+/// The pid in those names keeps concurrent runs from colliding while they work;
+/// it is deliberately *not* used here. This runs from `uninstall`, where the
+/// whole installation is going away, so litter from a run that died before it
+/// could clean up is exactly what has to go. The cost is that an `install`
+/// racing an `uninstall` can lose its half-written staging file — which is the
+/// lesser of the two, since that install is about to have its destination
+/// deleted anyway.
 fn sweep_leftovers(dest: &Path) {
     let (Some(parent), Some(name)) = (dest.parent(), dest.file_name().and_then(|n| n.to_str()))
     else {

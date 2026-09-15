@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+#[cfg(all(unix, not(feature = "http")))]
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::Arc;
@@ -677,4 +679,73 @@ fn a_build_with_features_the_releases_lack_refuses_to_replace_itself() {
         before,
         "an http build replaced itself with one that has no http"
     );
+}
+
+#[cfg(all(unix, not(feature = "http")))]
+#[test]
+fn a_download_that_will_not_run_is_thrown_away() {
+    let it = install_into_a_temporary_home();
+    let before = std::fs::read(&it.exe).unwrap();
+    let broken = b"#!/bin/sh\nexit 1\n".to_vec();
+    let base = feed("v9.9.9", "2020-01-01T00:00:00Z", &broken);
+
+    let out = update(&it.exe, Some(&it.home), &base, &[]);
+
+    assert!(!out.status.success(), "{}", said(&out));
+    assert!(
+        said(&out).contains("--version"),
+        "the smoke test should name what it asked: {}",
+        said(&out)
+    );
+    assert_eq!(
+        std::fs::read(&it.exe).unwrap(),
+        before,
+        "it installed anyway"
+    );
+    assert!(no_leftovers(&it.exe));
+}
+
+#[cfg(all(unix, not(feature = "http")))]
+#[test]
+fn a_download_that_reports_another_version_is_thrown_away() {
+    let it = install_into_a_temporary_home();
+    let before = std::fs::read(&it.exe).unwrap();
+    let impostor = b"#!/bin/sh\necho \"obsidian-mcp-rs 1.2.3\"\n".to_vec();
+    let base = feed("v9.9.9", "2020-01-01T00:00:00Z", &impostor);
+
+    let out = update(&it.exe, Some(&it.home), &base, &[]);
+
+    assert!(!out.status.success(), "{}", said(&out));
+    assert!(
+        said(&out).contains("1.2.3") && said(&out).contains("9.9.9"),
+        "the message should name both versions: {}",
+        said(&out)
+    );
+    assert_eq!(
+        std::fs::read(&it.exe).unwrap(),
+        before,
+        "it installed anyway"
+    );
+    assert!(no_leftovers(&it.exe));
+}
+
+#[cfg(all(unix, not(feature = "http")))]
+#[test]
+fn a_release_staged_by_an_earlier_run_is_installed_at_the_next_start() {
+    let body = replacement_binary();
+    let it = install_into_a_temporary_home();
+    let pending = PathBuf::from(format!("{}.pending", it.exe.display()));
+    std::fs::write(&pending, &body).unwrap();
+    std::fs::set_permissions(&pending, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let vault = tempfile::tempdir().unwrap();
+    let base = feed("v0.0.1", "2020-01-01T00:00:00Z", &body);
+    let server = spawn_server(&it, &base, vault.path());
+    let installed = wait_until(Duration::from_secs(20), || {
+        std::fs::read(&it.exe).is_ok_and(|b| b == body)
+    });
+    stop(server);
+
+    assert!(installed, "the staged release was never put in place");
+    assert!(!pending.exists(), "the staged file was left behind");
 }
