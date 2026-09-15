@@ -1,4 +1,4 @@
-use std::{any::type_name, sync::Arc};
+use std::sync::Arc;
 
 use rmcp::{
     ErrorData as McpError, ServerHandler,
@@ -110,7 +110,6 @@ fn structured<T: serde::Serialize>(out: Result<T, VaultError>) -> Result<CallToo
 /// that no longer have one to derive it from. Same schema, named explicitly.
 fn output_schema<T: schemars::JsonSchema + std::any::Any>() -> Arc<rmcp::model::JsonObject> {
     rmcp::handler::server::tool::schema_for_output::<T>()
-        .unwrap_or_else(|e| panic!("invalid output schema for {}: {e}", type_name::<T>()))
 }
 
 #[tool_router]
