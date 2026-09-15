@@ -31,6 +31,22 @@ pub struct UpdateArgs {
     /// Report what an update would do, without changing anything.
     #[arg(long, default_value_t = false)]
     pub check: bool,
+
+    /// Take a release that is still inside the 48-hour hold.
+    #[arg(long, default_value_t = false, conflicts_with = "check")]
+    pub force: bool,
+}
+
+/// Whether this build is interchangeable with what the releases ship.
+///
+/// The published binaries are built with default features, so a build that
+/// carries more than that would *lose* capability by being replaced with one.
+/// `--http` is the whole of the difference today: the feature is off by
+/// default, `release.yml` never enables it, and the only way to have it is to
+/// have built it yourself — at which point replacing that binary with a release
+/// one silently turns `--http` into "this build has no HTTP transport".
+fn matches_published_builds() -> bool {
+    !cfg!(feature = "http")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,6 +64,13 @@ pub enum Decision {
     },
 }
 
+fn forced(decision: Decision, force: bool) -> Decision {
+    match decision {
+        Decision::Soaking { to, .. } if force => Decision::Take { to },
+        other => other,
+    }
+}
+
 pub fn decide(current: Version, release: &Release, now: DateTime<Utc>) -> Decision {
     let Some(to) = Version::parse(&release.tag) else {
         return Decision::Unreadable {
@@ -62,6 +85,15 @@ pub fn decide(current: Version, release: &Release, now: DateTime<Utc>) -> Decisi
         return Decision::Soaking { to, ready_at };
     }
     Decision::Take { to }
+}
+
+/// The first release whose binary can update itself. Anything older has to be
+/// replaced by hand once, because the copy doing the replacing is the one that
+/// does not know how.
+pub const SELF_UPDATING_SINCE: &str = "0.8.0";
+
+pub fn predates_self_update(installed: Version) -> bool {
+    Version::parse(SELF_UPDATING_SINCE).is_some_and(|first| installed < first)
 }
 
 pub fn last_seen_release() -> Option<Version> {
@@ -94,7 +126,7 @@ pub fn watch_for_updates() {
 }
 
 fn check_and_apply() -> Result<Option<Version>> {
-    if !consent::is_enabled() {
+    if !consent::is_enabled() || !matches_published_builds() {
         return Ok(None);
     }
     let Ok(dest) = installed_copy() else {
@@ -141,10 +173,19 @@ pub fn run(args: UpdateArgs) -> Result<()> {
         return Ok(());
     }
 
+    if !matches_published_builds() {
+        println!(
+            "  {} this build has features the published binaries do not (`http`); \
+             replacing it would take them away",
+            style("!").yellow().bold()
+        );
+        return Ok(());
+    }
+
     let source = Source::from_env();
     let release = source.latest()?;
 
-    match decide(current, &release, Utc::now()) {
+    match forced(decide(current, &release, Utc::now()), args.force) {
         Decision::UpToDate => {
             println!(
                 "  {} {} is the current release",
@@ -163,6 +204,10 @@ pub fn run(args: UpdateArgs) -> Result<()> {
                 "  {} v{to} is out; holding until {} so a bad release can be withdrawn first",
                 style("~").cyan().bold(),
                 style(ready_at.format("%Y-%m-%d %H:%M UTC")).dim()
+            );
+            println!(
+                "  {}",
+                style("`obsidian-mcp-rs update --force` takes it now").dim()
             );
         }
         Decision::Take { to } if args.check => {
@@ -389,6 +434,42 @@ mod tests {
                 tag: "nightly".to_string()
             }
         );
+    }
+
+    #[test]
+    fn force_lifts_the_hold_and_changes_nothing_else() {
+        let to = v("0.8.0");
+        let soaking = Decision::Soaking {
+            to,
+            ready_at: at("2026-09-03T00:00:00Z"),
+        };
+        assert_eq!(forced(soaking.clone(), true), Decision::Take { to });
+        assert_eq!(
+            forced(soaking, false),
+            forced(
+                Decision::Soaking {
+                    to,
+                    ready_at: at("2026-09-03T00:00:00Z")
+                },
+                false
+            )
+        );
+        assert_eq!(forced(Decision::UpToDate, true), Decision::UpToDate);
+        assert_eq!(forced(Decision::Take { to }, true), Decision::Take { to });
+    }
+
+    #[cfg(not(feature = "http"))]
+    #[test]
+    fn a_default_build_is_interchangeable_with_a_published_one() {
+        assert!(matches_published_builds());
+    }
+
+    #[cfg(feature = "http")]
+    #[test]
+    fn a_build_carrying_extra_features_refuses_to_replace_itself() {
+        // Releases are built with default features. Replacing this binary with
+        // one would turn `--http` into "this build has no HTTP transport".
+        assert!(!matches_published_builds());
     }
 
     #[test]

@@ -2,7 +2,12 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
+#[cfg(all(unix, not(feature = "http")))]
+use std::process::{Child, Stdio};
+use std::process::{Command, Output};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+#[cfg(all(unix, not(feature = "http")))]
 use std::time::Duration;
 
 const NEW_VERSION: &str = "9.9.9";
@@ -23,6 +28,7 @@ impl Reply {
         }
     }
 
+    #[cfg(all(unix, not(feature = "http")))]
     fn redirect(to: &str) -> Self {
         Self {
             status: 302,
@@ -32,6 +38,7 @@ impl Reply {
     }
 }
 
+#[cfg(all(unix, not(feature = "http")))]
 fn serve(routes: HashMap<String, Reply>) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind a loopback port");
     let base = format!("http://{}", listener.local_addr().unwrap());
@@ -40,14 +47,15 @@ fn serve(routes: HashMap<String, Reply>) -> String {
         for stream in listener.incoming() {
             let Ok(stream) = stream else { continue };
             let routes = routes.clone();
-            std::thread::spawn(move || answer(stream, &routes));
+            let downloads = Arc::new(AtomicUsize::new(0));
+            std::thread::spawn(move || answer(stream, &routes, &downloads));
         }
     });
 
     base
 }
 
-fn answer(mut stream: TcpStream, routes: &HashMap<String, Reply>) {
+fn answer(mut stream: TcpStream, routes: &HashMap<String, Reply>, downloads: &AtomicUsize) {
     let mut buf = [0u8; 4096];
     let Ok(n) = stream.read(&mut buf) else { return };
     let request = String::from_utf8_lossy(&buf[..n]);
@@ -57,6 +65,10 @@ fn answer(mut stream: TcpStream, routes: &HashMap<String, Reply>) {
         .and_then(|line| line.split_whitespace().nth(1))
         .unwrap_or("/")
         .to_string();
+
+    if path == "/asset" {
+        downloads.fetch_add(1, Ordering::SeqCst);
+    }
 
     let reply = routes.get(&path).cloned().unwrap_or(Reply {
         status: 404,
@@ -95,16 +107,23 @@ fn replacement_binary() -> Vec<u8> {
 }
 
 fn feed(tag: &str, published: &str, body: &[u8]) -> String {
+    feed_counted(tag, published, body).0
+}
+
+fn feed_counted(tag: &str, published: &str, body: &[u8]) -> (String, Arc<AtomicUsize>) {
     let asset = obsidian_mcp_rs::update::asset_name().expect("this platform publishes a release");
     let checksums = format!("{}  {asset}\n", sha256_hex(body));
-    serve_with(
+    let downloads = Arc::new(AtomicUsize::new(0));
+    let base = serve_with(
         &mut HashMap::new(),
         body,
         &checksums,
         &asset,
         tag,
         published,
-    )
+        Arc::clone(&downloads),
+    );
+    (base, downloads)
 }
 
 fn serve_with(
@@ -114,6 +133,7 @@ fn serve_with(
     asset: &str,
     tag: &str,
     published: &str,
+    downloads: Arc<AtomicUsize>,
 ) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind a loopback port");
     let base = format!("http://{}", listener.local_addr().unwrap());
@@ -129,11 +149,13 @@ fn serve_with(
     routes.insert("/checksums".to_string(), Reply::ok(checksums.to_string()));
 
     let table = routes.clone();
+    let counter = Arc::clone(&downloads);
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(stream) = stream else { continue };
             let table = table.clone();
-            std::thread::spawn(move || answer(stream, &table));
+            let counter = Arc::clone(&counter);
+            std::thread::spawn(move || answer(stream, &table, &counter));
         }
     });
 
@@ -176,16 +198,19 @@ fn data_local(home: &Path) -> PathBuf {
     home.join("AppData").join("Local")
 }
 
+#[cfg(not(feature = "http"))]
 #[cfg(target_os = "macos")]
 fn cache_home(home: &Path) -> PathBuf {
     home.join("Library").join("Caches")
 }
 
+#[cfg(not(feature = "http"))]
 #[cfg(all(unix, not(target_os = "macos")))]
 fn cache_home(home: &Path) -> PathBuf {
     home.join(".cache")
 }
 
+#[cfg(not(feature = "http"))]
 #[cfg(windows)]
 fn cache_home(home: &Path) -> PathBuf {
     home.join("AppData").join("Local")
@@ -243,7 +268,7 @@ fn a_copy_that_install_did_not_place_is_refused_rather_than_replaced() {
     );
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(feature = "http")))]
 #[test]
 fn an_update_past_the_soak_window_replaces_the_installed_copy() {
     let body = replacement_binary();
@@ -271,7 +296,7 @@ fn an_update_past_the_soak_window_replaces_the_installed_copy() {
     );
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(feature = "http")))]
 #[test]
 fn a_release_still_inside_the_soak_window_is_held_back() {
     let body = replacement_binary();
@@ -287,7 +312,7 @@ fn a_release_still_inside_the_soak_window_is_held_back() {
     assert_eq!(std::fs::read(&it.exe).unwrap(), before, "it updated anyway");
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(feature = "http")))]
 #[test]
 fn check_reports_the_available_release_without_touching_anything() {
     let body = replacement_binary();
@@ -302,7 +327,7 @@ fn check_reports_the_available_release_without_touching_anything() {
     assert_eq!(std::fs::read(&it.exe).unwrap(), before, "--check wrote");
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(feature = "http")))]
 #[test]
 fn a_download_that_does_not_match_its_checksum_is_thrown_away() {
     let it = install_into_a_temporary_home();
@@ -319,6 +344,7 @@ fn a_download_that_does_not_match_its_checksum_is_thrown_away() {
         &asset,
         "v9.9.9",
         "2020-01-01T00:00:00Z",
+        Arc::new(AtomicUsize::new(0)),
     );
 
     let out = update(&it.exe, Some(&it.home), &base, &[]);
@@ -337,7 +363,7 @@ fn a_download_that_does_not_match_its_checksum_is_thrown_away() {
     assert!(!it.exe.with_extension("download").exists());
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(feature = "http")))]
 #[test]
 fn a_feed_that_redirects_off_its_own_host_is_refused() {
     let it = install_into_a_temporary_home();
@@ -361,7 +387,7 @@ fn a_feed_that_redirects_off_its_own_host_is_refused() {
     assert_eq!(std::fs::read(&it.exe).unwrap(), before);
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(feature = "http")))]
 fn spawn_server(it: &Installed, endpoint: &str, vault: &Path) -> Child {
     Command::new(&it.exe)
         .arg(vault)
@@ -376,7 +402,7 @@ fn spawn_server(it: &Installed, endpoint: &str, vault: &Path) -> Child {
         .expect("start the server")
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(feature = "http")))]
 fn wait_until(deadline: Duration, mut done: impl FnMut() -> bool) -> bool {
     let started = std::time::Instant::now();
     while started.elapsed() < deadline {
@@ -388,13 +414,13 @@ fn wait_until(deadline: Duration, mut done: impl FnMut() -> bool) -> bool {
     false
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(feature = "http")))]
 fn stop(mut server: Child) {
     drop(server.stdin.take());
     let _ = server.wait();
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(feature = "http")))]
 #[test]
 fn a_running_server_replaces_itself_without_being_asked() {
     let body = replacement_binary();
@@ -420,7 +446,7 @@ fn a_running_server_replaces_itself_without_being_asked() {
     assert!(recorded.contains("9.9.9"), "unexpected state: {recorded}");
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(feature = "http")))]
 #[test]
 fn a_server_that_was_opted_out_leaves_itself_alone() {
     let body = replacement_binary();
@@ -482,4 +508,93 @@ fn configuring_another_client_does_not_switch_auto_update_back_on() {
 
     assert!(install(&["--auto-update"]).status.success());
     assert!(!marker.exists(), "opting back in did not take");
+}
+
+#[cfg(all(unix, not(feature = "http")))]
+#[test]
+fn force_takes_a_release_that_is_still_inside_the_hold() {
+    let body = replacement_binary();
+    let it = install_into_a_temporary_home();
+    let published = chrono::Utc::now() - chrono::TimeDelta::try_hours(1).unwrap();
+    let base = feed("v9.9.9", &published.to_rfc3339(), &body);
+
+    let held = update(&it.exe, Some(&it.home), &base, &[]);
+    assert!(said(&held).contains("holding until"), "{}", said(&held));
+    assert_ne!(
+        std::fs::read(&it.exe).unwrap(),
+        body,
+        "the hold did not hold"
+    );
+
+    let forced = update(&it.exe, Some(&it.home), &base, &["--force"]);
+
+    assert!(forced.status.success(), "{}", said(&forced));
+    assert_eq!(
+        std::fs::read(&it.exe).unwrap(),
+        body,
+        "--force did not lift the hold"
+    );
+}
+
+#[cfg(all(unix, not(feature = "http")))]
+#[test]
+fn racing_processes_download_the_release_exactly_once() {
+    let body = replacement_binary();
+    let it = install_into_a_temporary_home();
+    let (base, downloads) = feed_counted("v9.9.9", "2020-01-01T00:00:00Z", &body);
+
+    let racers: Vec<Child> = (0..3)
+        .map(|_| {
+            Command::new(&it.exe)
+                .arg("update")
+                .env("OBSIDIAN_MCP_UPDATE_ENDPOINT", &base)
+                .env("HOME", &it.home)
+                .env("XDG_DATA_HOME", data_local(&it.home))
+                .env("XDG_CACHE_HOME", cache_home(&it.home))
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("start a racer")
+        })
+        .collect();
+
+    for racer in racers {
+        let out = racer.wait_with_output().expect("wait for a racer");
+        assert!(
+            out.status.success(),
+            "a racer failed: {}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    assert_eq!(std::fs::read(&it.exe).unwrap(), body, "nobody applied it");
+    assert_eq!(
+        downloads.load(Ordering::SeqCst),
+        1,
+        "the lock did not stop the losers from downloading too"
+    );
+}
+
+#[cfg(all(unix, feature = "http"))]
+#[test]
+fn a_build_with_features_the_releases_lack_refuses_to_replace_itself() {
+    let body = replacement_binary();
+    let it = install_into_a_temporary_home();
+    let before = std::fs::read(&it.exe).unwrap();
+    let base = feed("v9.9.9", "2020-01-01T00:00:00Z", &body);
+
+    let out = update(&it.exe, Some(&it.home), &base, &[]);
+
+    assert!(out.status.success(), "{}", said(&out));
+    assert!(
+        said(&out).contains("features the published binaries do not"),
+        "unexpected message: {}",
+        said(&out)
+    );
+    assert_eq!(
+        std::fs::read(&it.exe).unwrap(),
+        before,
+        "an http build replaced itself with one that has no http"
+    );
 }

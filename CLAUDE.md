@@ -99,13 +99,16 @@ The configured path stays put forever, which is what lets the copy be replaced u
 
 ### Auto-update (do not regress)
 
-The installed copy replaces itself from GitHub Releases, on by default. Five things here look like defects and are not; the full reasoning, with the alternatives that were rejected, is in the `Decision - Auto-update` ADR.
+The installed copy replaces itself from GitHub Releases, on by default. Six things here look like defects and are not; the full reasoning, with the alternatives that were rejected, is in the `Decision - Auto-update` ADR.
 
 - **Going *down* is deliberate.** `update` follows `releases/latest` in both directions. Withdrawing a bad release means marking it a prerelease, which drops it out of `releases/latest` — so refusing to move backwards would strand everyone who already took the bad one, on the bad one, with the withdrawal doing nothing for exactly the people it exists for. Downgrade protection guards against an attacker who can publish releases, and such an attacker publishes a *higher* version instead.
 - **The asset names are a cross-file contract.** `update::target` builds `obsidian-mcp-rs-<triple>[.exe]` and `release.yml` uploads exactly that. Renaming assets breaks every updater already in the field, and no test can catch it because both sides change together. Old names cannot be dropped, only added to.
 - **`is_same_file`, not `==`.** The guard that keeps us off a cargo-, distro- or npx-managed binary compares resolved files. `stable_path()` and `current_exe()` routinely spell the same file differently (`/Users/x` vs `/System/Volumes/Data/Users/x`), and a string comparison refuses to update precisely where it should.
 - **`update.lock` is not `write.lock`.** Sharing the vault write lock would stall every write in every server for the length of a 7 MB download.
+- **A build with extra features must not replace itself.** Releases are built with default features, so a binary carrying `http` would *lose* it by being updated — `--http` silently becomes "this build has no HTTP transport". `matches_published_builds()` refuses in that case. This is the hole the "only touch what `install` placed" guard does not cover: the binary is ours, at our path, and still not interchangeable with what we would fetch. Any future non-default feature has to be added to that check.
 - **Consent has three states, not two.** `Consent::Keep` exists because an `install` run that carries no auto-update flag must change nothing: configuring a second client would otherwise silently switch auto-update back on for someone who had turned it off.
+
+`update --force` lifts the 48-hour hold; nothing lifts it on the unattended path. Without the flag the real update path cannot be exercised until two days after a release, which would make its first live run an unattended one on other people's machines.
 
 The background check is a detached thread started *before* the MCP handshake (a client that connects slowly or never still gets checked), it never writes to stdout, and every failure is a `debug!` and silence — an offline machine must never be slowed or broken by it. Both of those are pinned by tests.
 

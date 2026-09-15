@@ -107,7 +107,9 @@ Your config therefore runs **one process** — the server itself, as a direct ch
 
 ### Updating
 
-**The server keeps itself up to date.** Once `install` has placed it, it checks for a new release at most once a day, in the background, and replaces itself when it finds one. Nothing is asked of you, and nothing is interrupted — the new version is what your client starts **next time it launches**.
+**The server keeps itself up to date, from 0.8.0 onwards.** Once `install` has placed it, it checks for a new release at most once a day, in the background, and replaces itself when it finds one.
+
+> Auto-update ships *in* 0.8.0, so it cannot bring you 0.8.0 — an older copy does not know how. Run `npx obsidian-mcp-rs@latest install` once and it takes over from there. `npx obsidian-mcp-rs list` says so if your copy predates it. Nothing is asked of you, and nothing is interrupted — the new version is what your client starts **next time it launches**.
 
 Four things it deliberately will not do:
 
@@ -129,7 +131,10 @@ To take a release now rather than wait for the check:
 ```bash
 obsidian-mcp-rs update           # take the latest release
 obsidian-mcp-rs update --check   # just say what is available
+obsidian-mcp-rs update --force   # take it even inside the 48-hour hold
 ```
+
+**What the check sends.** One `GET` to `api.github.com` per day, carrying what any HTTP request carries — your IP address — and a `User-Agent` of `obsidian-mcp-rs/<version>`. An actual update then downloads the binary from `objects.githubusercontent.com`. Nothing about your vaults, your notes, your client or your machine is sent, and nothing identifies you across days beyond what GitHub can infer from an address. It honours `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`. If that is one request too many, `--no-auto-update` stops it entirely.
 
 To go back to an older release, install it — `npx obsidian-mcp-rs@0.7.1 install`. The path in your configs never changes, so nothing needs re-pointing either way. (One exception, and it catches everyone who installed early: a config written before 0.7.0 does not hold that path yet, so none of this reaches it — see [below](#upgrading-from-a-config-written-before-070).)
 

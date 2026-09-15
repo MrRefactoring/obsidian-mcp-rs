@@ -4,6 +4,8 @@
 
 The server used to sit at whatever version you last ran `install` from, and nothing said so out loud. It now keeps itself current.
 
+**This is the one release you have to take by hand.** Auto-update ships *in* 0.8.0, so no copy older than this one can fetch it — the code that would do the fetching is the code being installed. Run `npx obsidian-mcp-rs@latest install` once; every release after this reaches you on its own. `list` now says so outright when the installed copy predates 0.8.0.
+
 ### Added
 
 - **The installed server updates itself.** Once `install` has placed it, it asks GitHub Releases for the latest version at most once a day, in the background, and replaces itself with it. Nothing blocks startup, a failed check is silent, and the new binary is what your client starts the next time it launches — a running server is never swapped out from under a session.
@@ -18,7 +20,13 @@ The server used to sit at whatever version you last ran `install` from, and noth
 
 - **`obsidian-mcp-rs update`**, for taking a release now instead of waiting — and `update --check` for asking without taking. This is also the whole engine the background check runs on, so it is the same code path either way.
 
+  `update --force` additionally lifts the 48-hour hold. Without it there is no way to exercise the real update path at all until two days after a release: the first live run of this code would otherwise happen unattended, on other people's machines, against asset names and redirects no test has ever fetched for real. The hold exists to protect *unattended* installs; someone typing the command has already made the choice the hold was defending.
+
 - **Auto-update is on by default, and `install` says so.** The interactive wizard asks, defaulting to whatever you chose last time; `install --no-auto-update` and `install --auto-update` answer for it. The choice is remembered next to the installed binary, and an install that says nothing about auto-update changes nothing about it — otherwise configuring a second client would silently switch it back on for someone who had turned it off. `install` is the only moment in this system with a person at a terminal — a stdio MCP server has no channel to ask through, since stdout carries the protocol and no client surfaces the alternatives — so the consent is taken there, from exactly the people the updater can reach.
+
+- **A build carrying features the releases do not is left alone.** `http` is off by default and `release.yml` never enables it, so the only way to have it is to have built it yourself — and replacing that binary with a published one silently turns `--http` into "this build has no HTTP transport". Losing a capability is not an update. Such a build refuses to replace itself and says why.
+
+  This was the case the "only touch what `install` placed" guard did not cover: the binary *is* ours, at our own path, and still must not be replaced, because what we would put there is not equivalent to what is there.
 
 ### Changed
 

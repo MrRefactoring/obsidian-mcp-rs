@@ -308,6 +308,13 @@ fn report_installed_binary() {
     );
 
     if let Some(installed) = reported.as_deref().and_then(update::Version::parse) {
+        if update::predates_self_update(installed) {
+            println!(
+                "  {} this copy predates self-update ({}) — run `install` once to pick it up",
+                style("!").yellow().bold(),
+                update::SELF_UPDATING_SINCE
+            );
+        }
         report_drift(installed);
     }
     println!();
@@ -566,7 +573,7 @@ fn settle_consent(choice: Consent) -> Result<bool> {
         Consent::Off => false,
         Consent::Keep => return Ok(update::auto_update_enabled()),
         Consent::Ask => Confirm::with_theme(&ColorfulTheme::default())
-            .with_prompt("Let the server keep itself up to date?")
+            .with_prompt("Let the server keep itself up to date? (checks GitHub once a day)")
             .default(update::auto_update_enabled())
             .interact()?,
     };
