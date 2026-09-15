@@ -2,12 +2,9 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-#[cfg(all(unix, not(feature = "http")))]
-use std::process::{Child, Stdio};
-use std::process::{Command, Output};
+use std::process::{Child, Command, Output, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-#[cfg(all(unix, not(feature = "http")))]
 use std::time::Duration;
 
 const NEW_VERSION: &str = "9.9.9";
@@ -224,6 +221,26 @@ fn exe_name() -> &'static str {
     }
 }
 
+/// `spawn`, retried past ETXTBSY.
+///
+/// Linux refuses to exec a file any process still holds open for writing. These
+/// tests copy the server into a throwaway home and run it, in parallel, so one
+/// test's `fs::copy` can be in flight while another forks — and the forked
+/// child inherits that write descriptor for the instant before it execs. The
+/// window is tiny with a release binary and wide enough to hit reliably under
+/// `cargo llvm-cov`, where the instrumented binary is several times the size.
+fn spawn_once_free(cmd: &mut Command) -> std::io::Result<Child> {
+    for _ in 0..50 {
+        match cmd.spawn() {
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            other => return other,
+        }
+    }
+    cmd.spawn()
+}
+
 fn update(exe: &Path, home: Option<&Path>, endpoint: &str, extra: &[&str]) -> Output {
     let mut cmd = Command::new(exe);
     cmd.arg("update").args(extra);
@@ -233,7 +250,11 @@ fn update(exe: &Path, home: Option<&Path>, endpoint: &str, extra: &[&str]) -> Ou
         cmd.env("XDG_DATA_HOME", data_local(home));
         cmd.env("XDG_CACHE_HOME", home.join(".cache"));
     }
-    cmd.output().expect("run the updater")
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    spawn_once_free(&mut cmd)
+        .expect("run the updater")
+        .wait_with_output()
+        .expect("collect the updater's output")
 }
 
 fn said(out: &Output) -> String {
@@ -389,17 +410,16 @@ fn a_feed_that_redirects_off_its_own_host_is_refused() {
 
 #[cfg(all(unix, not(feature = "http")))]
 fn spawn_server(it: &Installed, endpoint: &str, vault: &Path) -> Child {
-    Command::new(&it.exe)
-        .arg(vault)
+    let mut cmd = Command::new(&it.exe);
+    cmd.arg(vault)
         .env("OBSIDIAN_MCP_UPDATE_ENDPOINT", endpoint)
         .env("HOME", &it.home)
         .env("XDG_DATA_HOME", data_local(&it.home))
         .env("XDG_CACHE_HOME", cache_home(&it.home))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("start the server")
+        .stderr(Stdio::piped());
+    spawn_once_free(&mut cmd).expect("start the server")
 }
 
 #[cfg(all(unix, not(feature = "http")))]
@@ -545,16 +565,15 @@ fn racing_processes_download_the_release_exactly_once() {
 
     let racers: Vec<Child> = (0..3)
         .map(|_| {
-            Command::new(&it.exe)
-                .arg("update")
+            let mut cmd = Command::new(&it.exe);
+            cmd.arg("update")
                 .env("OBSIDIAN_MCP_UPDATE_ENDPOINT", &base)
                 .env("HOME", &it.home)
                 .env("XDG_DATA_HOME", data_local(&it.home))
                 .env("XDG_CACHE_HOME", cache_home(&it.home))
                 .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()
-                .expect("start a racer")
+                .stderr(Stdio::piped());
+            spawn_once_free(&mut cmd).expect("start a racer")
         })
         .collect();
 
