@@ -86,7 +86,6 @@ Other management commands:
 
 ```bash
 npx obsidian-mcp-rs list       # installation status across all clients, and which server version is installed
-npx obsidian-mcp-rs update     # take the latest release now instead of waiting for the daily check
 npx obsidian-mcp-rs uninstall  # interactive removal wizard
 npx obsidian-mcp-rs uninstall claude --dry-run  # preview changes without writing
 ```
@@ -115,28 +114,29 @@ Four things it deliberately will not do:
 
 - **It waits 48 hours after a release ships.** If a release turns out to be broken, that window is when it gets withdrawn — so the bad one never reaches you.
 - **It only ever replaces the copy `install` placed.** A binary from `cargo install`, from a distribution package, or the one `npx` caches belongs to whatever put it there. Those never update themselves.
-- **It never asks the network more than once a day**, no matter how many times your client restarts the server — and a failed check is silent, so an offline or firewalled machine is never slowed down or broken by it.
+- **It asks the network at most once a day per machine**, no matter how many times your client restarts the server — and a failed check is silent, so an offline or firewalled machine is never slowed down or broken by it.
 - **It verifies what it downloads** against the checksum published with the release, and runs the new binary once before installing it. Anything that does not answer with the version it claims is thrown away.
 
-Turning it off, at install time or any time after:
+Turning it off goes through an install, because that is where the answer is recorded:
 
 ```bash
-npx obsidian-mcp-rs@latest install --no-auto-update
+npx obsidian-mcp-rs@latest install claude ~/vault --no-auto-update
 ```
 
-The interactive wizard asks instead of assuming, and offers your current choice as the default. The answer is remembered; `install --auto-update` takes it back. An install that says nothing about auto-update changes nothing about it, so configuring a second client will not switch it back on.
+Name the client and the vault. The bare `install --no-auto-update` starts the interactive wizard, and the wizard only records your answer once you have picked a client — so backing out of it changes nothing. The wizard asks instead of assuming and offers your current choice as the default. The answer is remembered; the same command with `--auto-update` takes it back. An install that says nothing about auto-update changes nothing about it, so configuring a second client will not switch it back on.
 
-To take a release now rather than wait for the check:
+To take a release now rather than wait for the check, run **the installed copy** — `update` acts on the binary that is running it, and the copy in npm's cache is not the one in your configs. `npx obsidian-mcp-rs list` prints the path:
 
 ```bash
-obsidian-mcp-rs update           # take the latest release
-obsidian-mcp-rs update --check   # just say what is available
-obsidian-mcp-rs update --force   # take it even inside the 48-hour hold
+# macOS; see the table above for Linux and Windows
+"$HOME/Library/Application Support/obsidian-mcp-rs/bin/obsidian-mcp-rs" update           # take the latest release
+"$HOME/Library/Application Support/obsidian-mcp-rs/bin/obsidian-mcp-rs" update --check   # just say what is available
+"$HOME/Library/Application Support/obsidian-mcp-rs/bin/obsidian-mcp-rs" update --force   # take it even inside the 48-hour hold
 ```
 
-**What the check sends.** One `GET` to `api.github.com` per day, carrying what any HTTP request carries — your IP address — and a `User-Agent` of `obsidian-mcp-rs/<version>`. An actual update then downloads the binary from `objects.githubusercontent.com`. Nothing about your vaults, your notes, your client or your machine is sent, and nothing identifies you across days beyond what GitHub can infer from an address. It honours `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`. If that is one request too many, `--no-auto-update` stops it entirely.
+**What the check sends.** One `GET` to `api.github.com` per day, carrying what any HTTP request carries — your IP address — and a `User-Agent` of `obsidian-mcp-rs/<version>`. An actual update then downloads the binary from `github.com`, which redirects to `githubusercontent.com`. Nothing about your vaults, your notes, your client or your machine is sent, and nothing identifies you across days beyond what GitHub can infer from an address. It honours `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`. If that is one request too many, `--no-auto-update` stops it entirely.
 
-To go back to an older release, install it — `npx obsidian-mcp-rs@0.7.1 install`. The path in your configs never changes, so nothing needs re-pointing either way. (One exception, and it catches everyone who installed early: a config written before 0.7.0 does not hold that path yet, so none of this reaches it — see [below](#upgrading-from-a-config-written-before-070).)
+To go back to an older release, install it with auto-update off — `npx obsidian-mcp-rs@0.8.1 install claude ~/vault --no-auto-update`. Without that flag the daily check follows `releases/latest` in both directions and puts the newer one back within a day, which is deliberate: withdrawing a bad release means dropping it out of `releases/latest`, and everyone who already took it has to be able to come back down. The path in your configs never changes, so nothing needs re-pointing either way. (One exception, and it catches everyone who installed early: a config written before 0.7.0 does not hold that path yet, so none of this reaches it — see [below](#upgrading-from-a-config-written-before-070).)
 
 `npx obsidian-mcp-rs list` prints where the server is, which version it is, and whether auto-update is on.
 

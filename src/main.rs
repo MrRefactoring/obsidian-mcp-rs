@@ -411,6 +411,7 @@ async fn run_server(vaults: Vec<PathBuf>, no_edit: bool) -> anyhow::Result<()> {
     let handler = ObsidianHandler::with_options(manager, no_edit);
 
     update::announce_installation();
+    update::install_pending();
     update::watch_for_updates();
 
     let transport = (tokio::io::stdin(), tokio::io::stdout());

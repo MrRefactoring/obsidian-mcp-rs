@@ -6,21 +6,20 @@ on:
       - "v*"
 
 permissions:
-  contents: write
-  id-token: write
-  attestations: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
   guard:
-    name: Tag is on master
+    name: Tag is on master and matches the tree
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Refuse to build a tag that is not on master
         run: |
@@ -31,10 +30,39 @@ jobs:
           fi
           echo "$GITHUB_REF_NAME -> $GITHUB_SHA is on master"
 
+      - name: Refuse a tag that disagrees with the version in the tree
+        run: |
+          set -euo pipefail
+          want="${GITHUB_REF_NAME#v}"
+          have="$(sed -n '0,/^version = /s/^version = "\(.*\)"/\1/p' Cargo.toml)"
+          if [ "$want" != "$have" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match Cargo.toml ($have)"
+            exit 1
+          fi
+          for pkg in npm/*/package.json; do
+            v="$(node -p "require('./$pkg').version")"
+            if [ "$v" != "$want" ]; then
+              echo "::error::$pkg is $v, tag is $want"
+              exit 1
+            fi
+          done
+          echo "tag, Cargo.toml and all npm packages agree on $want"
+
+      - name: Refuse to start a release we cannot finish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          [ -n "${CARGO_REGISTRY_TOKEN:-}" ] || { echo "::error::CARGO_REGISTRY_TOKEN is not set"; exit 1; }
+          [ -n "${NPM_TOKEN:-}" ] || { echo "::error::NPM_TOKEN is not set"; exit 1; }
+
   build:
     name: Build (${{ matrix.target }})
     needs: guard
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -70,6 +98,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -103,8 +133,14 @@ jobs:
     name: GitHub Release
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Download all artifacts
         uses: actions/download-artifact@v8
@@ -145,8 +181,13 @@ jobs:
     name: Publish npm packages
     needs: github-release
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@v7
         with:
@@ -210,8 +251,12 @@ jobs:
     name: Publish to crates.io
     needs: github-release
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
@@ -220,7 +265,7 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
           set -euo pipefail
-          version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          version="$(sed -n '0,/^version = /s/^version = "\(.*\)"/\1/p' Cargo.toml)"
           if curl -sfL -A "obsidian-mcp-rs release" \
                "https://crates.io/api/v1/crates/obsidian-mcp-rs/$version" >/dev/null; then
             echo "obsidian-mcp-rs $version is already on crates.io; skipping"

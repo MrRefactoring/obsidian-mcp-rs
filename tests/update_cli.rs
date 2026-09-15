@@ -35,24 +35,37 @@ impl Reply {
     }
 }
 
+/// What the fake feed saw. Shared by every connection, so a test can assert on
+/// "nothing was asked for at all" as well as on how many downloads happened.
+#[derive(Clone, Default)]
+struct Hits {
+    requests: Arc<AtomicUsize>,
+    downloads: Arc<AtomicUsize>,
+    slow_asset: bool,
+}
+
 #[cfg(all(unix, not(feature = "http")))]
 fn serve(routes: HashMap<String, Reply>) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind a loopback port");
     let base = format!("http://{}", listener.local_addr().unwrap());
+    listen(listener, routes, Hits::default());
+    base
+}
 
+/// One accept loop for every fake feed, so the counters handed in here are the
+/// same objects every connection increments.
+fn listen(listener: TcpListener, routes: HashMap<String, Reply>, hits: Hits) {
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(stream) = stream else { continue };
             let routes = routes.clone();
-            let downloads = Arc::new(AtomicUsize::new(0));
-            std::thread::spawn(move || answer(stream, &routes, &downloads));
+            let hits = hits.clone();
+            std::thread::spawn(move || answer(stream, &routes, &hits));
         }
     });
-
-    base
 }
 
-fn answer(mut stream: TcpStream, routes: &HashMap<String, Reply>, downloads: &AtomicUsize) {
+fn answer(mut stream: TcpStream, routes: &HashMap<String, Reply>, hits: &Hits) {
     let mut buf = [0u8; 4096];
     let Ok(n) = stream.read(&mut buf) else { return };
     let request = String::from_utf8_lossy(&buf[..n]);
@@ -63,8 +76,15 @@ fn answer(mut stream: TcpStream, routes: &HashMap<String, Reply>, downloads: &At
         .unwrap_or("/")
         .to_string();
 
+    hits.requests.fetch_add(1, Ordering::SeqCst);
     if path == "/asset" {
-        downloads.fetch_add(1, Ordering::SeqCst);
+        hits.downloads.fetch_add(1, Ordering::SeqCst);
+        if hits.slow_asset {
+            // Hold the winner's download open long enough that the losers are
+            // certainly inside `apply`, so the update lock is what stops them
+            // rather than the race simply not happening.
+            std::thread::sleep(Duration::from_millis(500));
+        }
     }
 
     let reply = routes.get(&path).cloned().unwrap_or(Reply {
@@ -104,13 +124,16 @@ fn replacement_binary() -> Vec<u8> {
 }
 
 fn feed(tag: &str, published: &str, body: &[u8]) -> String {
-    feed_counted(tag, published, body).0
+    feed_counted(tag, published, body, false).0
 }
 
-fn feed_counted(tag: &str, published: &str, body: &[u8]) -> (String, Arc<AtomicUsize>) {
+fn feed_counted(tag: &str, published: &str, body: &[u8], slow_asset: bool) -> (String, Hits) {
     let asset = obsidian_mcp_rs::update::asset_name().expect("this platform publishes a release");
     let checksums = format!("{}  {asset}\n", sha256_hex(body));
-    let downloads = Arc::new(AtomicUsize::new(0));
+    let hits = Hits {
+        slow_asset,
+        ..Hits::default()
+    };
     let base = serve_with(
         &mut HashMap::new(),
         body,
@@ -118,9 +141,9 @@ fn feed_counted(tag: &str, published: &str, body: &[u8]) -> (String, Arc<AtomicU
         &asset,
         tag,
         published,
-        Arc::clone(&downloads),
+        hits.clone(),
     );
-    (base, downloads)
+    (base, hits)
 }
 
 fn serve_with(
@@ -130,7 +153,7 @@ fn serve_with(
     asset: &str,
     tag: &str,
     published: &str,
-    downloads: Arc<AtomicUsize>,
+    hits: Hits,
 ) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind a loopback port");
     let base = format!("http://{}", listener.local_addr().unwrap());
@@ -145,17 +168,7 @@ fn serve_with(
     routes.insert("/asset".to_string(), Reply::ok(body.to_vec()));
     routes.insert("/checksums".to_string(), Reply::ok(checksums.to_string()));
 
-    let table = routes.clone();
-    let counter = Arc::clone(&downloads);
-    std::thread::spawn(move || {
-        for stream in listener.incoming() {
-            let Ok(stream) = stream else { continue };
-            let table = table.clone();
-            let counter = Arc::clone(&counter);
-            std::thread::spawn(move || answer(stream, &table, &counter));
-        }
-    });
-
+    listen(listener, routes.clone(), hits);
     base
 }
 
@@ -195,22 +208,39 @@ fn data_local(home: &Path) -> PathBuf {
     home.join("AppData").join("Local")
 }
 
-#[cfg(not(feature = "http"))]
 #[cfg(target_os = "macos")]
 fn cache_home(home: &Path) -> PathBuf {
     home.join("Library").join("Caches")
 }
 
-#[cfg(not(feature = "http"))]
 #[cfg(all(unix, not(target_os = "macos")))]
 fn cache_home(home: &Path) -> PathBuf {
     home.join(".cache")
 }
 
-#[cfg(not(feature = "http"))]
 #[cfg(windows)]
 fn cache_home(home: &Path) -> PathBuf {
     home.join("AppData").join("Local")
+}
+
+/// Nothing beside the installed copy: the staged download carries the pid of
+/// the run that made it, so a fixed-name check would pass whatever happened.
+#[cfg(all(unix, not(feature = "http")))]
+fn no_leftovers(exe: &Path) -> bool {
+    let (Some(parent), Some(name)) = (exe.parent(), exe.file_name().and_then(|n| n.to_str()))
+    else {
+        return true;
+    };
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return true;
+    };
+    !entries.flatten().any(|entry| {
+        entry
+            .file_name()
+            .to_str()
+            .and_then(|found| found.strip_prefix(name))
+            .is_some_and(|suffix| suffix.starts_with(".download"))
+    })
 }
 
 fn exe_name() -> &'static str {
@@ -248,7 +278,7 @@ fn update(exe: &Path, home: Option<&Path>, endpoint: &str, extra: &[&str]) -> Ou
     if let Some(home) = home {
         cmd.env("HOME", home);
         cmd.env("XDG_DATA_HOME", data_local(home));
-        cmd.env("XDG_CACHE_HOME", home.join(".cache"));
+        cmd.env("XDG_CACHE_HOME", cache_home(home));
     }
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     spawn_once_free(&mut cmd)
@@ -306,15 +336,17 @@ fn an_update_past_the_soak_window_replaces_the_installed_copy() {
         "the swap did not land"
     );
 
-    let reported = Command::new(&it.exe).arg("--version").output().unwrap();
+    let mut reporting = Command::new(&it.exe);
+    reporting.arg("--version").stdout(Stdio::piped());
+    let reported = spawn_once_free(&mut reporting)
+        .expect("run the replacement")
+        .wait_with_output()
+        .expect("collect the replacement's output");
     assert!(
         String::from_utf8_lossy(&reported.stdout).contains(NEW_VERSION),
         "the replacement does not run"
     );
-    assert!(
-        !it.exe.with_extension("download").exists(),
-        "the download was left behind"
-    );
+    assert!(no_leftovers(&it.exe), "the download was left behind");
 }
 
 #[cfg(all(unix, not(feature = "http")))]
@@ -365,7 +397,7 @@ fn a_download_that_does_not_match_its_checksum_is_thrown_away() {
         &asset,
         "v9.9.9",
         "2020-01-01T00:00:00Z",
-        Arc::new(AtomicUsize::new(0)),
+        Hits::default(),
     );
 
     let out = update(&it.exe, Some(&it.home), &base, &[]);
@@ -381,7 +413,7 @@ fn a_download_that_does_not_match_its_checksum_is_thrown_away() {
         before,
         "it installed anyway"
     );
-    assert!(!it.exe.with_extension("download").exists());
+    assert!(no_leftovers(&it.exe));
 }
 
 #[cfg(all(unix, not(feature = "http")))]
@@ -435,9 +467,11 @@ fn wait_until(deadline: Duration, mut done: impl FnMut() -> bool) -> bool {
 }
 
 #[cfg(all(unix, not(feature = "http")))]
-fn stop(mut server: Child) {
+fn stop(mut server: Child) -> Output {
     drop(server.stdin.take());
-    let _ = server.wait();
+    server
+        .wait_with_output()
+        .expect("collect the server output")
 }
 
 #[cfg(all(unix, not(feature = "http")))]
@@ -452,11 +486,20 @@ fn a_running_server_replaces_itself_without_being_asked() {
     let replaced = wait_until(Duration::from_secs(20), || {
         std::fs::read(&it.exe).is_ok_and(|b| b == body)
     });
-    stop(server);
+    let out = stop(server);
 
     assert!(
         replaced,
         "the server did not update itself in the background"
+    );
+
+    // stdout carries the MCP JSON-RPC stream and nothing else. This is the only
+    // test where the update path runs to completion, so it is the only place a
+    // stray `println!` in `apply` or `smoke_test` would ever be caught.
+    assert!(
+        out.stdout.is_empty(),
+        "the update path wrote to stdout: {:?}",
+        String::from_utf8_lossy(&out.stdout)
     );
 
     let state = cache_home(&it.home)
@@ -480,19 +523,26 @@ fn a_server_that_was_opted_out_leaves_itself_alone() {
     )
     .unwrap();
 
-    let base = feed("v9.9.9", "2020-01-01T00:00:00Z", &body);
+    let (base, hits) = feed_counted("v9.9.9", "2020-01-01T00:00:00Z", &body, false);
     let vault = tempfile::tempdir().unwrap();
 
     let server = spawn_server(&it, &base, vault.path());
-    let state = cache_home(&it.home)
-        .join("obsidian-mcp-rs")
-        .join("update-check.json");
-    let looked = wait_until(Duration::from_secs(5), || state.exists());
+    // Wait on the same budget the positive test gets, and measure the thing the
+    // name promises: a request that never happened, not a file that is not there
+    // yet because a loaded runner was slow.
+    let looked = wait_until(Duration::from_secs(20), || {
+        hits.requests.load(Ordering::SeqCst) > 0
+    });
     stop(server);
 
     assert!(
         !looked,
         "opting out should stop the check before it reaches the network"
+    );
+    assert_eq!(
+        hits.requests.load(Ordering::SeqCst),
+        0,
+        "an opted-out server still asked the feed for something"
     );
     assert_eq!(std::fs::read(&it.exe).unwrap(), before, "it updated anyway");
 }
@@ -507,14 +557,18 @@ fn configuring_another_client_does_not_switch_auto_update_back_on() {
         .join("no-auto-update");
 
     let install = |extra: &[&str]| {
-        Command::new(&it.exe)
-            .args(["install", "claude-code", "--global", "--force"])
+        let mut cmd = Command::new(&it.exe);
+        cmd.args(["install", "claude-code", "--global", "--force"])
             .args(extra)
             .arg(vault.path())
             .env("HOME", &it.home)
             .env("XDG_DATA_HOME", data_local(&it.home))
-            .output()
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        spawn_once_free(&mut cmd)
             .expect("run the installer")
+            .wait_with_output()
+            .expect("collect the installer's output")
     };
 
     assert!(install(&["--no-auto-update"]).status.success());
@@ -561,7 +615,7 @@ fn force_takes_a_release_that_is_still_inside_the_hold() {
 fn racing_processes_download_the_release_exactly_once() {
     let body = replacement_binary();
     let it = install_into_a_temporary_home();
-    let (base, downloads) = feed_counted("v9.9.9", "2020-01-01T00:00:00Z", &body);
+    let (base, hits) = feed_counted("v9.9.9", "2020-01-01T00:00:00Z", &body, true);
 
     let racers: Vec<Child> = (0..3)
         .map(|_| {
@@ -589,9 +643,16 @@ fn racing_processes_download_the_release_exactly_once() {
 
     assert_eq!(std::fs::read(&it.exe).unwrap(), body, "nobody applied it");
     assert_eq!(
-        downloads.load(Ordering::SeqCst),
+        hits.downloads.load(Ordering::SeqCst),
         1,
         "the lock did not stop the losers from downloading too"
+    );
+    // All three reached the decision, so the single download is the lock's doing
+    // and not three runs that happened to be sequential.
+    assert_eq!(
+        hits.requests.load(Ordering::SeqCst),
+        5,
+        "the racers did not all reach the feed"
     );
 }
 

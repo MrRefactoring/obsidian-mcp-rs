@@ -10,7 +10,12 @@ pub const ENDPOINT_ENV: &str = "OBSIDIAN_MCP_UPDATE_ENDPOINT";
 
 const MAX_REDIRECTS: usize = 5;
 const MAX_DOWNLOAD_BYTES: u64 = 64 * 1024 * 1024;
+
+/// `timeout_global` in ureq is end-to-end, body included. Thirty seconds is
+/// generous for a JSON feed and impossible for a 7 MB binary on a slow link,
+/// so the download gets its own budget.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(600);
 
 #[derive(Debug, Clone)]
 pub struct Asset {
@@ -88,7 +93,7 @@ impl Allow {
                 if !url.starts_with("https://") {
                     return false;
                 }
-                let host = authority.split(':').next().unwrap_or(authority);
+                let host = host_of(authority).to_ascii_lowercase();
                 host == "github.com"
                     || host == "api.github.com"
                     || host.ends_with(".github.com")
@@ -97,6 +102,24 @@ impl Allow {
             Self::Only(expected) => authority_of(url).is_some_and(|a| a == expected),
         }
     }
+}
+
+fn host_of(authority: &str) -> &str {
+    match authority.strip_prefix('[') {
+        Some(rest) => rest.split(']').next().unwrap_or(rest),
+        None => authority.split(':').next().unwrap_or(authority),
+    }
+}
+
+/// The endpoint override exists for the integration tests, which serve a fake
+/// release feed from a `TcpListener`. It is reachable in a release build too —
+/// an `env` entry in a client config, a shell profile, a launchd plist — and it
+/// replaces the GitHub allowlist wholesale, so anything but loopback is ignored.
+/// Otherwise one such entry redirects the updater to a host that supplies both
+/// the binary and the checksum it is verified against.
+fn is_loopback(authority: &str) -> bool {
+    let host = host_of(authority);
+    host == "127.0.0.1" || host == "::1" || host == "localhost"
 }
 
 fn authority_of(url: &str) -> Option<&str> {
@@ -116,6 +139,18 @@ pub struct Source {
     latest_url: String,
     allow: Allow,
     agent: ureq::Agent,
+    downloader: ureq::Agent,
+}
+
+fn agent_with(timeout: Duration) -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .timeout_global(Some(timeout))
+        .max_redirects(0)
+        .max_redirects_will_error(false)
+        .http_status_as_error(false)
+        .user_agent(concat!("obsidian-mcp-rs/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .new_agent()
 }
 
 impl Source {
@@ -127,46 +162,42 @@ impl Source {
         match std::env::var(ENDPOINT_ENV) {
             Ok(base) if !base.trim().is_empty() => {
                 let base = base.trim().trim_end_matches('/').to_string();
-                let allow = authority_of(&base)
-                    .map(|a| Allow::Only(a.to_string()))
-                    .unwrap_or(Allow::GitHub);
-                Self::new(format!("{base}/releases/latest"), allow)
+                match authority_of(&base).filter(|a| is_loopback(a)) {
+                    Some(authority) => {
+                        let allow = Allow::Only(authority.to_string());
+                        Self::new(format!("{base}/releases/latest"), allow)
+                    }
+                    None => Self::github(),
+                }
             }
             _ => Self::github(),
         }
     }
 
     fn new(latest_url: String, allow: Allow) -> Self {
-        let agent = ureq::Agent::config_builder()
-            .timeout_global(Some(REQUEST_TIMEOUT))
-            .max_redirects(0)
-            .max_redirects_will_error(false)
-            .http_status_as_error(false)
-            .user_agent(concat!("obsidian-mcp-rs/", env!("CARGO_PKG_VERSION")))
-            .build()
-            .new_agent();
         Self {
             latest_url,
             allow,
-            agent,
+            agent: agent_with(REQUEST_TIMEOUT),
+            downloader: agent_with(DOWNLOAD_TIMEOUT),
         }
     }
 
     pub fn latest(&self) -> Result<Release> {
-        let body = self.get(&self.latest_url)?;
+        let body = self.get(&self.agent, &self.latest_url)?;
         let text = String::from_utf8(body).context("the release feed is not UTF-8")?;
         Release::parse(&text)
     }
 
     pub fn download(&self, url: &str) -> Result<Vec<u8>> {
-        self.get(url)
+        self.get(&self.downloader, url)
     }
 
     pub fn text(&self, url: &str) -> Result<String> {
-        String::from_utf8(self.get(url)?).context("expected a text response")
+        String::from_utf8(self.get(&self.agent, url)?).context("expected a text response")
     }
 
-    fn get(&self, url: &str) -> Result<Vec<u8>> {
+    fn get(&self, agent: &ureq::Agent, url: &str) -> Result<Vec<u8>> {
         let mut url = url.to_string();
 
         for _ in 0..=MAX_REDIRECTS {
@@ -174,8 +205,7 @@ impl Source {
                 bail!("refusing to fetch {url}: not an address this updater trusts");
             }
 
-            let mut response = self
-                .agent
+            let mut response = agent
                 .get(&url)
                 .call()
                 .with_context(|| format!("could not reach {url}"))?;
@@ -253,6 +283,32 @@ mod tests {
             "",
         ] {
             assert!(!allow.permits(url), "accepted {url}");
+        }
+    }
+
+    #[test]
+    fn the_github_allowlist_is_case_insensitive_about_the_host() {
+        let allow = Allow::GitHub;
+        for url in [
+            "https://API.GitHub.com/repos/x/y/releases/latest",
+            "https://Objects.GitHubUserContent.com/blob/abc",
+        ] {
+            assert!(allow.permits(url), "rejected {url}");
+        }
+    }
+
+    #[test]
+    fn only_a_loopback_endpoint_can_replace_the_allowlist() {
+        for authority in ["127.0.0.1:8080", "localhost:1", "[::1]:9", "127.0.0.1"] {
+            assert!(is_loopback(authority), "rejected {authority}");
+        }
+        for authority in [
+            "evil.example.com",
+            "evil.example.com:80",
+            "127.0.0.1.evil.test",
+            "localhost.evil.test:8080",
+        ] {
+            assert!(!is_loopback(authority), "accepted {authority}");
         }
     }
 

@@ -279,7 +279,7 @@ fn report_installed_binary() {
         println!(
             "  {} {}",
             style("server:").bold(),
-            style("not installed yet — run `obsidian-mcp-rs install`").dim()
+            style("not installed yet — run `npx obsidian-mcp-rs install`").dim()
         );
         println!();
         return;
@@ -301,7 +301,7 @@ fn report_installed_binary() {
         if update::auto_update_enabled() {
             style("on").green().to_string()
         } else {
-            style("off — re-run `install` to turn it back on")
+            style("off — `install --auto-update` turns it back on")
                 .yellow()
                 .to_string()
         }
@@ -315,12 +315,12 @@ fn report_installed_binary() {
                 update::SELF_UPDATING_SINCE
             );
         }
-        report_drift(installed);
+        report_drift(installed, &path);
     }
     println!();
 }
 
-fn report_drift(installed: update::Version) {
+fn report_drift(installed: update::Version, path: &std::path::Path) {
     let package = update::Version::current();
     match installed.cmp(&package) {
         Ordering::Less => println!(
@@ -340,7 +340,7 @@ fn report_drift(installed: update::Version) {
         println!(
             "  {} latest release seen: v{latest} — {} takes it now",
             style("→").cyan(),
-            style("`obsidian-mcp-rs update`").cyan()
+            style(format!("`{} update`", display_path(path))).cyan()
         );
     }
 }
@@ -532,16 +532,6 @@ fn interactive_uninstall(dry_run: bool, force: bool) -> Result<()> {
 
 // ── Per-target helpers ────────────────────────────────────────────────────────
 
-/// Place the binary, and describe how a config should invoke it.
-///
-/// Configs get an absolute path to a copy this installer owns, never `npx`.
-/// That is what removes the npm process chain, survives package updates without
-/// the config going stale, and makes the server a direct child of the client so
-/// it notices when the client dies. See `binary`.
-///
-/// A dry run copies nothing but still reports the path a real run would write,
-/// because a preview that shows something other than what would happen is worse
-/// than no preview.
 /// What this `install` run should do about auto-update.
 ///
 /// `Keep` is the default for a non-interactive run, and it is load-bearing:
@@ -581,6 +571,16 @@ fn settle_consent(choice: Consent) -> Result<bool> {
     Ok(enabled)
 }
 
+/// Place the binary, and describe how a config should invoke it.
+///
+/// Configs get an absolute path to a copy this installer owns, never `npx`.
+/// That is what removes the npm process chain, survives package updates without
+/// the config going stale, and makes the server a direct child of the client so
+/// it notices when the client dies. See `binary`.
+///
+/// A dry run copies nothing but still reports the path a real run would write,
+/// because a preview that shows something other than what would happen is worse
+/// than no preview.
 fn prepare_launch(
     vaults: &[PathBuf],
     no_edit: bool,

@@ -9,7 +9,7 @@
 - Ships as a single static binary — no runtime required
 - stdio by default; Streamable HTTP (`--http`) available via the optional `http` cargo feature
 - Distributed as an npm package (`obsidian-mcp-rs`) with platform-specific binaries via optional dependencies, and on crates.io
-- Installs itself into 14 AI-client configs and keeps itself updated from GitHub Releases
+- Installs itself into 16 AI-client configs and keeps itself updated from GitHub Releases
 
 ## Tools
 
@@ -35,7 +35,7 @@
 npx -y obsidian-mcp-rs install claude-code /path/to/vault
 ```
 
-`install` copies the server to a fixed per-user path and writes that absolute path into the client config. Node is not in the runtime path afterwards, and the configured path never changes. The installed copy keeps itself up to date: it checks for a new release at most once a day and replaces itself 48 hours after one ships. `install --no-auto-update` turns that off; `obsidian-mcp-rs update` takes a release immediately.
+`install` copies the server to a fixed per-user path and writes that absolute path into the client config. Node is not in the runtime path afterwards, and the configured path never changes. The installed copy keeps itself up to date: it checks for a new release at most once a day and replaces itself 48 hours after one ships. `install <client> <vault> --no-auto-update` turns that off — the flag is recorded during an install, so a client has to be named. Running the installed copy (the absolute path `list` prints) with `update` takes a release immediately; `npx obsidian-mcp-rs update` does not, because `update` acts on the binary running it and the npm cache copy is not the one in your configs.
 
 Configs are written for you rather than by hand — an entry that runs `npx` starts three processes per client, of which a client terminating "the server" kills only the first.
 

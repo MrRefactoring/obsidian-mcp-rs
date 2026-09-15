@@ -14,14 +14,14 @@ use sha2::{Digest, Sha256};
 use crate::install::binary;
 use crate::vault::lock;
 
-pub use consent::{
+pub(crate) use consent::{
     forget as forget_consent, is_enabled as auto_update_enabled, set as set_consent,
 };
-pub use source::{Release, Source};
+pub(crate) use source::{Release, Source};
 pub use target::asset_name;
-pub use version::Version;
+pub(crate) use version::Version;
 
-pub const SOAK: TimeDelta = match TimeDelta::try_hours(48) {
+pub(crate) const SOAK: TimeDelta = match TimeDelta::try_hours(48) {
     Some(d) => d,
     None => panic!("48 hours is a valid duration"),
 };
@@ -50,7 +50,7 @@ fn matches_published_builds() -> bool {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Decision {
+pub(crate) enum Decision {
     UpToDate,
     Unreadable {
         tag: String,
@@ -71,7 +71,7 @@ fn forced(decision: Decision, force: bool) -> Decision {
     }
 }
 
-pub fn decide(current: Version, release: &Release, now: DateTime<Utc>) -> Decision {
+pub(crate) fn decide(current: Version, release: &Release, now: DateTime<Utc>) -> Decision {
     let Some(to) = Version::parse(&release.tag) else {
         return Decision::Unreadable {
             tag: release.tag.clone(),
@@ -90,13 +90,13 @@ pub fn decide(current: Version, release: &Release, now: DateTime<Utc>) -> Decisi
 /// The first release whose binary can update itself. Anything older has to be
 /// replaced by hand once, because the copy doing the replacing is the one that
 /// does not know how.
-pub const SELF_UPDATING_SINCE: &str = "0.8.0";
+pub(crate) const SELF_UPDATING_SINCE: &str = "0.8.0";
 
-pub fn predates_self_update(installed: Version) -> bool {
+pub(crate) fn predates_self_update(installed: Version) -> bool {
     Version::parse(SELF_UPDATING_SINCE).is_some_and(|first| installed < first)
 }
 
-pub fn last_seen_release() -> Option<Version> {
+pub(crate) fn last_seen_release() -> Option<Version> {
     state::read()?.latest
 }
 
@@ -141,18 +141,54 @@ fn check_and_apply() -> Result<Option<Version>> {
         return Ok(None);
     }
 
+    // The stamp goes down before the request, not after: duplicate servers
+    // launched together would otherwise all read the old stamp during the
+    // round-trip and each hit the network, which is what the once-a-day
+    // promise exists to prevent.
+    state::record(state::read().and_then(|c| c.latest));
     let source = Source::from_env();
-    let fetched = source.latest();
-    state::record(fetched.as_ref().ok().and_then(|r| Version::parse(&r.tag)));
-    let release = fetched?;
+    let release = source.latest()?;
+    state::record(Version::parse(&release.tag));
 
     match decide(Version::current(), &release, now) {
         Decision::Take { to } => {
-            apply(&source, &release, to, &dest)?;
+            apply(&source, &release, to, &dest, Swap::AtNextStart)?;
             Ok(Some(to))
         }
         _ => Ok(None),
     }
+}
+
+/// When the running binary may be replaced.
+///
+/// A background update happens while the server is answering a client, and on
+/// Windows `self_replace` renames the executable aside, copies the new one in
+/// and renames it back. `parent::watch_parent` calls `std::process::exit(0)`
+/// the moment the client dies, which cannot be caught and does not let the
+/// thread finish — land in that window and the path every client config names
+/// is simply empty, with nothing left to retry from. So the background path
+/// leaves a verified file for the next start, where nothing is being served.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Swap {
+    Now,
+    AtNextStart,
+}
+
+/// Put a release staged by an earlier run into place, before anything is served.
+pub fn install_pending() {
+    let Ok(dest) = installed_copy() else {
+        return;
+    };
+    let pending = pending_path(&dest);
+    if !pending.exists() {
+        return;
+    }
+    let _guard = update_guard();
+    match self_replace::self_replace(&pending) {
+        Ok(()) => tracing::info!("installed the release staged by an earlier run"),
+        Err(e) => tracing::debug!(error = %e, "could not install the staged release"),
+    }
+    let _ = std::fs::remove_file(&pending);
 }
 
 pub fn run(args: UpdateArgs) -> Result<()> {
@@ -217,7 +253,7 @@ pub fn run(args: UpdateArgs) -> Result<()> {
             );
         }
         Decision::Take { to } => {
-            apply(&source, &release, to, &dest)?;
+            apply(&source, &release, to, &dest, Swap::Now)?;
             println!(
                 "  {} updated v{current} → {}",
                 style("✓").green().bold(),
@@ -247,15 +283,15 @@ fn installed_copy() -> std::result::Result<PathBuf, String> {
     if !binary::is_same_file(&running, &dest) {
         return Err(format!(
             "this is not the installed copy ({}), so it is not ours to replace — \
-             run `obsidian-mcp-rs install` to manage it from here",
+             run `npx obsidian-mcp-rs install` to manage it from here",
             running.display()
         ));
     }
     Ok(dest)
 }
 
-fn apply(source: &Source, release: &Release, to: Version, dest: &Path) -> Result<()> {
-    let _guard = lock_path().and_then(|p| lock::lock_exclusive(&p));
+fn apply(source: &Source, release: &Release, to: Version, dest: &Path, swap: Swap) -> Result<()> {
+    let _guard = update_guard();
 
     if binary::installed_version()
         .as_deref()
@@ -291,6 +327,13 @@ fn apply(source: &Source, release: &Release, to: Version, dest: &Path) -> Result
     if let Err(e) = smoke_test(&staged, to) {
         let _ = std::fs::remove_file(&staged);
         return Err(e);
+    }
+
+    if swap == Swap::AtNextStart && cfg!(windows) {
+        let pending = pending_path(dest);
+        let _ = std::fs::remove_file(&pending);
+        return std::fs::rename(&staged, &pending)
+            .with_context(|| format!("could not stage {}", pending.display()));
     }
 
     let outcome = self_replace::self_replace(&staged)
@@ -344,14 +387,43 @@ fn sha256_hex(bytes: &[u8]) -> String {
         })
 }
 
+/// Per-process, so that two updaters running without the lock — a missing or
+/// unwritable cache directory degrades it to nothing — cannot interleave their
+/// writes into one file and hand each other a spliced binary.
 fn download_path(dest: &Path) -> PathBuf {
     let mut name = dest.as_os_str().to_owned();
-    name.push(".download");
+    name.push(format!(".download.{}", std::process::id()));
+    PathBuf::from(name)
+}
+
+fn pending_path(dest: &Path) -> PathBuf {
+    let mut name = dest.as_os_str().to_owned();
+    name.push(".pending");
     PathBuf::from(name)
 }
 
 fn lock_path() -> Option<PathBuf> {
     dirs::cache_dir().map(|d| d.join("obsidian-mcp-rs").join("update.lock"))
+}
+
+fn update_guard() -> Option<std::fs::File> {
+    match lock_path() {
+        Some(path) => {
+            let guard = lock::lock_exclusive(&path);
+            if guard.is_none() {
+                tracing::warn!(
+                    path = %path.display(),
+                    "could not take the update lock; another server updating at the same \
+                     time could undo this one"
+                );
+            }
+            guard
+        }
+        None => {
+            tracing::warn!("no cache directory for the update lock; updating without it");
+            None
+        }
+    }
 }
 
 #[cfg(unix)]

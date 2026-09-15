@@ -16,7 +16,7 @@ The server used to sit at whatever version you last ran `install` from, and noth
 
   Downloads are checked against the `checksums.txt` published with the release and the new binary is run once with `--version` before it is installed; anything that answers with a version other than the one it claimed is discarded and nothing is replaced. Redirects are followed only within `github.com` and `githubusercontent.com`. The checksum is an integrity check and is described as one — it and the binary arrive over the same connection from the same origin, so it catches a corrupted transfer, not an adversary. What stands between a compromised release and your vault is the 48 hours.
 
-  Concurrency goes through an advisory lock of its own rather than the one that serialises vault writes, which would otherwise stall every write in every server for the length of a download; the second of two racing processes re-reads the installed version after taking it and does nothing. Duplicate servers launched together share one check, because the once-a-day stamp is on disk rather than in the process.
+  Concurrency goes through an advisory lock of its own rather than the one that serialises vault writes, which would otherwise stall every write in every server for the length of a download; the second of two racing processes re-reads the installed version after taking it and does nothing. Duplicate servers launched together share one check, because the once-a-day stamp is on disk rather than in the process and is written before the request goes out rather than after it comes back.
 
 - **`obsidian-mcp-rs update`**, for taking a release now instead of waiting — and `update --check` for asking without taking. This is also the whole engine the background check runs on, so it is the same code path either way.
 
@@ -38,7 +38,9 @@ The server used to sit at whatever version you last ran `install` from, and noth
 
 - **A partial release now fails instead of shipping.** Platform packages published with `|| true`, so a failed publish produced a release in which the wrapper claimed a version one of its platform packages did not have, silently. A missing build artifact fails the job, a failed publish fails the job, and re-running a partly-completed release skips what is already on the registry rather than ignoring errors.
 
-- **The release tag must be reachable from `master`.** Tags are not covered by branch protection, so a token with `contents: write` could push a tag at any commit — including one never proposed to the repository — and the release workflow would build and publish it.
+- **The release tag must be reachable from `master`, and must agree with the version in the tree.** Tags are not covered by branch protection, so a token with `contents: write` could push a tag at any commit — including one never proposed to the repository — and the release workflow would build and publish it. The guard catches that by accident and a mistyped or unbumped tag on purpose: a `v0.8.0` tag on a tree that still says `0.7.1` used to produce a complete, green release whose binaries answered with the old version, which every installed copy would then download and reject once a day forever.
+
+  It is worth being exact about what the guard is and is not. It is a job in a workflow that is read from the tree of the tag being built, so anyone who can create a tag can create one on a commit where the guard has been deleted. Against that attacker it does nothing, and it is not the reason there is no release signing. What actually stands between a compromised release and a vault is the 48-hour hold and the ability to withdraw a release; a ruleset restricting who may create `refs/tags/v*` is the barrier that belongs in the repository settings rather than in this file.
 
 - **Published to crates.io**, which the README has recommended for some time without it being true, and build provenance attestations are now produced for every release asset.
 
