@@ -357,3 +357,175 @@ fn talk_with_log(
     }
     by_id
 }
+
+const NEW_LIFECYCLE_META: &str = "io.modelcontextprotocol/protocolVersion";
+
+fn discover_meta() -> Value {
+    json!({
+        NEW_LIFECYCLE_META: "2026-07-28",
+        "io.modelcontextprotocol/clientCapabilities": {}
+    })
+}
+
+#[test]
+fn a_version_with_a_handshake_negotiates_to_itself() {
+    let (vault, _) = vault_with_a_note();
+
+    for requested in ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"] {
+        let msgs = vec![json!({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {
+                "protocolVersion": requested,
+                "capabilities": {},
+                "clientInfo": {"name": "negotiation-it", "version": "0"}
+            }
+        })];
+
+        let agreed = talk(&[], vault.path(), &msgs)
+            .get(&1)
+            .and_then(|r| r.pointer("/result/protocolVersion"))
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| panic!("no protocolVersion in the answer to {requested}"))
+            .to_string();
+
+        assert_eq!(agreed, requested, "{requested} was answered with {agreed}");
+    }
+}
+
+#[test]
+fn a_version_without_a_handshake_falls_back_over_initialize() {
+    let (vault, _) = vault_with_a_note();
+
+    for requested in ["2026-07-28", "2099-01-01"] {
+        let msgs = vec![json!({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {
+                "protocolVersion": requested,
+                "capabilities": {},
+                "clientInfo": {"name": "negotiation-it", "version": "0"}
+            }
+        })];
+
+        let answer = talk(&[], vault.path(), &msgs);
+        let init = answer.get(&1).expect("no response to initialize");
+        assert!(init.get("result").is_some(), "initialize errored: {init}");
+
+        let agreed = init
+            .pointer("/result/protocolVersion")
+            .and_then(Value::as_str)
+            .expect("no protocolVersion in the initialize result");
+
+        assert_eq!(
+            agreed, "2025-11-25",
+            "{requested} should fall back to the newest version with a handshake"
+        );
+    }
+}
+
+#[test]
+fn a_client_on_the_new_lifecycle_discovers_and_calls_tools() {
+    let (vault, vault_name) = vault_with_a_note();
+    let meta = discover_meta();
+
+    let msgs = vec![
+        json!({
+            "jsonrpc": "2.0", "id": 1, "method": "server/discover",
+            "params": {"_meta": meta}
+        }),
+        json!({
+            "jsonrpc": "2.0", "id": 2, "method": "tools/list",
+            "params": {"_meta": meta}
+        }),
+        json!({
+            "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+            "params": {
+                "name": "read-note",
+                "arguments": {"vault": vault_name, "filename": "hello"},
+                "_meta": meta
+            }
+        }),
+    ];
+
+    let by_id = talk(&[], vault.path(), &msgs);
+
+    let discover = by_id.get(&1).expect("no response to server/discover");
+    assert!(
+        discover.get("result").is_some(),
+        "discover errored: {discover}"
+    );
+
+    let supported: Vec<&str> = discover
+        .pointer("/result/supportedVersions")
+        .and_then(Value::as_array)
+        .expect("no supportedVersions in the discover result")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(
+        supported.contains(&"2026-07-28"),
+        "discover does not offer 2026-07-28: {supported:?}"
+    );
+
+    assert!(
+        discover
+            .pointer("/result/capabilities/tools")
+            .is_some_and(|t| t.is_object()),
+        "discover does not advertise the tools capability: {discover}"
+    );
+
+    assert_eq!(
+        discover.pointer("/result/_meta/io.modelcontextprotocol~1serverInfo/name"),
+        Some(&json!(env!("CARGO_PKG_NAME"))),
+        "discover does not identify this server: {discover}"
+    );
+
+    assert_eq!(tool_names(&by_id).len(), 15);
+
+    let text = by_id
+        .get(&3)
+        .and_then(|r| r.pointer("/result/content/0/text"))
+        .and_then(Value::as_str)
+        .expect("no text content in the read-note response");
+    assert!(text.contains("hi there"), "unexpected note content: {text}");
+}
+
+#[test]
+fn a_refused_handshake_still_keeps_stdout_to_protocol() {
+    let (vault, _) = vault_with_a_note();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_obsidian-mcp-rs"))
+        .arg("--log-file")
+        .arg("-")
+        .arg(vault.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn server binary");
+    {
+        let mut stdin = child.stdin.take().unwrap();
+        let request = json!({
+            "jsonrpc": "2.0", "id": 1, "method": "server/discover", "params": {}
+        });
+        writeln!(stdin, "{}", serde_json::to_string(&request).unwrap()).unwrap();
+    }
+    let output = child.wait_with_output().expect("server did not exit");
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let lines: Vec<&str> = stdout.lines().filter(|l| !l.trim().is_empty()).collect();
+    assert_eq!(lines.len(), 1, "unexpected stdout: {stdout:?}");
+
+    let answer: Value = serde_json::from_str(lines[0])
+        .unwrap_or_else(|e| panic!("non-JSON line on stdout: {:?} ({e})", lines[0]));
+    assert_eq!(
+        answer.pointer("/error/code").and_then(Value::as_i64),
+        Some(-32602),
+        "unexpected answer: {answer}"
+    );
+
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("initialized request"),
+        "the diagnosis did not reach stderr: {stderr:?}"
+    );
+}
