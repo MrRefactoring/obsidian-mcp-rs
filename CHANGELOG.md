@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.8.0] - 2026-09-14
+## [0.8.0] - 2026-09-15
 
 The server used to sit at whatever version you last ran `install` from, and nothing said so out loud. It now keeps itself current.
 
@@ -43,6 +43,12 @@ The server used to sit at whatever version you last ran `install` from, and noth
   It is worth being exact about what the guard is and is not. It is a job in a workflow that is read from the tree of the tag being built, so anyone who can create a tag can create one on a commit where the guard has been deleted. Against that attacker it does nothing, and it is not the reason there is no release signing. What actually stands between a compromised release and a vault is the 48-hour hold and the ability to withdraw a release; a ruleset restricting who may create `refs/tags/v*` is the barrier that belongs in the repository settings rather than in this file.
 
 - **Published to crates.io**, which the README has recommended for some time without it being true, and build provenance attestations are now produced for every release asset.
+
+- **Upgraded rmcp 2.2 → 3.3.** The server now offers every protocol revision the SDK knows, 2026-07-28 included, and answers `server/discover` for clients that drive the new lifecycle. Clients on 2024-11-05, 2025-03-26, 2025-06-18 or 2025-11-25 keep negotiating exactly what they ask for; `tools/list` is unchanged at 26,255 bytes over the handshake.
+
+  Worth recording, because it is not what it looks like: `initialize` *cannot* agree on 2026-07-28. That revision replaced the handshake with per-request metadata, so the SDK answers a client naming it with the newest revision that still has one. Advertising it from `get_info` compiles, does nothing, and is silently overwritten during negotiation — the working path is `server/discover`, and it needed no code at all. Four tests now hold all of this down. No MSRV bump: rmcp 3 declares the same 1.88 this crate does.
+
+- **Dependencies refreshed**, including a yanked `chacha20` that had reached the tree through rmcp and that `cargo audit` reports as a warning it exits zero on. `dirs` 6 → 7 covers one change, `preference_dir` moving to RoamingAppData on Windows, which nothing here calls — `data_local_dir`, which decides where the installed binary lives, is untouched. On the npm side vitest moved to 5 with its coverage provider, and TypeScript to 7, whose emit is byte-identical to what 6 produced.
 
 ### Fixed
 
