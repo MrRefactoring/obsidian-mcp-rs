@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.8.0] - 2026-09-15
+## [0.8.0] - 2026-10-23
 
 The server used to sit at whatever version you last ran `install` from, and nothing said so out loud. It now keeps itself current.
 
@@ -44,13 +44,15 @@ The server used to sit at whatever version you last ran `install` from, and noth
 
 - **Published to crates.io**, which the README has recommended for some time without it being true, and build provenance attestations are now produced for every release asset.
 
-- **Upgraded rmcp 2.2 → 3.3.** The server now offers every protocol revision the SDK knows, 2026-07-28 included, and answers `server/discover` for clients that drive the new lifecycle. Clients on 2024-11-05, 2025-03-26, 2025-06-18 or 2025-11-25 keep negotiating exactly what they ask for; `tools/list` is unchanged at 26,255 bytes over the handshake.
+- **Upgraded rmcp 2.2 → 3.7.** The server now offers every protocol revision the SDK knows, 2026-07-28 included, and answers `server/discover` for clients that drive the new lifecycle. Clients on 2024-11-05, 2025-03-26, 2025-06-18 or 2025-11-25 keep negotiating exactly what they ask for; `tools/list` is unchanged at 26,255 bytes over the handshake.
 
   Worth recording, because it is not what it looks like: `initialize` *cannot* agree on 2026-07-28. That revision replaced the handshake with per-request metadata, so the SDK answers a client naming it with the newest revision that still has one. Advertising it from `get_info` compiles, does nothing, and is silently overwritten during negotiation — the working path is `server/discover`, and it needed no code at all. Four tests now hold all of this down. No MSRV bump: rmcp 3 declares the same 1.88 this crate does.
 
-- **Dependencies refreshed**, including a yanked `chacha20` that had reached the tree through rmcp and that `cargo audit` reports as a warning it exits zero on. `dirs` 6 → 7 covers one change, `preference_dir` moving to RoamingAppData on Windows, which nothing here calls — `data_local_dir`, which decides where the installed binary lives, is untouched. On the npm side vitest moved to 5 with its coverage provider, and TypeScript to 7, whose emit is byte-identical to what 6 produced.
+- **Обновлены прямые и транзитивные зависимости Rust и npm.** Перед выпуском включены `jsonc-parser 0.34`, `tokio 1.54.1`, `ureq 3.5`, `schemars 1.2.3`, `sha2 0.11.1`, Vitest и его coverage provider `5.0.5`, TypeScript `7.0.2`. Устаревший псевдоним `ServerInfo` заменён на `ServerConfig`, как требует новый SDK. Минимальные версии Rust 1.88 и Node.js 22 сохранены; `@types/node` обновлён до `22.20.5`, соответствующей поддерживаемому runtime. `dirs` обновлён с 6 до 7; используемый для установки бинаря `data_local_dir` не изменился.
 
 ### Fixed
+
+- **Устранены шесть замечаний безопасности TLS и проблема I/O safety в Tokio.** В lockfile включены `rustls 0.23.46`, `rustls-webpki 0.103.16`, `webpki-roots 1.0.11` и `tokio 1.54.1`. Также удалена отозванная версия `chacha20`, попадавшая в дерево через rmcp.
 
 - **Both READMEs claimed the parent-liveness watch did not cover Windows.** It has since it was written: the Unix side polls `getppid`, the Windows side waits on a handle to the parent process object.
 

@@ -1,6 +1,6 @@
 [package]
 name = "obsidian-mcp-rs"
-version = "0.7.1"
+version = "0.8.0"
 edition = "2024"
 rust-version = "1.88"
 authors = ["Vladislav Tupikin"]
@@ -14,7 +14,7 @@ categories = ["command-line-utilities", "filesystem"]
 exclude = ["/npm", "/assets", "/scripts", "/.github"]
 
 [dependencies]
-rmcp = { version = "3.3", features = ["server", "transport-io", "macros"] }
+rmcp = { version = "3.7", features = ["server", "transport-io", "macros"] }
 axum = { version = "0.8", optional = true }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std"] }
 serde = { version = "1", features = ["derive"] }
@@ -36,7 +36,7 @@ rayon = "1"
 serde_yaml_ng = "0.10"
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 regex = "1.13.1"
-jsonc-parser = { version = "0.33", default-features = false, features = ["cst", "serde_json"] }
+jsonc-parser = { version = "0.34", default-features = false, features = ["cst", "serde_json"] }
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 sha2 = "0.11"
 self-replace = "1.5"

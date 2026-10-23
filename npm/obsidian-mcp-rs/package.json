@@ -1,6 +1,6 @@
 {
   "name": "obsidian-mcp-rs",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "description": "Rust MCP server for Obsidian vaults — read, write, search notes via Model Context Protocol. Works with Claude, Cursor, and any MCP client.",
   "keywords": [
     "obsidian",
@@ -50,19 +50,19 @@
     "test:coverage": "vitest run --coverage"
   },
   "optionalDependencies": {
-    "@obsidian-mcp-rs/darwin-arm64": "0.7.1",
-    "@obsidian-mcp-rs/darwin-x64": "0.7.1",
-    "@obsidian-mcp-rs/linux-arm64": "0.7.1",
-    "@obsidian-mcp-rs/linux-x64": "0.7.1",
-    "@obsidian-mcp-rs/linux-x64-musl": "0.7.1",
-    "@obsidian-mcp-rs/win32-arm64": "0.7.1",
-    "@obsidian-mcp-rs/win32-x64": "0.7.1"
+    "@obsidian-mcp-rs/darwin-arm64": "0.8.0",
+    "@obsidian-mcp-rs/darwin-x64": "0.8.0",
+    "@obsidian-mcp-rs/linux-arm64": "0.8.0",
+    "@obsidian-mcp-rs/linux-x64": "0.8.0",
+    "@obsidian-mcp-rs/linux-x64-musl": "0.8.0",
+    "@obsidian-mcp-rs/win32-arm64": "0.8.0",
+    "@obsidian-mcp-rs/win32-x64": "0.8.0"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0",
-    "@vitest/coverage-v8": "^5.0.1",
+    "@types/node": "^22.20.5",
+    "@vitest/coverage-v8": "^5.0.5",
     "typescript": "^7.0.2",
-    "vitest": "^5.0.1"
+    "vitest": "^5.0.5"
   },
   "engines": {
     "node": ">=22"
