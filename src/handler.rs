@@ -3,7 +3,7 @@ use std::sync::Arc;
 use rmcp::{
     ErrorData as McpError, ServerHandler,
     handler::server::router::tool::ToolRouter,
-    model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerInfo},
+    model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerConfig},
     tool, tool_handler, tool_router,
 };
 use similar::TextDiff;
@@ -715,8 +715,8 @@ impl ObsidianHandler {
 // would be advertised anyway. This names the pruned field instead.
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for ObsidianHandler {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             // Identify *this* server, not the rmcp library (whose from_build_env
             // default reports "rmcp"/its own version).
             .with_server_info(
