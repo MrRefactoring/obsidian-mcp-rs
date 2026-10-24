@@ -61,7 +61,7 @@ pub(crate) fn extract_frontmatter(content: &str) -> Option<Frontmatter> {
 /// Parse the `tags` field out of a frontmatter YAML body. Malformed YAML yields
 /// no tags (strict parsing — we no longer best-effort scrape line-by-line).
 pub(crate) fn extract_tags(yaml: &str) -> Vec<String> {
-    serde_yaml_ng::from_str::<RawFrontmatter>(yaml)
+    crate::yaml::parse::<RawFrontmatter>(yaml)
         .ok()
         .and_then(|fm| fm.tags)
         .map(TagField::into_vec)
@@ -250,7 +250,7 @@ pub(crate) fn parse_fields(content: &str) -> Result<Map<String, Value>, String> 
         return Ok(Map::new());
     }
 
-    let yaml: serde_yaml_ng::Value = serde_yaml_ng::from_str(body).map_err(|e| e.to_string())?;
+    let yaml: noyalib::Value = crate::yaml::parse(body).map_err(|e| e.to_string())?;
     match serde_json::to_value(&yaml).map_err(|e| e.to_string())? {
         Value::Object(map) => Ok(map),
         _ => Err("frontmatter is not a YAML mapping".to_string()),
@@ -260,13 +260,9 @@ pub(crate) fn parse_fields(content: &str) -> Result<Map<String, Value>, String> 
 /// Render `name: value` as frontmatter lines. serde does the emitting, so
 /// quoting, escaping and block scalars are all its problem, not ours.
 fn render_field(name: &str, value: &Value) -> Result<Vec<String>, String> {
-    let mut map = serde_yaml_ng::Mapping::new();
-    map.insert(
-        serde_yaml_ng::Value::String(name.to_string()),
-        serde_yaml_ng::to_value(value).map_err(|e| e.to_string())?,
-    );
-    let text =
-        serde_yaml_ng::to_string(&serde_yaml_ng::Value::Mapping(map)).map_err(|e| e.to_string())?;
+    let mut map = noyalib::Mapping::new();
+    map.insert(name, noyalib::to_value(value).map_err(|e| e.to_string())?);
+    let text = noyalib::to_string(&noyalib::Value::Mapping(map)).map_err(|e| e.to_string())?;
 
     let lines: Vec<String> = text
         .trim_end_matches('\n')
@@ -399,6 +395,30 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_yaml_keys_are_rejected_even_outside_tags() {
+        for yaml in [
+            "tags: [first]\ntags: [second]\n",
+            "tags: [first]\nmetadata: {count: 1, count: 2}\n",
+        ] {
+            assert!(extract_tags(yaml).is_empty(), "{yaml}");
+            assert!(parse_fields(&format!("---\n{yaml}---\nbody")).is_err());
+        }
+    }
+
+    #[test]
+    fn yaml_scalar_resolution_and_large_integers_remain_compatible() {
+        let fields = parse_fields(
+            "---\nleading: 0123\nbinary: 0b11\noverflow: 1e999\nlarge: 18446744073709551615\nanswer: yes\n---\nbody",
+        )
+        .unwrap();
+        assert_eq!(fields["leading"], json!("0123"));
+        assert_eq!(fields["binary"], json!(3));
+        assert_eq!(fields["overflow"], json!("1e999"));
+        assert_eq!(fields["large"], json!(u64::MAX));
+        assert_eq!(fields["answer"], json!("yes"));
+    }
+
+    #[test]
     fn set_field_replaces_a_scalar_in_place() {
         let out = set_field(
             "---\ntitle: Old\ncount: 3\n---\nbody\n",
@@ -444,7 +464,8 @@ mod tests {
         // `#` would open a comment. serde does the quoting; we just check that
         // what goes in is what comes out.
         let out = set_field("---\nx: 1\n---\nb\n", "answer", &json!("true")).unwrap();
-        assert_eq!(out, "---\nx: 1\nanswer: 'true'\n---\nb\n");
+        assert!(out.starts_with("---\nx: 1\nanswer: "));
+        assert!(out.ends_with("\n---\nb\n"));
 
         let out = set_field(&out, "topic", &json!("#rust")).unwrap();
         let fields = parse_fields(&out).unwrap();
