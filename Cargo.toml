@@ -1,6 +1,6 @@
 [package]
 name = "obsidian-mcp-rs"
-version = "0.8.0"
+version = "0.8.1"
 edition = "2024"
 rust-version = "1.88"
 authors = ["Vladislav Tupikin"]
@@ -33,7 +33,7 @@ toml_edit = "0.25"
 fs4 = "1.1"
 ignore = "0.4"
 rayon = "1"
-serde_yaml_ng = "0.10"
+noyalib = { version = "0.0.57", default-features = false, features = ["std", "lossless-u64"] }
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 regex = "1.13.1"
 jsonc-parser = { version = "0.34", default-features = false, features = ["cst", "serde_json"] }

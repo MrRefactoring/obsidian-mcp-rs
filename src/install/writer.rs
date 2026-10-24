@@ -574,7 +574,7 @@ impl ConfigBackend for YamlBackend {
         let Ok(content) = std::fs::read_to_string(path) else {
             return InstallStatus::NotInstalled;
         };
-        let Ok(doc) = serde_yaml_ng::from_str::<serde_yaml_ng::Value>(&content) else {
+        let Ok(doc) = crate::yaml::parse::<noyalib::Value>(&content) else {
             return InstallStatus::NotInstalled;
         };
         if yaml_has_obsidian(&doc) {
@@ -594,24 +594,19 @@ impl ConfigBackend for YamlBackend {
         force: bool,
     ) -> Result<WriteOutcome> {
         let file_exists = path.exists();
-        let mut doc: serde_yaml_ng::Value = if file_exists {
-            let content = std::fs::read_to_string(path)
-                .with_context(|| format!("Cannot read {}", path.display()))?;
-            serde_yaml_ng::from_str(&content)
-                .with_context(|| format!("Invalid YAML in {}", path.display()))?
+        let content = if file_exists {
+            std::fs::read_to_string(path)
+                .with_context(|| format!("Cannot read {}", path.display()))?
         } else {
-            serde_yaml_ng::Value::Mapping(serde_yaml_ng::Mapping::new())
+            String::new()
         };
+        let mut doc = crate::yaml::document(&content)
+            .with_context(|| format!("Invalid YAML in {}", path.display()))?;
+        let value = doc.as_value();
 
-        if yaml_has_obsidian(&doc) && !force {
-            let entry = doc
-                .get("extensions")
-                .and_then(|e| e.as_sequence())
-                .and_then(|seq| {
-                    seq.iter()
-                        .find(|i| i.get("name").and_then(|n| n.as_str()) == Some("obsidian"))
-                });
-            let command = yaml_obsidian_command(&doc);
+        if yaml_has_obsidian(&value) && !force {
+            let entry = yaml_obsidian_entry(&value);
+            let command = yaml_obsidian_command(&value);
             let installed = entry
                 .and_then(|e| e.get("args"))
                 .and_then(|a| a.as_sequence())
@@ -624,11 +619,11 @@ impl ConfigBackend for YamlBackend {
                 differs: !launch.matches(command.as_deref(), installed.as_deref()),
             });
         }
-        if dry_run {
-            return Ok(WriteOutcome::DryRun {
-                would_create: !file_exists,
-            });
-        }
+        let positions = yaml_obsidian_positions(&value);
+        let has_extensions = value
+            .get("extensions")
+            .is_some_and(|extensions| extensions.as_sequence().is_some());
+        drop(value);
 
         // Build the extension entry via serde to avoid Value API uncertainty
         let goose_ext = GooseExtension {
@@ -639,22 +634,26 @@ impl ConfigBackend for YamlBackend {
             enabled: true,
             timeout: 300,
         };
-        let entry: serde_yaml_ng::Value = serde_yaml_ng::to_value(&goose_ext)?;
+        let entry: noyalib::Value = noyalib::to_value(&goose_ext)?;
 
-        // Append to the extensions sequence, or create it if absent / not a list.
-        if let Some(seq) = doc.get_mut("extensions").and_then(|v| v.as_sequence_mut()) {
-            if force {
-                seq.retain(|item| item.get("name").and_then(|n| n.as_str()) != Some("obsidian"));
+        if let Some(first) = positions.first() {
+            doc.set_value(&format!("extensions[{first}]"), &entry)?;
+            for index in positions.iter().skip(1).rev() {
+                doc.remove(&format!("extensions[{index}]"))?;
             }
-            seq.push(entry);
-        } else if let Some(mapping) = doc.as_mapping_mut() {
-            mapping.insert(
-                serde_yaml_ng::Value::String("extensions".into()),
-                serde_yaml_ng::Value::Sequence(vec![entry]),
-            );
+        } else if has_extensions {
+            // Append to the extensions sequence, or create it if absent / not a list.
+            doc.push_back_value("extensions", &entry)?;
+        } else {
+            doc.set_path("extensions", &noyalib::Value::Sequence(vec![entry]))?;
         }
 
-        let backup = write_with_backup(path, &serde_yaml_ng::to_string(&doc)?)?;
+        if dry_run {
+            return Ok(WriteOutcome::DryRun {
+                would_create: !file_exists,
+            });
+        }
+        let backup = write_with_backup(path, &doc.to_string())?;
         Ok(WriteOutcome::Written {
             created: !file_exists,
             backup,
@@ -667,37 +666,50 @@ impl ConfigBackend for YamlBackend {
         }
         let content = std::fs::read_to_string(path)
             .with_context(|| format!("Cannot read {}", path.display()))?;
-        let mut doc: serde_yaml_ng::Value = serde_yaml_ng::from_str(&content)
+        let mut doc = crate::yaml::document(&content)
             .with_context(|| format!("Invalid YAML in {}", path.display()))?;
-
-        let removed = if let Some(seq) = doc.get_mut("extensions").and_then(|v| v.as_sequence_mut())
-        {
-            let before = seq.len();
-            seq.retain(|item| item.get("name").and_then(|n| n.as_str()) != Some("obsidian"));
-            seq.len() < before
-        } else {
-            false
-        };
+        let positions = yaml_obsidian_positions(&doc.as_value());
+        let removed = !positions.is_empty();
 
         if removed && !dry_run {
-            write_with_backup(path, &serde_yaml_ng::to_string(&doc)?)?;
+            for index in positions.iter().rev() {
+                doc.remove(&format!("extensions[{index}]"))?;
+            }
+            write_with_backup(path, &doc.to_string())?;
         }
         Ok(removed)
     }
 }
 
-fn yaml_has_obsidian(doc: &serde_yaml_ng::Value) -> bool {
+fn yaml_has_obsidian(doc: &noyalib::Value) -> bool {
     yaml_obsidian_entry(doc).is_some()
 }
 
-fn yaml_obsidian_entry(doc: &serde_yaml_ng::Value) -> Option<&serde_yaml_ng::Value> {
+fn yaml_obsidian_entry(doc: &noyalib::Value) -> Option<&noyalib::Value> {
     doc.get("extensions")?
         .as_sequence()?
         .iter()
-        .find(|item| item.get("name").and_then(|n| n.as_str()) == Some("obsidian"))
+        .find(|item| is_yaml_obsidian(item))
 }
 
-fn yaml_obsidian_command(doc: &serde_yaml_ng::Value) -> Option<String> {
+fn is_yaml_obsidian(entry: &noyalib::Value) -> bool {
+    entry.get("name").and_then(|name| name.as_str()) == Some("obsidian")
+}
+
+fn yaml_obsidian_positions(doc: &noyalib::Value) -> Vec<usize> {
+    doc.get("extensions")
+        .and_then(|extensions| extensions.as_sequence())
+        .map(|entries| {
+            entries
+                .iter()
+                .enumerate()
+                .filter_map(|(index, entry)| is_yaml_obsidian(entry).then_some(index))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn yaml_obsidian_command(doc: &noyalib::Value) -> Option<String> {
     yaml_obsidian_entry(doc)?
         .get("cmd")?
         .as_str()
@@ -1320,8 +1332,8 @@ mod tests {
             WriteOutcome::Written { created: true, .. }
         ));
         assert!(path.exists());
-        let doc: serde_yaml_ng::Value =
-            serde_yaml_ng::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let doc: noyalib::Value =
+            crate::yaml::parse(&std::fs::read_to_string(&path).unwrap()).unwrap();
         let found = doc
             .get("extensions")
             .and_then(|v| v.as_sequence())
@@ -1376,8 +1388,8 @@ mod tests {
             "extensions:\n  - name: obsidian\n    type: stdio\n    cmd: npx\n    args: []\n    enabled: true\n    timeout: 300\n",
         );
         assert!(remove_entry(&path, &ConfigFormat::Goose, false).unwrap());
-        let doc: serde_yaml_ng::Value =
-            serde_yaml_ng::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let doc: noyalib::Value =
+            crate::yaml::parse(&std::fs::read_to_string(&path).unwrap()).unwrap();
         let found = doc
             .get("extensions")
             .and_then(|v| v.as_sequence())
@@ -1393,5 +1405,76 @@ mod tests {
     fn remove_entry_yaml_not_installed() {
         let (_dir, path) = temp_yaml("extensions: []\n");
         assert!(!remove_entry(&path, &ConfigFormat::Goose, false).unwrap());
+    }
+
+    #[test]
+    fn yaml_install_and_uninstall_preserve_other_extensions_and_comments() {
+        let original = "# local settings\nGOOSE_MODEL: 'a:b' # keep quotes\nextensions:\n  - name: existing # keep extension\n    cmd: '/bin/other'\n    args: [\"--flag\"]\nfooter: 'yes' # keep footer\n";
+        let (_dir, path) = temp_yaml(original);
+        let launch = launch(&[PathBuf::from("/vault")], false);
+        write_entry(&path, &ConfigFormat::Goose, &launch, false, false).unwrap();
+        let installed = std::fs::read_to_string(&path).unwrap();
+        assert!(installed.starts_with(original.split("footer:").next().unwrap()));
+        assert!(installed.ends_with("footer: 'yes' # keep footer\n"));
+        assert!(remove_entry(&path, &ConfigFormat::Goose, false).unwrap());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn yaml_flow_sequence_and_crlf_survive_install_and_uninstall() {
+        let original = "# local settings\r\nextensions: [] # keep comment\r\nmodel: 'yes'\r\n";
+        let (_dir, path) = temp_yaml(original);
+        let launch = launch(&[PathBuf::from("/vault")], false);
+        write_entry(&path, &ConfigFormat::Goose, &launch, false, false).unwrap();
+        let installed = std::fs::read_to_string(&path).unwrap();
+        assert!(installed.starts_with("# local settings\r\nextensions: ["));
+        assert!(installed.ends_with("] # keep comment\r\nmodel: 'yes'\r\n"));
+        assert!(remove_entry(&path, &ConfigFormat::Goose, false).unwrap());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn yaml_force_updates_one_entry_and_removes_its_duplicates() {
+        let original = "# local settings\nextensions:\n  - name: obsidian\n    cmd: npx\n    args: []\n  - name: other # keep extension\n    cmd: '/bin/other'\n  - name: obsidian\n    cmd: old\nfooter: 'yes' # keep footer\n";
+        let (_dir, path) = temp_yaml(original);
+        let launch = launch(&[PathBuf::from("/vault")], true);
+        write_entry(&path, &ConfigFormat::Goose, &launch, false, true).unwrap();
+        let installed = std::fs::read_to_string(&path).unwrap();
+        assert!(installed.starts_with("# local settings\nextensions:\n"));
+        assert!(installed.contains("  - name: other # keep extension\n    cmd: '/bin/other'\n"));
+        assert!(installed.ends_with("footer: 'yes' # keep footer\n"));
+        let doc = crate::yaml::parse::<noyalib::Value>(&installed).unwrap();
+        assert_eq!(yaml_obsidian_positions(&doc).len(), 1);
+        assert_eq!(yaml_obsidian_command(&doc), Some(launch.command));
+        assert_eq!(
+            yaml_obsidian_entry(&doc).unwrap()["args"],
+            noyalib::to_value(&launch.args).unwrap()
+        );
+    }
+
+    #[test]
+    fn yaml_duplicate_keys_do_not_get_rewritten() {
+        let original = "extensions: []\nextensions: []\n";
+        let (_dir, path) = temp_yaml(original);
+        let launch = launch(&[PathBuf::from("/vault")], false);
+        assert!(write_entry(&path, &ConfigFormat::Goose, &launch, false, true).is_err());
+        assert!(remove_entry(&path, &ConfigFormat::Goose, false).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn yaml_unsupported_source_preserving_edits_leave_the_config_untouched() {
+        for original in [
+            "extensions: [\n  {name: other, cmd: '/bin/other'}\n]\n",
+            "shared: &items\n  - name: other\n    cmd: '/bin/other'\nextensions: *items\n",
+        ] {
+            let (_dir, path) = temp_yaml(original);
+            let launch = launch(&[PathBuf::from("/vault")], false);
+            for dry_run in [true, false] {
+                assert!(write_entry(&path, &ConfigFormat::Goose, &launch, dry_run, false).is_err());
+                assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+                assert!(!path.with_extension("yaml.bak").exists());
+            }
+        }
     }
 }

@@ -136,7 +136,7 @@ To take a release now rather than wait for the check, run **the installed copy**
 
 **What the check sends.** One `GET` to `api.github.com` per day, carrying what any HTTP request carries — your IP address — and a `User-Agent` of `obsidian-mcp-rs/<version>`. An actual update then downloads the binary from `github.com`, which redirects to `githubusercontent.com`. Nothing about your vaults, your notes, your client or your machine is sent, and nothing identifies you across days beyond what GitHub can infer from an address. It honours `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`. If that is one request too many, `--no-auto-update` stops it entirely.
 
-To go back to an older release, install it with auto-update off — `npx obsidian-mcp-rs@0.8.1 install claude ~/vault --no-auto-update`. Without that flag the daily check follows `releases/latest` in both directions and puts the newer one back within a day, which is deliberate: withdrawing a bad release means dropping it out of `releases/latest`, and everyone who already took it has to be able to come back down. The path in your configs never changes, so nothing needs re-pointing either way. (One exception, and it catches everyone who installed early: a config written before 0.7.0 does not hold that path yet, so none of this reaches it — see [below](#upgrading-from-a-config-written-before-070).)
+To go back to an older release, install it with auto-update off — `npx obsidian-mcp-rs@0.8.0 install claude ~/vault --no-auto-update`. Without that flag the daily check follows `releases/latest` in both directions and puts the newer one back within a day, which is deliberate: withdrawing a bad release means dropping it out of `releases/latest`, and everyone who already took it has to be able to come back down. The path in your configs never changes, so nothing needs re-pointing either way. (One exception, and it catches everyone who installed early: a config written before 0.7.0 does not hold that path yet, so none of this reaches it — see [below](#upgrading-from-a-config-written-before-070).)
 
 `npx obsidian-mcp-rs list` prints where the server is, which version it is, and whether auto-update is on.
 
@@ -655,11 +655,9 @@ npx obsidian-mcp-rs /vault/path
 
 ## Contributing
 
-1. Fork the repository
-2. Create a feature branch: `git checkout -b feat/my-feature`
-3. Implement with tests
-4. Ensure `cargo fmt` and `cargo clippy` pass
-5. Submit a pull request
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, checks, and pull requests.
+Community rules are in [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
+Report vulnerabilities through the private contact in [SECURITY.md](SECURITY.md).
 
 ## License
 
