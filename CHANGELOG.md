@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.9.0] - 2026-11-17
+
+### Changed
+
+- **Breaking: MCP tool names have changed, with no aliases for the previous names.** Update clients and workflows that call tools by name: `read-note` → `read_note`, `create-note` → `create_note`, `edit-note` → `edit_note`, `delete-note` → `delete_note`, `move-note` → `move_note`, `create-directory` → `create_folder`, `add-tags` → `add_note_tags`, `remove-tags` → `remove_note_tags`, `rename-tag` → `rename_vault_tag`, `frontmatter` → `note_properties`, `wikilinks` → `vault_links`, `search-vault` → `search_notes`, `periodic` → `periodic_notes`, `vault-info` → `vault_info`, and `list-available-vaults` → `list_vaults`.
+- **The minimum supported Rust version is now 1.89.** Updated `rmcp` to 3.11 and `noyalib` to 0.0.62, along with the lockfile dependencies.
+- Refreshed tool descriptions and project documentation, including a dedicated `INSTALL.md` and revised installation, contribution, security, and release guidance.
+
+
 ## [0.8.1] - 2026-10-24
 
 ### Changed
