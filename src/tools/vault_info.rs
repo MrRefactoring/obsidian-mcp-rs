@@ -4,7 +4,7 @@ use crate::vault::InfoQuery;
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct VaultInfoParams {
-    /// Name of the vault to describe
+    /// Name of the vault.
     pub vault: String,
     /// What to ask: "tags" (every tag, with how many notes carry it),
     /// "recent" (notes by last modified, newest first), or "stats" (notes,

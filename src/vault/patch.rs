@@ -2,11 +2,10 @@
 //!
 //! Without this, the only way to change one section is to read the whole note,
 //! splice it in the model's head, and write the whole note back — which risks
-//! losing everything the model didn't happen to reproduce. Patching writes only
-//! the bytes the target covers.
+//! losing text that the model did not reproduce. Patching changes only the
+//! bytes that the target covers.
 //!
-//! The scanners here are also what `read-note view=outline` reports, so what the
-//! model is offered as a target is exactly what the patcher can find.
+//! The outline and the patcher use the same heading and block scanners.
 
 use std::ops::Range;
 
@@ -269,9 +268,8 @@ pub(crate) fn find_and_replace(
     ))
 }
 
-/// The note's patchable targets, as markdown. This is what `read-note
-/// view=outline` returns: without it the model has to guess what to aim a patch
-/// at, and a guessed target is a failed edit.
+/// The note's frontmatter keys and patchable targets as markdown. This is what
+/// `read_note view=outline` returns.
 pub(crate) fn outline(content: &str) -> String {
     let mut out = String::new();
 
@@ -294,7 +292,7 @@ pub(crate) fn outline(content: &str) -> String {
     // that line as its `target` got `TargetNotFound` — the ` (line 9)` came along
     // with it. The one tool whose entire purpose is to tell the patcher what to
     // aim at was handing it something the patcher cannot find.
-    out.push_str("targets for edit-note — pass targetType and the quoted target:\n");
+    out.push_str("targets for edit_note — pass targetType and the quoted target:\n");
     for h in &headings {
         out.push_str(&format!(
             "  heading  \"{} {}\"  (line {})\n",

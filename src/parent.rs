@@ -1,15 +1,11 @@
 //! Exiting when the client that spawned us goes away.
 //!
-//! stdin EOF is the primary shutdown signal and the only portable one — the MCP
-//! spec asks servers for exactly that, and we honour it: closing our stdin ends
-//! `service.waiting()` and the process exits. The gap is that EOF is not
-//! guaranteed to *arrive*. The write end of our stdin is a refcounted resource;
-//! if any process other than the client holds a copy when the client dies, the
-//! refcount never reaches zero, no EOF is ever delivered, and we sit there
-//! forever — reparented to init, holding write access to someone's vault, one
-//! more process for every unclean client exit.
+//! stdin EOF is the primary and only portable shutdown signal. When stdin
+//! closes, `service.waiting()` ends and the process exits. EOF requires every
+//! copy of the stdin write handle to close. If another process holds a copy
+//! after the client dies, the server remains alive with vault access.
 //!
-//! So we also watch the parent, and leave when it does.
+//! The server also watches its parent and exits when the parent exits.
 //!
 //! # What this deliberately does not do
 //!

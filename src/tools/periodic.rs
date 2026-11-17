@@ -4,7 +4,7 @@ use crate::vault::{Period, PeriodicAction};
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct PeriodicParams {
-    /// Name of the vault
+    /// Name of the vault.
     pub vault: String,
     /// Which periodic note: "daily", "weekly", "monthly", "quarterly", "yearly"
     pub period: Period,

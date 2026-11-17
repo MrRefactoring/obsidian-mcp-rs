@@ -7,8 +7,7 @@ use std::{
 
 use crate::error::VaultError;
 
-/// Monotonic counter making temp filenames unique within this process; combined
-/// with the PID it stays unique across concurrent processes too.
+/// Counter for temporary filenames. The PID distinguishes concurrent processes.
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Write `contents` to `path` atomically.
@@ -21,7 +20,7 @@ static COUNTER: AtomicU64 = AtomicU64::new(0);
 pub(crate) fn atomic_write(path: &Path, contents: &[u8]) -> Result<(), VaultError> {
     let tmp = temp_path(path);
 
-    // Scoped so the file handle is dropped (flushed + closed) before the rename.
+    // Close the file before the rename.
     {
         let mut file =
             fs::File::create(&tmp).map_err(|e| VaultError::io(tmp.display().to_string(), e))?;

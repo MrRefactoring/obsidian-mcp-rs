@@ -62,7 +62,7 @@ pub struct Target<'a> {
 }
 
 /// One edit to one note. Without a `target` the operation applies to the whole
-/// note, which is what `edit-note` did before patching existed.
+/// note, which is what `edit_note` did before patching existed.
 pub struct Edit<'a> {
     pub operation: EditOperation,
     pub content: &'a str,
@@ -96,7 +96,7 @@ pub enum NoteView {
     Outline,
 }
 
-/// Lines returned by a `read-note` that doesn't say otherwise.
+/// Lines returned by a `read_note` that doesn't say otherwise.
 pub const DEFAULT_READ_LINES: usize = 400;
 
 /// The most bytes one read may return, whatever `limit` says. A line cap is not
@@ -184,11 +184,11 @@ fn clip(content: &str, w: &ReadWindow) -> String {
     let note = match cut {
         Some(n) => format!(
             "\n[truncated: line {n} on its own is over the {} KB read budget, so it was cut. \
-             Use search-vault to find what you need inside it.]\n",
+             Use search_notes to find what you need inside it.]\n",
             MAX_READ_BYTES / 1000
         ),
         None if last < total => format!(
-            "\n[showed lines {}-{} of {total}. Call read-note again with offset={} for the rest, \
+            "\n[showed lines {}-{} of {total}. Call read_note again with offset={} for the rest, \
              or view=\"outline\" for a map of the note.]\n",
             start + 1,
             last,
@@ -204,7 +204,7 @@ fn clip(content: &str, w: &ReadWindow) -> String {
     out
 }
 
-/// What the `frontmatter` tool should do with a note's YAML frontmatter.
+/// What the `note_properties` tool should do with a note's YAML frontmatter.
 #[derive(Debug, Clone, PartialEq, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum FrontmatterAction {
@@ -230,7 +230,7 @@ pub struct FrontmatterOutput {
 }
 
 /// Where a deleted note goes. Hidden, so `md_files` — and therefore search, the
-/// link graph and `rename-tag` — never sees it again.
+/// link graph and `rename_vault_tag` — never sees it again.
 const TRASH: &str = ".trash";
 
 // Typed, like every other vocabulary in this crate, so an unrecognised value is
@@ -240,7 +240,7 @@ const TRASH: &str = ".trash";
 //
 // Doc comments here reach the model, via schemars → the tool's inputSchema, and
 // every conversation pays for them. Reasoning goes in `//` comments like this.
-/// Where `add-tags` writes a tag.
+/// Where `add_note_tags` writes a tag.
 #[derive(Debug, Clone, Copy, Default, PartialEq, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum TagLocation {
@@ -270,14 +270,14 @@ fn basename(path: &Path) -> String {
         .to_string()
 }
 
-/// What `delete-note` did.
+/// What `delete_note` did.
 #[derive(Debug, Clone)]
 pub struct DeleteOutcome {
     /// Where the note now sits, vault-relative — or `None` when it was erased.
     pub trashed_to: Option<String>,
 }
 
-/// What `move-note` did. `relinked` names the notes whose links were updated to
+/// What `move_note` did. `relinked` names the notes whose links were updated to
 /// follow the moved note — empty when nothing pointed at it, or when the links
 /// still resolve on their own (a bare `[[Note]]` survives a folder move).
 #[derive(Debug, Clone)]
@@ -599,7 +599,7 @@ impl VaultManager {
         let needle = || {
             edit.search.ok_or_else(|| {
                 VaultError::MissingArgument(
-                    "edit-note with operation=\"find_and_replace\" also needs a 'search' parameter — the text to look for."
+                    "edit_note with operation=\"find_and_replace\" also needs a 'search' parameter — the text to look for."
                         .to_string(),
                 )
             })
@@ -879,8 +879,8 @@ impl VaultManager {
         search::search(root, &search_root, query, limits, &self.cache)
     }
 
-    /// Query the vault's link graph. One parallel pass builds the whole graph,
-    /// so no index is kept and nothing can go stale.
+    /// Query the vault's link graph. Each call builds the graph in one parallel
+    /// pass. Cached content can be stale when its file stamp does not change.
     pub fn wikilinks(
         &self,
         vault: &str,
@@ -953,7 +953,7 @@ impl VaultManager {
 
         // `broken` and `orphans` on a real vault are exactly the queries that
         // return thousands of rows, and this tool had no cap at all — the same
-        // hole `search-vault` was built to avoid. Page it the same way.
+        // hole `search_notes` was built to avoid. Page it the same way.
         let total = links.len() + notes.len();
         let truncated = total > limits.offset + limits.limit;
         Ok(LinkOutput {
@@ -1012,10 +1012,10 @@ impl VaultManager {
             self.create_note(vault, &resolved.filename, seed, folder)?;
         }
 
-        // Same cap `read-note` is under, for the same reason. A daily note is
+        // Same cap `read_note` is under, for the same reason. A daily note is
         // small, but a yearly one is a year of appends, and `periodic` was the
         // one remaining way to pull a whole note into the context unbounded.
-        // The marker `clip` appends names `read-note` and an offset — and we
+        // The marker `clip` appends names `read_note` and an offset — and we
         // hand back the `path` it needs, so the rest is one call away.
         let content = self.note_content(vault, &resolved.filename, folder)?;
         Ok(PeriodicOutput {
@@ -1113,8 +1113,8 @@ impl VaultManager {
     /// The tag tools used to skip the files they couldn't find, then report
     /// `Added tags ["x"] to 0 file(s):` with `isError: false` — which a model
     /// reads as success and moves on from. Nothing signalled that the work had
-    /// not happened. Checking first means a batch either applies or fails with
-    /// the names it couldn't find, and never half-applies.
+    /// not happened. Checking first prevents missing files from causing a partial
+    /// batch. A later read or write error can still leave a partial batch.
     fn resolve_batch(
         &self,
         root: &Path,
@@ -1196,8 +1196,8 @@ fn free_path(wanted: &Path) -> PathBuf {
 /// A note's path as the vault refers to it: relative to the root, `/`-separated
 /// on every platform.
 ///
-/// **Every path that leaves this crate goes through here.** Ranked search and
-/// `rename-tag` each used to build their own with `Path::display()`, which on
+/// Use this for vault-relative paths returned to callers. Ranked search and
+/// `rename_vault_tag` each used to build their own with `Path::display()`, which on
 /// Windows emitted `sub\deep.md` while the link graph and the other search paths
 /// emitted `sub/deep.md` — so the same note had two names depending on which tool
 /// you asked, and only the CI Windows leg noticed.
@@ -2081,10 +2081,10 @@ mod tests {
 
     #[test]
     fn periodic_is_under_the_same_cap_as_read_note() {
-        // `read-note` was capped and `periodic` was not, so "open today's note"
+        // `read_note` was capped and `periodic` was not, so "open today's note"
         // could still put an unbounded note into the context — and a yearly note
         // is a year of appends. The cap is the same one, and the marker points at
-        // `read-note`, which is exactly the tool the returned `path` feeds.
+        // `read_note`, which is exactly the tool the returned `path` feeds.
         let (dir, vault) = make_vault();
         let name = vault_name(&dir);
         let long = "a line\n".repeat(DEFAULT_READ_LINES + 100);
@@ -2103,7 +2103,7 @@ mod tests {
             DEFAULT_READ_LINES
         );
         assert!(
-            content.contains("read-note again with offset=401"),
+            content.contains("read_note again with offset=401"),
             "the model has to be told how to get the rest: {content:?}"
         );
     }
@@ -2292,7 +2292,7 @@ mod tests {
         );
         assert!(!out.contains("line 401\n"), "and not exceeded");
         assert!(
-            out.contains("[showed lines 1-400 of 1000. Call read-note again with offset=401"),
+            out.contains("[showed lines 1-400 of 1000. Call read_note again with offset=401"),
             "the model must be told what it missed and how to ask for it, got: {out:?}"
         );
     }
@@ -2342,7 +2342,7 @@ mod tests {
     fn a_multibyte_character_is_never_split_in_half() {
         // Cutting mid-character would produce invalid UTF-8 — the slice would
         // panic before it ever reached the model.
-        let note = format!("{}\n", "ё".repeat(200_000));
+        let note = format!("{}\n", "é".repeat(200_000));
         let out = clip(&note, &ReadWindow::default());
         assert!(out.contains("was cut"));
         assert!(out.len() < MAX_READ_BYTES + 500);
@@ -2949,7 +2949,7 @@ mod tests {
         assert!(vault.create_directory(&name, "existing", true).is_err());
     }
 
-    // ── search_vault ──────────────────────────────────────────────────────────
+    // ── search_notes ──────────────────────────────────────────────────────────
 
     #[test]
     fn search_content_finds_matching_lines() {
@@ -3083,7 +3083,7 @@ mod tests {
 
     #[test]
     fn every_tool_names_a_note_the_same_way() {
-        // Ranked search and rename-tag each built their own relative path with
+        // Ranked search and rename_vault_tag each built their own relative path with
         // `Path::display()`, so on Windows they said `sub\deep.md` while the link
         // graph and the other search paths said `sub/deep.md` — the same note with
         // two names, depending on which tool you asked. Only the Windows CI leg
@@ -3123,10 +3123,10 @@ mod tests {
     #[test]
     fn what_search_returns_is_what_read_note_accepts() {
         // The most common two-step there is — find a note, then read it — used to
-        // break on every note that lived in a folder. `search-vault` returned a
+        // break on every note that lived in a folder. `search_notes` returned a
         // `filename` field holding the bare stem (`inner`), the note tools' schema
         // said "do not include path separators", and so the model reached for the
-        // one field that could not work: `read-note` looked for `inner.md` in the
+        // one field that could not work: `read_note` looked for `inner.md` in the
         // vault root and reported the note missing.
         let (dir, vault) = make_vault();
         let name = vault_name(&dir);
@@ -3144,7 +3144,7 @@ mod tests {
         let path = &hit.results[0].path;
         assert_eq!(path, "sub/deep.md");
 
-        // The path search hands back is fed straight into read-note, unmodified.
+        // The path search hands back is fed straight into read_note, unmodified.
         let content = vault
             .read_note(
                 &name,
@@ -3173,7 +3173,7 @@ mod tests {
         assert!(results.results.is_empty());
     }
 
-    // ── add_tags ──────────────────────────────────────────────────────────────
+    // ── add_note_tags ──────────────────────────────────────────────────────────────
 
     #[test]
     fn add_tags_to_frontmatter_block_list() {
@@ -3398,7 +3398,7 @@ mod tests {
         assert!(content.contains("#top"));
     }
 
-    // ── remove_tags ───────────────────────────────────────────────────────────
+    // ── remove_note_tags ───────────────────────────────────────────────────────────
 
     #[test]
     fn remove_tags_from_frontmatter() {
@@ -3439,7 +3439,7 @@ mod tests {
         assert!(err.to_string().contains("ghost.md"), "{err}");
     }
 
-    // ── rename_tag ────────────────────────────────────────────────────────────
+    // ── rename_vault_tag ────────────────────────────────────────────────────────────
 
     #[test]
     fn rename_tag_in_frontmatter() {

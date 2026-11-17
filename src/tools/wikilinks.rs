@@ -4,7 +4,7 @@ use crate::vault::{LinkLimits, LinkQuery};
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct WikilinksParams {
-    /// Name of the vault to inspect
+    /// Name of the vault.
     pub vault: String,
     /// Which slice of the link graph to return. "backlinks" and "outgoing" are
     /// about one note and need `filename`; "broken" and "orphans" cover the
@@ -12,7 +12,7 @@ pub struct WikilinksParams {
     pub query: LinkQuery,
     /// Note to query — required for "backlinks" and "outgoing" (.md optional)
     pub filename: Option<String>,
-    /// Optional subfolder containing the note
+    /// Folder that contains the note, relative to the vault root.
     pub folder: Option<String>,
     /// Most links (or orphan notes) to return (default: 50). "broken" and
     /// "orphans" on a neglected vault run to thousands.

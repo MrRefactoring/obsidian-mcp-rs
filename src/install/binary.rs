@@ -15,8 +15,8 @@
 //! So the installer places the binary itself. `install` is a subcommand of the
 //! very binary that needs installing, which makes `current_exe()` the whole of
 //! the path resolution: no npm internals, no package layout, no guessing.
-//! Updating is running `install` again from a newer package — the copy is
-//! replaced and **the path in every config stays the same forever**.
+//! `install` and the updater can replace the copy without changing its path
+//! in client configs.
 
 use std::path::{Path, PathBuf};
 
@@ -102,9 +102,8 @@ fn copy_durably(src: &Path, dest: &Path) -> std::io::Result<()> {
         .sync_all()
 }
 
-/// Windows refuses to rename over a running executable, so the file is moved
-/// aside first and put back if the second rename fails. On Unix the first
-/// rename always succeeds and the rest is never reached.
+/// Windows can refuse to rename over a running executable. If the first rename
+/// fails, move the destination aside and restore it if the second rename fails.
 fn swap_into_place(staged: &Path, dest: &Path) -> std::io::Result<()> {
     let first = match std::fs::rename(staged, dest) {
         Ok(()) => return Ok(()),
@@ -196,9 +195,9 @@ pub(crate) fn uninstall() -> Result<Option<PathBuf>> {
 
 /// The version the installed copy reports, by asking it.
 ///
-/// The copy only changes when `install` runs, so it can lag the package the user
-/// just updated. That skew is invisible unless something goes looking, which is
-/// what `list` uses this for. `None` means it is not installed or would not run.
+/// `install` and the updater can replace the copy, so its version can differ
+/// from the package. `list` uses this to detect the difference. `None` means the
+/// copy is not installed or could not run.
 pub(crate) fn installed_version() -> Option<String> {
     let path = stable_path()?;
     let out = std::process::Command::new(&path)

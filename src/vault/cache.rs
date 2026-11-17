@@ -1,9 +1,8 @@
 //! Not reading the whole vault again when the whole vault hasn't changed.
 //!
-//! Every vault-wide operation — search, `vault-info`, the link graph — reads
-//! every note. Measured on a 5,000-note vault: the directory walk costs ~5 ms,
-//! `stat`-ing every file ~3 ms, and *reading* every file ~50 ms. So the read is
-//! the bill, and it is paid again on every single call.
+//! Search, `vault_info`, and the link graph read note contents across the vault.
+//! On a 5,000-note vault, the directory walk took ~5 ms, file metadata checks
+//! took ~3 ms, and reading every file took ~50 ms.
 //!
 //! This caches file contents keyed by what the filesystem says about them. A
 //! call still walks and still stats — that is how a change made by anything
@@ -23,8 +22,8 @@
 //! **Only read-only operations may read through the cache.** Never the read half
 //! of a read-modify-write.
 //!
-//! A stale entry served to `search-vault` is a stale snippet: wrong, visible,
-//! and gone on the next change. The same stale entry served to `edit-note`
+//! A stale entry served to `search_notes` is a stale snippet: wrong, visible,
+//! and gone when the file stamp changes. The same stale entry served to `edit_note`
 //! would be read, edited and written back — silently destroying whatever the
 //! other writer had put there. One is a glitch, the other is data loss, and the
 //! difference is the caller. So mutating methods keep reading from disk, and
@@ -36,8 +35,7 @@
 //! the length unchanged. On APFS, ext4 and NTFS the timestamp is
 //! sub-microsecond, so this needs two writes within the same tick — but on a
 //! filesystem with one-second timestamps (HFS+, some network mounts) it is
-//! reachable. The cost is a stale search snippet until the next edit, which is
-//! the same trade every build system on the planet makes.
+//! reachable. A search snippet can stay stale until the file stamp changes.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -77,7 +75,7 @@ pub(crate) struct ContentCache {
 }
 
 impl ContentCache {
-    /// The file's contents, from memory when nothing about it has changed.
+    /// The file's contents, from memory when its stamp has not changed.
     ///
     /// `None` when the file cannot be read at all — the same answer the direct
     /// read would have given, so callers that skip unreadable files keep doing

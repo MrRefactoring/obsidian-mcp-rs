@@ -4,16 +4,15 @@ use crate::vault::{EditOperation, TargetKind};
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct EditNoteParams {
-    /// Name of the vault containing the note
+    /// Name of the vault.
     pub vault: String,
-    /// Note to act on: a vault-relative path (`projects/apollo.md`) or a bare
-    /// filename. `.md` optional. `search-vault`'s `path` works as-is.
+    /// Note path relative to the vault root. You can omit `.md`. Use the `path` from `search_notes`.
     pub filename: String,
     /// What to do: "append" adds to the end, "prepend" to the start, "replace" overwrites, "find_and_replace" swaps the first occurrence of `search` for `content`
     pub operation: EditOperation,
     /// Content to apply according to the chosen operation
     pub content: String,
-    /// Optional subfolder path relative to vault root
+    /// Folder path relative to the vault root
     pub folder: Option<String>,
     /// Text to find when using "find_and_replace"
     pub search: Option<String>,

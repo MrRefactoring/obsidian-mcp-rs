@@ -6,9 +6,8 @@
 //! Obsidian, and getting either wrong creates a stray note instead of appending
 //! to the real one.
 //!
-//! So we don't guess — we read Obsidian's own settings (`.obsidian/`) and land
-//! in the same place Obsidian would. Only when there is no config do we fall back
-//! to Obsidian's own defaults.
+//! The server reads settings from `.obsidian/` to find the note. It uses
+//! defaults for settings that are absent or empty.
 
 use std::path::Path;
 
@@ -35,7 +34,7 @@ pub enum Period {
 pub enum PeriodicAction {
     /// Read the note. Fails if it doesn't exist yet.
     Get,
-    /// Read it, creating it first if it isn't there. Idempotent.
+    /// Create the note if needed, then read it.
     Create,
     /// List the periodic notes that exist, most recent first.
     List,
@@ -46,11 +45,11 @@ pub enum PeriodicAction {
 pub struct PeriodicOutput {
     /// Vault-relative path of the note. Absent for `list`.
     pub path: Option<String>,
-    /// The note's text, capped like `read-note`'s. If it was cut, the last line
-    /// says so and `path` is what you pass to `read-note` for the rest.
+    /// The note's text, capped like `read_note`'s. If it was cut, the last line
+    /// says so and `path` is what you pass to `read_note` for the rest.
     /// Absent for `list`.
     pub content: Option<String>,
-    /// Whether this call is what brought the note into existence.
+    /// Whether this call created the note.
     pub created: bool,
     /// Populated by `list` — vault-relative paths, most recent first.
     pub notes: Vec<String>,
@@ -100,9 +99,9 @@ struct Settings {
 
 /// Obsidian's settings for this period.
 ///
-/// The Periodic Notes community plugin owns every period when it's installed;
-/// core Obsidian only has daily notes. We read the plugin first, then core, then
-/// fall back to the documented defaults — the same precedence Obsidian applies.
+/// For each field, use the enabled Periodic Notes plugin setting first. For
+/// daily notes, use the core setting if the plugin field is absent. Otherwise,
+/// use the default.
 fn settings(root: &Path, period: Period) -> Settings {
     let plugin = read_json(&root.join(".obsidian/plugins/periodic-notes/data.json"))
         .and_then(|cfg| cfg.get(period.key()).cloned())
@@ -307,8 +306,7 @@ pub(crate) fn list(
     Ok(found)
 }
 
-/// How far back `list` looks for each period. Enough to cover a year of dailies
-/// or a decade of anything coarser.
+/// Number of periods that `list` examines, including the current period.
 pub(crate) fn lookback(period: Period) -> u32 {
     match period {
         Period::Daily => 365,

@@ -27,9 +27,8 @@ struct Cli {
     #[arg(value_name = "VAULT_PATH")]
     vaults: Vec<PathBuf>,
 
-    /// Disable all write tools. The read tools remain; the write tools are
-    /// removed from tools/list entirely, so the server describes itself as
-    /// read-only rather than advertising tools it will refuse.
+    /// Disable writes. Remove write-only tools from tools/list. Tools with both
+    /// read and write actions still accept read actions.
     #[arg(long, default_value_t = false)]
     no_edit: bool,
 

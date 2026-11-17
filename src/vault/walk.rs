@@ -4,10 +4,8 @@ use ignore::WalkBuilder;
 
 /// Collect every `.md` file under `root`.
 ///
-/// Backed by `ignore::WalkBuilder`, so `.gitignore` rules and hidden files are
-/// respected — a vault that gitignores `.trash/` or templates won't surface
-/// those notes. `follow_links(false)` keeps the walk inside the vault, matching
-/// the sandbox guarantee of `safe_join` (symlinks are never expanded).
+/// `ignore::WalkBuilder` excludes hidden files and files matched by ignore rules.
+/// `follow_links(false)` prevents the walk from following symbolic links.
 pub(crate) fn md_files(root: &Path) -> Vec<PathBuf> {
     WalkBuilder::new(root)
         .follow_links(false)
@@ -27,7 +25,7 @@ mod tests {
 
     #[test]
     fn hidden_directories_are_not_walked() {
-        // Load-bearing for `delete-note`: a trashed note lives in `.trash/`, and
+        // Load-bearing for `delete_note`: a trashed note lives in `.trash/`, and
         // must not come back in search results or the link graph.
         let dir = TempDir::new().unwrap();
         fs::create_dir(dir.path().join(".trash")).unwrap();

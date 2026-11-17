@@ -2,10 +2,9 @@ use serde::Deserialize;
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct MoveNoteParams {
-    /// Name of the vault containing the note
+    /// Name of the vault.
     pub vault: String,
-    /// Note to act on: a vault-relative path (`projects/apollo.md`) or a bare
-    /// filename. `.md` optional. `search-vault`'s `path` works as-is.
+    /// Note path relative to the vault root. You can omit `.md`. Use the `path` from `search_notes`.
     pub filename: String,
     /// Current subfolder path (omit for vault root)
     pub folder: Option<String>,

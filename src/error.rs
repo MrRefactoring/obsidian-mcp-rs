@@ -13,7 +13,7 @@ pub enum VaultError {
     VaultUnavailable(String, String),
 
     #[error(
-        "Note '{0}' not found in vault '{1}'. Check the folder, or run search-vault with searchType=\"filename\" to locate it."
+        "Note '{0}' not found in vault '{1}'. Check the folder, or run search_notes with searchType=\"filename\" to locate it."
     )]
     NoteNotFound(String, String),
 
@@ -203,7 +203,7 @@ mod tests {
         assert!(needle.to_string().contains("hello wolrd"), "{needle}");
         // A missing argument is not a path problem — saying "Invalid path:" sent the
         // model off to fix the filename, which was the one thing that was right.
-        let missing = VaultError::MissingArgument("edit-note also needs a 'search'".into());
+        let missing = VaultError::MissingArgument("edit_note also needs a 'search'".into());
         assert!(!missing.to_string().contains("Invalid path"), "{missing}");
         // A missing patch target is self-correctable: the message tells the model
         // to read the outline and pick a real one.

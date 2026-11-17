@@ -5,8 +5,8 @@
 //! been working on", or "how big is this". Those are the questions you ask
 //! *before* you know what to search for.
 //!
-//! Everything here comes from the same parallel walk the rest of the crate uses;
-//! nothing is cached, so nothing can be stale.
+//! Vault queries walk the files on each call. Content reads use the cache,
+//! which can return stale content when the file stamp does not change.
 
 use std::{collections::HashMap, fs, path::Path};
 
@@ -25,7 +25,7 @@ use super::walk::md_files;
 /// Default number of notes `recent` returns.
 pub const DEFAULT_RECENT: usize = 20;
 
-/// Which question `vault-info` is answering.
+/// Which question `vault_info` is answering.
 #[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum InfoQuery {
@@ -68,7 +68,7 @@ pub struct Stats {
     pub broken_links: usize,
 }
 
-/// Answer to a `vault-info` query. Only the field the query asked for is filled.
+/// Answer to a `vault_info` query. Only the field the query asked for is filled.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct InfoOutput {
     pub tags: Vec<TagCount>,

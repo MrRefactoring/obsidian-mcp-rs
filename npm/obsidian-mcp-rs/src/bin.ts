@@ -4,8 +4,7 @@ import { spawn } from "node:child_process";
 import { detectPlatform, resolveBinaryPath } from "./platform";
 
 /**
- * What a client sends to shut a server down or restart it. SIGKILL and SIGSTOP
- * are deliberately absent — they cannot be caught, by anyone.
+ * Forward client shutdown and restart signals. SIGKILL and SIGSTOP cannot be caught.
  */
 const FORWARDED: NodeJS.Signals[] = ["SIGINT", "SIGTERM", "SIGHUP"];
 
@@ -14,12 +13,8 @@ function main(): void {
   const binaryPath = resolveBinaryPath(platform);
   const args = process.argv.slice(2);
 
-  // `spawn`, not `spawnSync`. spawnSync blocks the event loop for the entire life
-  // of the server, so Node can never run a signal handler: kill this wrapper and
-  // the Rust child is orphaned, still holding the user's vault. It is usually
-  // masked — with stdio inherited, the child shares the client's stdin pipe and
-  // exits on EOF when the client goes away — but a client that dies while that
-  // pipe stays open leaves the process behind.
+  // `spawn` lets Node run signal handlers while the server runs. `spawnSync`
+  // blocks them. If the wrapper dies and stdin stays open, the child can remain.
   const child = spawn(binaryPath, args, {
     stdio: "inherit",
     env: process.env,
@@ -27,8 +22,7 @@ function main(): void {
 
   for (const signal of FORWARDED) {
     process.on(signal, () => {
-      // Pass it on, then wait: the child's own "exit" below settles our status, so
-      // the server gets to shut down rather than being cut off mid-write.
+      // Forward the signal and wait for the child to exit.
       child.kill(signal);
     });
   }
@@ -40,8 +34,7 @@ function main(): void {
   });
 
   child.on("exit", (code, signal) => {
-    // Report the child's fate as our own, so whatever is supervising this wrapper
-    // sees what actually happened to the server.
+    // Report the child's exit status to the wrapper's supervisor.
     if (signal) {
       process.kill(process.pid, signal);
       return;

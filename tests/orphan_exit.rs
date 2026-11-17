@@ -1,17 +1,15 @@
 //! The server must not outlive the client that spawned it.
 //!
-//! The unit tests in `src/parent.rs` cover the watch loop with an injected pid
-//! source. This one builds a real process tree and kills the middle of it, which
-//! is the only way to prove the thing works: a server whose stdin never reaches
-//! EOF, whose parent dies, and which is expected to leave anyway.
+//! The unit tests in `src/parent.rs` use an injected PID source.
+//! These tests use a real process tree. They check that the server exits when
+//! its parent dies, even if stdin remains open.
 
 #![cfg(unix)]
 
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::time::{Duration, Instant};
 
-/// Comfortably longer than the watcher's poll interval, with room for a loaded
-/// CI box.
+/// Allow more than the poll interval for a busy CI runner.
 const GIVE_UP_AFTER: Duration = Duration::from_secs(30);
 
 fn is_alive(pid: u32) -> bool {
@@ -29,16 +27,10 @@ fn vault_with_a_note() -> tempfile::TempDir {
     dir
 }
 
-/// A server under a shell we can kill, holding a stdin that will never see EOF.
+/// Start a server under a shell that the test can kill, with stdin open.
 ///
-/// The shell matters twice over. It gives us a parent to kill that is not the
-/// test runner — and it must survive spawning, so the server is a *child* rather
-/// than the shell itself: hence the trailing `true`, without which `sh -c`
-/// exec's the single command and replaces itself with it.
-///
-/// The server must not be backgrounded with `&` either: a shell redirects an
-/// asynchronous command's stdin from `/dev/null`, which hands it an immediate
-/// EOF and lets it exit for reasons that have nothing to do with this test.
+/// The trailing `true` prevents `sh -c` from replacing itself with the server.
+/// Do not use `&`: the shell can redirect stdin from `/dev/null`, causing EOF.
 fn server_under_a_killable_shell(vault: &std::path::Path) -> (Child, ChildStdin, u32) {
     let bin = env!("CARGO_BIN_EXE_obsidian-mcp-rs");
     let mut shell = Command::new("sh")
@@ -50,9 +42,7 @@ fn server_under_a_killable_shell(vault: &std::path::Path) -> (Child, ChildStdin,
         .spawn()
         .expect("spawn the middle shell");
 
-    // Held for the lifetime of the test and never written to: an open pipe with
-    // no data in it, so the ordinary shutdown signal never arrives and only the
-    // parent watch can end this process.
+    // Keep stdin open without writing data. This prevents shutdown on EOF.
     let stdin = shell.stdin.take().expect("shell stdin");
 
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -75,9 +65,8 @@ fn server_under_a_killable_shell(vault: &std::path::Path) -> (Child, ChildStdin,
         std::thread::sleep(Duration::from_millis(100));
     };
 
-    // Let the server get past start-up before anyone kills its parent. Without
-    // this the tests would all resolve through the "already orphaned at boot"
-    // path and the polling watch would never be exercised at all.
+    // Let the server start before the test kills its parent. This exercises
+    // the polling watch instead of only the already-orphaned startup path.
     std::thread::sleep(Duration::from_secs(1));
 
     (shell, stdin, server_pid)
@@ -90,8 +79,7 @@ fn the_server_exits_when_its_parent_dies_without_closing_stdin() {
 
     assert!(is_alive(server_pid), "server should be up before we start");
 
-    // SIGKILL, so the shell gets no chance to tidy up after itself. This is the
-    // force-quit/crash case, not a clean shutdown.
+    // SIGKILL simulates a crash without shell cleanup.
     shell.kill().expect("kill the middle shell");
     shell.wait().expect("reap the middle shell");
 
@@ -114,8 +102,7 @@ fn a_living_parent_does_not_trip_the_watch() {
     let vault = vault_with_a_note();
     let (mut shell, _stdin, server_pid) = server_under_a_killable_shell(vault.path());
 
-    // Well past the poll interval: a watch that fires on a healthy parent would
-    // have done it by now.
+    // Wait longer than the poll interval to check that a live parent is safe.
     std::thread::sleep(Duration::from_secs(12));
     let survived = is_alive(server_pid);
 
@@ -143,8 +130,7 @@ fn the_server_still_exits_on_stdin_eof() {
         .spawn()
         .expect("spawn the server");
 
-    // Closing stdin is what the spec asks a client to do first, and it has to
-    // keep working: the parent watch is a backstop, never a replacement.
+    // Closing stdin must still stop the server when its parent is alive.
     drop(server.stdin.take());
 
     let deadline = Instant::now() + GIVE_UP_AFTER;

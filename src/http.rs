@@ -1,22 +1,18 @@
 //! Serving MCP over Streamable HTTP, as well as stdio.
 //!
-//! stdio gives one client one server, spawned as a child process. HTTP lets
-//! several clients — or a client that isn't allowed to spawn processes — talk to
-//! one long-lived server that shares a single `VaultManager`, and therefore a
-//! single write lock.
+//! In stdio mode, each client spawns a server process. HTTP lets multiple clients
+//! use one server. All HTTP sessions share one `VaultManager` and write lock.
 //!
 //! # Why the Origin check is not optional
 //!
 //! This server has full read/write access to the user's notes and **no
-//! authentication**. Bound to `127.0.0.1`, that sounds safe — it isn't, on its
-//! own. Any web page the user visits can make their browser POST to
-//! `http://127.0.0.1:<port>/mcp`; the request comes from *their* machine, and
-//! there is no password to fail. That's the DNS-rebinding attack, and it's why
-//! the MCP specification requires local HTTP servers to validate `Origin`.
+//! authentication**. A web page can make a browser POST to
+//! `http://127.0.0.1:<port>/mcp`. Loopback binding alone does not prevent this
+//! DNS-rebinding attack. The MCP specification requires local HTTP servers to
+//! validate `Origin`.
 //!
-//! So we do: a request whose `Origin` names a site that isn't localhost is
-//! refused. Native MCP clients don't send `Origin` at all, so it costs them
-//! nothing, and browsers can't forge it.
+//! The server rejects an `Origin` that does not name localhost. Native MCP
+//! clients can omit `Origin`; browsers cannot forge it.
 
 use std::net::SocketAddr;
 

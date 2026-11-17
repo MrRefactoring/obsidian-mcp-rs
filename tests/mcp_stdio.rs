@@ -1,11 +1,9 @@
 //! End-to-end tests of the real MCP stdio transport.
 //!
-//! These spawn the built binary against a temp vault and drive a full JSON-RPC
-//! handshake over stdin/stdout. That matters: they are the only tests that see
-//! what a *client* sees. A unit test can assert on `ObsidianHandler`'s fields and
-//! still miss the server advertising something else entirely over the wire —
-//! which is exactly how `--no-edit` shipped in 0.5.0 still listing every write
-//! tool. Closing stdin gives the server EOF, so the tests never block.
+//! These tests start the binary with a temporary vault and send JSON-RPC requests
+//! over stdio. They check responses visible to a client. Unit tests can miss
+//! differences between handler fields and the protocol. In 0.5.0, `--no-edit`
+//! still listed write tools. Closing stdin sends EOF to the server.
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -13,23 +11,23 @@ use std::process::{Command, Stdio};
 
 use serde_json::{Value, json};
 
-/// Tools that only ever write. `--no-edit` must not advertise any of them.
+/// Write-only tools that `--no-edit` must not advertise.
 const WRITE_TOOLS: [&str; 8] = [
-    "create-note",
-    "edit-note",
-    "delete-note",
-    "move-note",
-    "create-directory",
-    "add-tags",
-    "remove-tags",
-    "rename-tag",
+    "create_note",
+    "edit_note",
+    "delete_note",
+    "move_note",
+    "create_folder",
+    "add_note_tags",
+    "remove_note_tags",
+    "rename_vault_tag",
 ];
 
 /// Drive a real server over stdio and collect its responses by request id.
 fn talk(extra_args: &[&str], vault: &std::path::Path, messages: &[Value]) -> HashMap<i64, Value> {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_obsidian-mcp-rs"));
     cmd.arg("--log-file")
-        .arg("-") // disable file logging so we don't touch the user's log dir
+        .arg("-") // Disable file logging to protect the user's log directory.
         .args(extra_args)
         .arg(vault)
         .stdin(Stdio::piped())
@@ -42,7 +40,7 @@ fn talk(extra_args: &[&str], vault: &std::path::Path, messages: &[Value]) -> Has
         for m in messages {
             writeln!(stdin, "{}", serde_json::to_string(m).unwrap()).unwrap();
         }
-        // Drop closes stdin → server sees EOF and exits.
+        // Drop closes stdin, so the server receives EOF and exits.
     }
 
     let output = child.wait_with_output().expect("server did not exit");
@@ -55,8 +53,7 @@ fn talk(extra_args: &[&str], vault: &std::path::Path, messages: &[Value]) -> Has
     let stdout = String::from_utf8(output.stdout).unwrap();
     let mut by_id = HashMap::new();
     for line in stdout.lines().filter(|l| !l.trim().is_empty()) {
-        // Every line on stdout must be protocol. A stray `println!` anywhere in
-        // the server would corrupt the stream, and this is what proves none does.
+        // Every stdout line must be protocol data. A `println!` would corrupt it.
         let v: Value = serde_json::from_str(line)
             .unwrap_or_else(|e| panic!("non-JSON line on stdout: {line:?} ({e})"));
         if let Some(id) = v.get("id").and_then(Value::as_i64) {
@@ -113,7 +110,7 @@ fn stdio_handshake_lists_tools_and_reads_a_note() {
     let mut msgs = handshake();
     msgs.push(json!({
         "jsonrpc": "2.0", "id": 3, "method": "tools/call",
-        "params": {"name": "read-note", "arguments": {"vault": vault_name, "filename": "hello"}}
+        "params": {"name": "read_note", "arguments": {"vault": vault_name, "filename": "hello"}}
     }));
 
     let by_id = talk(&[], vault.path(), &msgs);
@@ -124,21 +121,21 @@ fn stdio_handshake_lists_tools_and_reads_a_note() {
     let names = tool_names(&by_id);
     assert_eq!(names.len(), 15, "expected 15 tools, got {names:?}");
     for expected in [
-        "read-note",
-        "create-note",
-        "edit-note",
-        "delete-note",
-        "move-note",
-        "create-directory",
-        "search-vault",
-        "add-tags",
-        "remove-tags",
-        "rename-tag",
-        "list-available-vaults",
-        "wikilinks",
-        "frontmatter",
-        "vault-info",
-        "periodic",
+        "read_note",
+        "create_note",
+        "edit_note",
+        "delete_note",
+        "move_note",
+        "create_folder",
+        "search_notes",
+        "add_note_tags",
+        "remove_note_tags",
+        "rename_vault_tag",
+        "list_vaults",
+        "vault_links",
+        "note_properties",
+        "vault_info",
+        "periodic_notes",
     ] {
         assert!(names.iter().any(|n| n == expected), "missing {expected}");
     }
@@ -147,22 +144,20 @@ fn stdio_handshake_lists_tools_and_reads_a_note() {
         .get(&3)
         .and_then(|r| r.pointer("/result/content/0/text"))
         .and_then(Value::as_str)
-        .expect("no text content in read-note response");
+        .expect("no text content in read_note response");
     assert!(text.contains("hi there"), "unexpected note content: {text}");
 }
 
 #[test]
 fn no_edit_does_not_advertise_the_write_tools_over_the_wire() {
-    // The regression that shipped in 0.5.0: `with_options` pruned the write tools
-    // out of the router, but `#[tool_handler]` defaults to building a *fresh*
-    // one, so `tools/list` advertised all eight anyway. The unit test passed the
-    // whole time, because it asked the pruned field instead of the protocol.
-    // Only a real client can answer this question.
+    // In 0.5.0, `with_options` removed write tools from the router, but
+    // `#[tool_handler]` built a new router and `tools/list` still advertised them.
+    // This test checks the protocol response.
     let (vault, vault_name) = vault_with_a_note();
     let mut msgs = handshake();
     msgs.push(json!({
         "jsonrpc": "2.0", "id": 3, "method": "tools/call",
-        "params": {"name": "delete-note", "arguments": {"vault": vault_name, "filename": "hello"}}
+        "params": {"name": "delete_note", "arguments": {"vault": vault_name, "filename": "hello"}}
     }));
 
     let by_id = talk(&["--no-edit"], vault.path(), &msgs);
@@ -175,28 +170,21 @@ fn no_edit_does_not_advertise_the_write_tools_over_the_wire() {
         );
     }
     assert_eq!(names.len(), 7, "expected the 7 read tools, got {names:?}");
-    // `frontmatter` both reads and writes, so it stays listed — it is gated per
-    // action, and `get` is a read.
-    assert!(names.iter().any(|n| n == "frontmatter"));
+    // `frontmatter` stays listed because `get` reads without writing.
+    assert!(names.iter().any(|n| n == "note_properties"));
 
-    // The route is genuinely gone, not merely hidden: calling it still fails...
-    let del = by_id.get(&3).expect("no response to delete-note");
+    // The removed route must reject calls.
+    let del = by_id.get(&3).expect("no response to delete_note");
     assert!(
         del.get("error").is_some(),
-        "delete-note must be unreachable under --no-edit, got: {del}"
+        "delete_note must be unreachable under --no-edit, got: {del}"
     );
-    // ...and the note is still there.
+    // The note must remain in the vault.
     assert!(vault.path().join("hello.md").exists());
 }
 
-/// The five tools that answer with structured content used to return `Json<T>`,
-/// which can only express success — so "that note does not exist" left the server
-/// as a JSON-RPC protocol error, a shape the spec reserves for a request the
-/// server could not process, and one a client may swallow instead of showing the
-/// model. They now build the result themselves, which means two things have to
-/// hold at once, and only a real client can see either: the `outputSchema` the
-/// return type used to derive is still advertised, and a missing note comes back
-/// as `isError`.
+/// Structured-content tools must advertise `outputSchema` and return `isError`
+/// for a missing note. They previously returned that error as a JSON-RPC error.
 #[test]
 fn the_structured_tools_keep_their_output_schema_and_can_report_is_error() {
     let vault = tempfile::tempdir().unwrap();
@@ -206,7 +194,7 @@ fn the_structured_tools_keep_their_output_schema_and_can_report_is_error() {
     messages.push(json!({
         "jsonrpc": "2.0", "id": 3, "method": "tools/call",
         "params": {
-            "name": "frontmatter",
+            "name": "note_properties",
             "arguments": {
                 "vault": vault.path().file_name().unwrap().to_str().unwrap(),
                 "filename": "ghost",
@@ -218,11 +206,11 @@ fn the_structured_tools_keep_their_output_schema_and_can_report_is_error() {
 
     let tools = by_id[&2]["result"]["tools"].as_array().unwrap();
     for name in [
-        "frontmatter",
-        "wikilinks",
-        "search-vault",
-        "periodic",
-        "vault-info",
+        "note_properties",
+        "vault_links",
+        "search_notes",
+        "periodic_notes",
+        "vault_info",
     ] {
         let tool = tools
             .iter()
@@ -253,14 +241,11 @@ fn the_structured_tools_keep_their_output_schema_and_can_report_is_error() {
     );
 }
 
-/// The log is a diagnostic, not a copy of the vault.
+/// The log must not contain note content.
 ///
-/// `rmcp` logs each response payload at DEBUG, and the file layer is on DEBUG by
-/// design so a bug report has something in it. Together that wrote **the full
-/// text of every note read or searched** into a plaintext file on disk — the
-/// exact file a user is then asked to paste into an issue. The fix is that
-/// "debug" means this crate's debug, and everything else has to be asked for
-/// through `RUST_LOG`.
+/// `rmcp` logs response payloads at DEBUG. Enabling DEBUG for dependencies
+/// wrote note text to the log. The default filter enables DEBUG for this crate
+/// only; `RUST_LOG` can enable other targets.
 #[test]
 fn note_contents_never_reach_the_log_file() {
     const SECRET: &str = "ZZTOPSECRETPHRASEZZ";
@@ -271,9 +256,7 @@ fn note_contents_never_reach_the_log_file() {
         format!("# diary\n\n{SECRET}\n"),
     )
     .unwrap();
-    // A second note so the search has something to rank, and a hit whose snippet
-    // would drag the secret into a logged response payload if payloads were
-    // logged at all.
+    // Add a second note and a search hit that includes the secret in its snippet.
     std::fs::write(
         vault.path().join("other.md"),
         format!("# other\n\nthe diary mentions {SECRET} in passing\n"),
@@ -293,24 +276,22 @@ fn note_contents_never_reach_the_log_file() {
     let mut messages = handshake();
     messages.push(json!({
         "jsonrpc": "2.0", "id": 3, "method": "tools/call",
-        "params": {"name": "read-note", "arguments": {"vault": name, "filename": "diary.md"}}
+        "params": {"name": "read_note", "arguments": {"vault": name, "filename": "diary.md"}}
     }));
-    // Deliberately *not* searching for the secret itself. The query is logged,
-    // and on purpose: it is what the model asked for, and without it the log
-    // cannot explain why a search returned what it did. What must never be
-    // logged is what the vault answered with.
+    // Do not search for the secret itself. Queries are logged, but responses
+    // from the vault must not be logged.
     messages.push(json!({
         "jsonrpc": "2.0", "id": 4, "method": "tools/call",
-        "params": {"name": "search-vault", "arguments": {"vault": name, "query": "diary"}}
+        "params": {"name": "search_notes", "arguments": {"vault": name, "query": "diary"}}
     }));
 
     let by_id = talk_with_log(&log, vault.path(), &messages);
 
-    // The note really was served — otherwise this test proves nothing.
-    let served = serde_json::to_string(by_id.get(&3).expect("no read-note response")).unwrap();
+    // Check that the server returned the note.
+    let served = serde_json::to_string(by_id.get(&3).expect("no read_note response")).unwrap();
     assert!(
         served.contains(SECRET),
-        "read-note did not return the note; the assertion below would pass for the wrong reason"
+        "read_note did not return the note; the assertion below would pass for the wrong reason"
     );
 
     let written = std::fs::read_to_string(&log).expect("no log file was written");
@@ -318,14 +299,14 @@ fn note_contents_never_reach_the_log_file() {
         !written.contains(SECRET),
         "the note's contents were written to the log:\n{written}"
     );
-    // Still useful as a diagnostic: it has to say what was called.
+    // The log must still identify the calls for diagnosis.
     assert!(
-        written.contains("read-note"),
+        written.contains("read_note"),
         "the log lost its diagnostic value entirely:\n{written}"
     );
 }
 
-/// `talk`, but with the file log pointed at `log` instead of turned off.
+/// Run `talk` with file logging directed to `log`.
 fn talk_with_log(
     log: &std::path::Path,
     vault: &std::path::Path,
@@ -439,7 +420,7 @@ fn a_client_on_the_new_lifecycle_discovers_and_calls_tools() {
         json!({
             "jsonrpc": "2.0", "id": 3, "method": "tools/call",
             "params": {
-                "name": "read-note",
+                "name": "read_note",
                 "arguments": {"vault": vault_name, "filename": "hello"},
                 "_meta": meta
             }
@@ -485,7 +466,7 @@ fn a_client_on_the_new_lifecycle_discovers_and_calls_tools() {
         .get(&3)
         .and_then(|r| r.pointer("/result/content/0/text"))
         .and_then(Value::as_str)
-        .expect("no text content in the read-note response");
+        .expect("no text content in the read_note response");
     assert!(text.contains("hi there"), "unexpected note content: {text}");
 }
 
