@@ -26,6 +26,12 @@ pub enum VaultError {
     #[error("Note '{0}' already exists in vault '{1}'")]
     NoteAlreadyExists(String, String),
 
+    #[error("Note '{0}' changed since it was read. Read it again before you edit it.")]
+    RevisionConflict(String),
+
+    #[error("Write access is not allowed in vault '{0}' for: {1}")]
+    WriteNotAllowed(String, String),
+
     #[error("Directory '{0}' already exists")]
     DirectoryAlreadyExists(String),
 
@@ -81,6 +87,8 @@ impl VaultError {
                 | VaultError::NoteNotFound(..)
                 | VaultError::NotesNotFound(..)
                 | VaultError::NoteAlreadyExists(..)
+                | VaultError::RevisionConflict(..)
+                | VaultError::WriteNotAllowed(..)
                 | VaultError::DirectoryAlreadyExists(..)
                 | VaultError::SearchTextNotFound(..)
                 | VaultError::TargetNotFound(..)
@@ -99,6 +107,8 @@ impl From<VaultError> for rmcp::ErrorData {
             | VaultError::NoteNotFound(..)
             | VaultError::NotesNotFound(..)
             | VaultError::NoteAlreadyExists(..)
+            | VaultError::RevisionConflict(..)
+            | VaultError::WriteNotAllowed(..)
             | VaultError::DirectoryAlreadyExists(..)
             | VaultError::InvalidPath(..)
             | VaultError::MissingArgument(..)

@@ -10,6 +10,7 @@ use console::style;
 use dialoguer::{Confirm, Input, MultiSelect, theme::ColorfulTheme};
 
 use crate::update;
+use crate::vault::VaultManager;
 use clap::ValueEnum as _;
 use clients::{InstallTarget, all_targets, display_path, expand_tilde};
 use writer::{
@@ -17,6 +18,30 @@ use writer::{
 };
 
 pub use clients::ClientKind;
+
+pub fn read_client_launch(client: &ClientKind, global: bool) -> Result<(PathBuf, Vec<String>)> {
+    let targets = resolve_targets(client, global);
+    let [target] = targets.as_slice() else {
+        bail!("Choose one configured MCP client and scope");
+    };
+    let launch = writer::read_launch(&target.config_path, &target.format).with_context(|| {
+        format!(
+            "Cannot read the Obsidian MCP connection in {}",
+            target.config_path.display()
+        )
+    })?;
+    let command = Path::new(&launch.command);
+    let known = [binary::stable_path(), std::env::current_exe().ok()];
+    anyhow::ensure!(
+        command.is_absolute()
+            && known
+                .iter()
+                .flatten()
+                .any(|path| binary::is_same_file(command, path)),
+        "The selected connection must run the installed Obsidian MCP binary directly"
+    );
+    Ok((target.config_path.clone(), launch.args))
+}
 
 // ── Public arg structs (used by clap in main.rs) ──────────────────────────────
 
@@ -44,6 +69,10 @@ pub struct InstallArgs {
     /// Embed --no-edit in the generated config so the server starts in read-only mode
     #[arg(long)]
     pub no_edit: bool,
+
+    #[doc = "Allow writes in VAULT=FOLDER. Repeat for more folders. Use VAULT=. for the vault root."]
+    #[arg(long = "write-folder", value_name = "VAULT=FOLDER")]
+    pub write_folders: Vec<String>,
 
     /// Do not let the installed server update itself.
     #[arg(long)]
@@ -76,7 +105,13 @@ pub struct UninstallArgs {
 
 pub fn run_install(args: InstallArgs) -> Result<()> {
     match &args.client {
-        None => interactive_install(args.dry_run, args.force, args.no_edit, args.consent()),
+        None => interactive_install(
+            args.dry_run,
+            args.force,
+            args.no_edit,
+            &args.write_folders,
+            args.consent(),
+        ),
         Some(kind) => {
             if args.vaults.is_empty() {
                 bail!(
@@ -91,7 +126,13 @@ pub fn run_install(args: InstallArgs) -> Result<()> {
             if targets.is_empty() {
                 bail!("No config path found for this client on your system.");
             }
-            let launch = prepare_launch(&vaults, args.no_edit, args.dry_run, args.consent())?;
+            let launch = prepare_launch(
+                &vaults,
+                args.no_edit,
+                &args.write_folders,
+                args.dry_run,
+                args.consent(),
+            )?;
             let mut wrote_any = false;
             for target in &targets {
                 wrote_any |= install_one(target, &launch, args.dry_run, args.force)?;
@@ -347,7 +388,13 @@ fn report_drift(installed: update::Version, path: &std::path::Path) {
 
 // ── Interactive install wizard ────────────────────────────────────────────────
 
-fn interactive_install(dry_run: bool, force: bool, no_edit: bool, consent: Consent) -> Result<()> {
+fn interactive_install(
+    dry_run: bool,
+    force: bool,
+    no_edit: bool,
+    write_folders: &[String],
+    consent: Consent,
+) -> Result<()> {
     if !console::user_attended() {
         bail!(
             "Interactive mode requires a TTY.\n\
@@ -456,7 +503,7 @@ fn interactive_install(dry_run: bool, force: bool, no_edit: bool, consent: Conse
         println!();
     }
 
-    let launch = prepare_launch(&vaults, no_edit, dry_run, consent)?;
+    let launch = prepare_launch(&vaults, no_edit, write_folders, dry_run, consent)?;
     let mut wrote_any = false;
     for &i in &chosen {
         if install_one(&targets[i], &launch, dry_run, force)? {
@@ -584,9 +631,13 @@ fn settle_consent(choice: Consent) -> Result<bool> {
 fn prepare_launch(
     vaults: &[PathBuf],
     no_edit: bool,
+    write_folders: &[String],
     dry_run: bool,
     consent: Consent,
 ) -> Result<Launch> {
+    let pinned_rules = VaultManager::new(vaults.to_vec())
+        .with_write_folders(write_folders)?
+        .pinned_write_folder_rules(write_folders)?;
     let binary_path = if dry_run {
         binary::stable_path()
             .context("no per-user data directory on this system to install the server into")?
@@ -618,7 +669,12 @@ fn prepare_launch(
         .iter()
         .map(|p| p.to_string_lossy().into_owned())
         .collect();
-    Ok(Launch::new(&binary_path, &vault_strings, no_edit))
+    Ok(Launch::new(
+        &binary_path,
+        &vault_strings,
+        no_edit,
+        &pinned_rules,
+    ))
 }
 
 /// Returns true if a file was actually written.
@@ -855,6 +911,7 @@ mod tests {
             std::path::Path::new("/opt/obsidian-mcp-rs/bin/obsidian-mcp-rs"),
             &strings,
             no_edit,
+            &[],
         )
     }
 
@@ -1003,6 +1060,7 @@ mod tests {
             dry_run: false,
             force: false,
             no_edit: false,
+            write_folders: Vec::new(),
             no_auto_update: false,
             auto_update: false,
         };
@@ -1019,6 +1077,7 @@ mod tests {
             dry_run: true,
             force: false,
             no_edit: false,
+            write_folders: Vec::new(),
             no_auto_update: false,
             auto_update: false,
         };
@@ -1050,6 +1109,7 @@ mod tests {
             dry_run: false,
             force: false,
             no_edit: false,
+            write_folders: Vec::new(),
             no_auto_update: false,
             auto_update: false,
         };

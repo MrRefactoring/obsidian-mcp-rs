@@ -4,20 +4,21 @@
 
 ## What it does
 
-- Provides 15 MCP tools to manage notes, tags, frontmatter, links, and periodic notes.
+- Provides 25 MCP tools for notes, tags, properties, links, periodic notes, tasks, Canvas, and Obsidian Markdown guidance.
 - Uses CLI arguments to select one or more vaults.
 - The npm package provides platform-specific binaries. Cargo builds the crate from source.
 - Uses stdio by default. The optional `http` Cargo feature enables Streamable HTTP with `--http`.
 - Installs the server into 16 AI client configurations. The installed server can update from GitHub Releases.
 - Supports read-only operation with `--no-edit`.
+- Use `--write-folder VAULT=FOLDER` to allow writes only in selected folders. Repeat the flag for multiple folders. `--no-edit` still disables all writes.
 
 ## Tools
 
-- `read_note` — Read a note. Use `view: "outline"` to list headings, block references, and frontmatter keys. The default limit is 400 lines. Use `offset` and `limit` to read more.
+- `read_note` — Read a note and its revision. Use `view: "outline"` to list headings, block references, and frontmatter keys. The default limit is 400 lines. Use `offset` and `limit` to read more.
 - `create_note` — Create a Markdown note with content.
-- `edit_note` — Append, prepend, replace, or find and replace text. Apply the edit to the note, a heading section, or a `^block-id`.
+- `edit_note` — Append, prepend, replace, or find and replace text. Use `expectedRevision` from the note read to reject edits to a changed note. Apply the edit to the note, a heading section, or a `^block-id`.
 - `delete_note` — Move a note to the vault's `.trash/`. Set `permanent: true` to delete it permanently.
-- `move_note` — Move or rename a note. The server updates inbound `[[wikilinks]]` when necessary. Omit `newFolder` to keep the current folder. Use `newFolder: ""` to move the note to the vault root.
+- `move_note` — Move or rename a note. The server updates inbound links and Canvas cards. It rejects an occupied destination. Omit `newFolder` to keep the current folder. Use `newFolder: ""` to move the note to the vault root.
 - `create_folder` — Create a folder in a vault.
 - `search_notes` — Search content, filenames, or tags. Use the `tag:` prefix to search for a tag. Use `limit` and `offset` to page through results. Set `regex: true` to search for a pattern. Use `frontmatter: {"status": "active"}` to filter by frontmatter fields. A list field matches when it contains the value. An empty query permits a frontmatter-only filter. The server ranks text matches with BM25.
 - `list_vaults` — List the configured vaults.
@@ -27,7 +28,17 @@
 - `periodic_notes` — Read, create, or list daily, weekly, monthly, quarterly, or yearly notes. The server uses the name, folder, and template settings from Obsidian.
 - `add_note_tags` — Add tags to frontmatter, content, or both. Use `location` and `position` to control where tags go. All files must exist before the server makes changes.
 - `remove_note_tags` — Remove tags from notes.
-- `rename_vault_tag` — Rename a tag across the vault.
+- `rename_vault_tag` — Rename a tag across the vault. Set `dryRun: true` to list the notes that would change.
+- `get_writing_guide` — Get offline Obsidian Markdown rules, examples, and note recipes. Omit `topics` for the index. Select up to four different topics per call.
+- `list_tasks` — Find Markdown tasks by scope, status, date, priority, tag, or blocker. Use the reference with its revision for edits.
+- `create_task` — Add a task to a note or daily note. Choose a heading when needed.
+- `update_task` — Change task text, status, dates, or priority. Use the task reference from `list_tasks`.
+- `preview_task_batch` — Preview task moves or date changes. Show the changes to the user.
+- `apply_task_batch` — Apply the same operations with the confirmed `plan_id`. Check the result for each file.
+- `read_canvas` — Read a JSON Canvas board's nodes, edges, and revision.
+- `create_canvas` — Create a board at an unused path. Omit both node coordinates for automatic placement.
+- `edit_canvas` — Add, update, or remove nodes and edges. Pass the board's `expectedRevision`.
+- `batch_move_notes` — Preview note moves and link changes within or across vaults. Show blockers and the plan to the user. Apply the same moves and options with the confirmed `previewId`. Get separate consent for copying attachments or converting embeds and Canvas cards into links.
 
 ## Usage
 
@@ -51,6 +62,12 @@ The `install` command copies the server to a fixed per-user path. It writes that
 The installed server checks for releases at most once a day. Automatic updates wait at least 48 hours after a release. To disable automatic updates, run `install <client> <vault> --no-auto-update`.
 
 Run `update` on the installed binary to update it. Add `--force` to bypass the 48-hour wait. The `list` command shows the installed binary path. The `npx obsidian-mcp-rs update` command runs a cached binary. It does not update the installed copy.
+
+## Import from the terminal
+
+Run `obsidian-mcp-rs import-markdown --client CLIENT --vault VAULT --source DIR` to preview a local Markdown export. Use `--global` for a global client config and `--folder DIR` for a destination folder. Repeat `--exclude PATH` for paths to skip. Use `--allow-missing-attachments` only if the user accepts the unresolved attachments. Apply with the same arguments and `--apply PLAN_ID` after the user confirms.
+
+Run `obsidian-mcp-rs open-importer --vault VAULT` only when the user asks to open the official Obsidian Importer. The user selects the source and confirms the import in Obsidian. [Import guide](docs/import.md)
 
 ## Tech stack
 

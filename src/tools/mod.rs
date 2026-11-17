@@ -1,4 +1,6 @@
 pub mod add_tags;
+pub mod batch_move;
+pub mod canvas;
 pub mod create_directory;
 pub mod create_note;
 pub mod delete_note;
@@ -11,5 +13,7 @@ pub mod read_note;
 pub mod remove_tags;
 pub mod rename_tag;
 pub mod search_vault;
+pub mod tasks;
 pub mod vault_info;
 pub mod wikilinks;
+pub mod writing_guide;

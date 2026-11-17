@@ -8,6 +8,23 @@
 - **The minimum supported Rust version is now 1.89.** Updated `rmcp` to 3.11 and `noyalib` to 0.0.62, along with the lockfile dependencies.
 - Refreshed tool descriptions and project documentation, including a dedicated `INSTALL.md` and revised installation, contribution, security, and release guidance.
 
+### Added
+
+- The installation guide includes a first request to confirm the connected vault and list recent notes.
+- Set `dryRun: true` in `rename_vault_tag` to list the notes that would change without writing to them.
+- Added `get_writing_guide` with offline Obsidian Markdown examples and note recipes. It works in read-only mode.
+- Added `--write-folder VAULT=FOLDER` to allow writes only in selected vault folders. The installer records the canonical vault path for each rule.
+- `read_note` returns the revision of the complete note. Pass it as `expectedRevision` to `edit_note` to reject the edit if the note changed.
+- Find, create, update, and reschedule Markdown tasks through MCP. Task results include source revisions, due dates, priorities, and blockers. Confirm a preview before applying changes across files. Supported Obsidian Tasks recurrences create a new occurrence when completed.
+- Read, create, and edit JSON Canvas boards through MCP. New cards support automatic placement. Board edits check the revision and preserve untouched fields.
+- Preview and apply moves within or across vaults with `batch_move_notes`. Plans report protected paths, occupied destinations, link updates, and requested attachment copies or embed and Canvas card conversions.
+- Preview local Markdown exports with `import-markdown` and apply a confirmed plan under the existing MCP connection's permissions. Use `open-importer` to open the official Obsidian Importer. Source selection and import confirmation are in Obsidian.
+
+### Fixed
+
+- `move_note` rejects an occupied destination. If link updates fail, it reports the files and reasons after the move. It retries Markdown link updates once per file on a temporary I/O error.
+- A move with an omitted destination folder keeps the source folder when the caller passes a vault-relative source path.
+
 
 ## [0.8.1] - 2026-10-24
 

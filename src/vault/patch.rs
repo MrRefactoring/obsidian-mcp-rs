@@ -39,12 +39,12 @@ pub(crate) struct Region {
 }
 
 /// A heading found in a note's body.
-struct Heading {
-    level: usize,
-    text: String,
-    line: usize,
+pub(super) struct Heading {
+    pub(super) level: usize,
+    pub(super) text: String,
+    pub(super) line: usize,
     /// Byte offset of the start of the heading line.
-    start: usize,
+    pub(super) start: usize,
 }
 
 /// A block-reference marker (`^id`) and the block it terminates.
@@ -56,7 +56,7 @@ struct Block {
 
 /// Where the note's body begins — past the frontmatter, so a `#` inside the YAML
 /// is not mistaken for a heading.
-fn body_start(content: &str) -> usize {
+pub(super) fn body_start(content: &str) -> usize {
     match content.strip_prefix("---").and_then(find_closing_fm) {
         // `find_closing_fm` returns the offset (within the post-`---` slice) of
         // the newline before the closing marker, which spans 4 more bytes.
@@ -83,7 +83,7 @@ fn lines_with_offsets(content: &str) -> Vec<(usize, &str)> {
 /// Not headings: anything inside a code fence (that's a code sample), anything
 /// in the frontmatter, and `#tag` — a hash glued to a word is a tag, and a note
 /// that opens with `#todo` must not read as an H1 called "todo".
-fn headings(content: &str) -> Vec<Heading> {
+pub(super) fn headings(content: &str) -> Vec<Heading> {
     let code = code_spans(content);
     let start_of_body = body_start(content);
 

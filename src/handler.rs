@@ -13,17 +13,35 @@ use crate::vault::SearchType;
 use crate::{
     error::VaultError,
     tools::{
-        add_tags::AddTagsParams, create_directory::CreateDirectoryParams,
-        create_note::CreateNoteParams, delete_note::DeleteNoteParams, edit_note::EditNoteParams,
-        frontmatter::FrontmatterParams, list_vaults::ListVaultsParams, move_note::MoveNoteParams,
-        periodic::PeriodicParams, read_note::ReadNoteParams, remove_tags::RemoveTagsParams,
-        rename_tag::RenameTagParams, search_vault::SearchVaultParams, vault_info::VaultInfoParams,
+        add_tags::AddTagsParams,
+        batch_move::BatchMoveParams,
+        canvas::{CreateCanvasParams, EditCanvasParams, ReadCanvasParams},
+        create_directory::CreateDirectoryParams,
+        create_note::CreateNoteParams,
+        delete_note::DeleteNoteParams,
+        edit_note::EditNoteParams,
+        frontmatter::FrontmatterParams,
+        list_vaults::ListVaultsParams,
+        move_note::MoveNoteParams,
+        periodic::PeriodicParams,
+        read_note::ReadNoteParams,
+        remove_tags::RemoveTagsParams,
+        rename_tag::RenameTagParams,
+        search_vault::SearchVaultParams,
+        tasks::{
+            ApplyTaskBatchParams, CreateTaskParams, ListTasksParams, PreviewTaskBatchParams,
+            UpdateTaskParams,
+        },
+        vault_info::VaultInfoParams,
         wikilinks::WikilinksParams,
+        writing_guide::{self, WritingGuideParams},
     },
     vault::{
-        DEFAULT_RECENT, DeleteOutcome, Edit, FrontmatterAction, FrontmatterOutput, InfoOutput,
-        LinkOutput, PeriodicAction, PeriodicOutput, PeriodicRequest, SearchOutput, SearchQuery,
-        Target, VaultManager,
+        BatchMoveResult, DEFAULT_RECENT, DeleteOutcome, Edit, FrontmatterAction, FrontmatterOutput,
+        InfoOutput, LinkOutput, PeriodicAction, PeriodicOutput, PeriodicRequest, SearchOutput,
+        SearchQuery, Target, VaultManager,
+        canvas::CanvasResult,
+        tasks::{ListTasksOutput, TaskBatchOutput, TaskBatchPreview, TaskWriteOutput},
     },
 };
 
@@ -44,7 +62,7 @@ const DEFAULT_PERIODIC_LIST: usize = 10;
 /// router, so they are absent from `tools/list` *and* unreachable via
 /// `tools/call` — `check_write` then stays as the second layer, and is what gates
 /// `note_properties` and `periodic_notes`, the two tools that both read and write.
-const WRITE_TOOLS: [&str; 8] = [
+const WRITE_TOOLS: [&str; 13] = [
     "create_note",
     "edit_note",
     "delete_note",
@@ -53,6 +71,11 @@ const WRITE_TOOLS: [&str; 8] = [
     "add_note_tags",
     "remove_note_tags",
     "rename_vault_tag",
+    "create_task",
+    "update_task",
+    "apply_task_batch",
+    "create_canvas",
+    "edit_canvas",
 ];
 
 fn ok(text: impl Into<String>) -> Result<CallToolResult, McpError> {
@@ -162,14 +185,17 @@ impl ObsidianHandler {
     ) -> Result<CallToolResult, McpError> {
         tracing::debug!(tool = "read_note", vault = %params.vault, filename = %params.filename, view = ?params.view);
         let window = params.window();
-        match self.vault.read_note(
+        match self.vault.read_note_with_revision(
             &params.vault,
             &params.filename,
             params.folder.as_deref(),
             &params.view.clone().unwrap_or_default(),
             &window,
         ) {
-            Ok(content) => ok(content),
+            Ok(note) => Ok(CallToolResult::success(vec![
+                ContentBlock::text(note.content),
+                ContentBlock::text(format!("Note revision: {}", note.revision)),
+            ])),
             Err(e) => tool_error(e),
         }
     }
@@ -225,6 +251,7 @@ impl ObsidianHandler {
             search,
             target_type,
             target,
+            expected_revision,
         }): rmcp::handler::server::wrapper::Parameters<EditNoteParams>,
     ) -> Result<CallToolResult, McpError> {
         tracing::debug!(tool = "edit_note", %vault, %filename, ?operation, ?target);
@@ -249,10 +276,13 @@ impl ObsidianHandler {
             search: search.as_deref(),
             target,
         };
-        let (old, new) = match self
-            .vault
-            .edit_note(&vault, &filename, folder.as_deref(), &edit)
-        {
+        let (old, new) = match self.vault.edit_note_at_revision(
+            &vault,
+            &filename,
+            folder.as_deref(),
+            &edit,
+            expected_revision.as_deref(),
+        ) {
             Ok(v) => v,
             Err(e) => return tool_error(e),
         };
@@ -394,6 +424,12 @@ impl ObsidianHandler {
                         outcome.relinked.len(),
                         outcome.relinked.join(", ")
                     ));
+                }
+                if !outcome.link_failures.is_empty() {
+                    msg.push_str("\n\nCould not check or update links in these notes:");
+                    for failure in outcome.link_failures {
+                        msg.push_str(&format!("\n- {}: {}", failure.path, failure.reason));
+                    }
                 }
                 ok(msg)
             }
@@ -556,7 +592,7 @@ impl ObsidianHandler {
         }
     }
 
-    /// Rename a tag across all notes in the vault.
+    /// Rename a tag across the vault or list the notes that would change.
     #[tool(
         name = "rename_vault_tag",
         annotations(
@@ -572,10 +608,32 @@ impl ObsidianHandler {
             vault,
             old_tag,
             new_tag,
+            dry_run,
         }): rmcp::handler::server::wrapper::Parameters<RenameTagParams>,
     ) -> Result<CallToolResult, McpError> {
-        tracing::debug!(tool = "rename_vault_tag", %vault, %old_tag, %new_tag);
+        tracing::debug!(tool = "rename_vault_tag", %vault, %old_tag, %new_tag, dry_run);
         self.check_write()?;
+        if dry_run {
+            return match self.vault.preview_rename_tag(&vault, &old_tag, &new_tag) {
+                Ok(preview) => {
+                    let mut message = format!(
+                        "Dry run. No notes changed. Would rename tag '{}' to '{}' in {} file(s): {}",
+                        old_tag,
+                        new_tag,
+                        preview.affected.len(),
+                        preview.affected.join(", ")
+                    );
+                    if !preview.blocked.is_empty() {
+                        message.push_str(&format!(
+                            "\nRename would be blocked. Write access is not allowed for: {}",
+                            preview.blocked.join(", ")
+                        ));
+                    }
+                    ok(message)
+                }
+                Err(e) => tool_error(e),
+            };
+        }
         match self.vault.rename_tag(&vault, &old_tag, &new_tag) {
             Ok(modified) => ok(format!(
                 "Renamed tag '{}' to '{}' in {} file(s): {}",
@@ -649,6 +707,149 @@ impl ObsidianHandler {
             self.vault
                 .vault_info(&vault, &query, limit.unwrap_or(DEFAULT_RECENT)),
         )
+    }
+
+    #[doc = "Find Markdown tasks by status, date, or scope."]
+    #[tool(
+        name = "list_tasks",
+        annotations(title = "List tasks", read_only_hint = true, open_world_hint = false),
+        output_schema = output_schema::<ListTasksOutput>()
+    )]
+    fn list_tasks(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<ListTasksParams>,
+    ) -> Result<CallToolResult, McpError> {
+        structured(self.vault.list_tasks(&params))
+    }
+
+    #[doc = "Add a Markdown task to a note or heading."]
+    #[tool(
+        name = "create_task",
+        annotations(title = "Create task", destructive_hint = false, open_world_hint = false),
+        output_schema = output_schema::<TaskWriteOutput>()
+    )]
+    fn create_task(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<CreateTaskParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.check_write()?;
+        structured(self.vault.create_task(&params))
+    }
+
+    #[doc = "Change a task from list_tasks. Pass its revision to reject stale changes."]
+    #[tool(
+        name = "update_task",
+        annotations(title = "Update task", destructive_hint = true, open_world_hint = false),
+        output_schema = output_schema::<TaskWriteOutput>()
+    )]
+    fn update_task(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<UpdateTaskParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.check_write()?;
+        structured(self.vault.update_task(&params))
+    }
+
+    #[doc = "Preview task changes and get a plan ID."]
+    #[tool(
+        name = "preview_task_batch",
+        annotations(title = "Preview task changes", read_only_hint = true, open_world_hint = false),
+        output_schema = output_schema::<TaskBatchPreview>()
+    )]
+    fn preview_task_batch(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<PreviewTaskBatchParams>,
+    ) -> Result<CallToolResult, McpError> {
+        structured(self.vault.preview_task_batch(&params))
+    }
+
+    #[doc = "Apply the task changes from a confirmed preview."]
+    #[tool(
+        name = "apply_task_batch",
+        annotations(title = "Apply task changes", destructive_hint = true, open_world_hint = false),
+        output_schema = output_schema::<TaskBatchOutput>()
+    )]
+    fn apply_task_batch(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<ApplyTaskBatchParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.check_write()?;
+        structured(self.vault.apply_task_batch(&params))
+    }
+
+    #[doc = "Read the nodes and edges in one JSON Canvas file."]
+    #[tool(
+        name = "read_canvas",
+        annotations(title = "Read Canvas", read_only_hint = true, open_world_hint = false),
+        output_schema = output_schema::<CanvasResult>()
+    )]
+    fn read_canvas(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<ReadCanvasParams>,
+    ) -> Result<CallToolResult, McpError> {
+        structured(self.vault.read_canvas(&params))
+    }
+
+    #[doc = "Create a JSON Canvas file with nodes and edges."]
+    #[tool(
+        name = "create_canvas",
+        annotations(title = "Create Canvas", destructive_hint = false, open_world_hint = false),
+        output_schema = output_schema::<CanvasResult>()
+    )]
+    fn create_canvas(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<CreateCanvasParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.check_write()?;
+        structured(self.vault.create_canvas(&params))
+    }
+
+    #[doc = "Apply targeted node and edge changes to a Canvas revision."]
+    #[tool(
+        name = "edit_canvas",
+        annotations(title = "Edit Canvas", destructive_hint = true, open_world_hint = false),
+        output_schema = output_schema::<CanvasResult>()
+    )]
+    fn edit_canvas(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<EditCanvasParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.check_write()?;
+        structured(self.vault.edit_canvas(&params))
+    }
+
+    #[doc = "Preview note moves and link changes. Apply only with a confirmed preview ID."]
+    #[tool(
+        name = "batch_move_notes",
+        annotations(title = "Preview or apply note moves", destructive_hint = true, open_world_hint = false),
+        output_schema = output_schema::<BatchMoveResult>()
+    )]
+    fn batch_move_notes(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<BatchMoveParams>,
+    ) -> Result<CallToolResult, McpError> {
+        if params.preview_id.is_some() {
+            self.check_write()?;
+        }
+        structured(self.vault.batch_move_notes(&params))
+    }
+
+    #[doc = "Get examples of Obsidian Markdown or note templates. Omit topics for the index."]
+    #[tool(
+        name = "get_writing_guide",
+        annotations(
+            title = "Get Obsidian writing guide",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    fn get_writing_guide(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(WritingGuideParams { topics }): rmcp::handler::server::wrapper::Parameters<WritingGuideParams>,
+    ) -> Result<CallToolResult, McpError> {
+        ok(writing_guide::render(&topics)?)
     }
 
     /// List all available vaults configured for this server.
@@ -734,7 +935,9 @@ impl ObsidianHandler {
         format!(
             "{opening} For note tools, `filename` is relative to the vault root and may omit `.md`. \
              Use the `path` from `search_notes` as `filename`. Use `tag:` to search for a tag. \
-             Set `regex: true` to search for a pattern. Use `view: \"outline\"` to find targets for `edit_note`."
+             Set `regex: true` to search for a pattern. Use `view: \"outline\"` to find targets for `edit_note`. \
+             For Obsidian syntax, use the official `obsidian-markdown` skill if installed or call `get_writing_guide`. \
+             With terminal access, use `import-markdown` to preview a local Markdown import. Use `open-importer` only when the user asks to open Obsidian Importer. See https://github.com/MrRefactoring/obsidian-mcp-rs/blob/master/docs/import.md."
         )
     }
 }
@@ -894,6 +1097,7 @@ mod tests {
             search: None,
             target_type: None,
             target: None,
+            expected_revision: None,
         }));
         assert!(r.is_ok());
     }
@@ -910,6 +1114,7 @@ mod tests {
             search: None,
             target_type: None,
             target: None,
+            expected_revision: None,
         }));
         assert_is_error(r);
     }
@@ -927,6 +1132,7 @@ mod tests {
             search: Some("missing".into()),
             target_type: None,
             target: None,
+            expected_revision: None,
         }));
         assert_is_error(r);
     }
@@ -948,6 +1154,7 @@ mod tests {
             search: None,
             target_type: Some(TargetKind::Heading),
             target: Some("## Log".into()),
+            expected_revision: None,
         }));
         assert!(r.is_ok());
         let out = fs::read_to_string(dir.path().join("e.md")).unwrap();
@@ -967,6 +1174,7 @@ mod tests {
             search: None,
             target_type: Some(TargetKind::Heading),
             target: Some("Ghost".into()),
+            expected_revision: None,
         }));
         assert_is_error(r);
         assert_eq!(
@@ -990,6 +1198,7 @@ mod tests {
             search: None,
             target_type: Some(TargetKind::Heading),
             target: None,
+            expected_revision: None,
         }));
         assert!(r.is_err());
         assert_eq!(
@@ -1109,6 +1318,69 @@ mod tests {
             new_filename: Some("renamed".into()),
         }));
         assert_is_error(r);
+    }
+
+    #[test]
+    fn move_note_collision_keeps_both_notes_and_their_links() {
+        let (dir, h, vault) = setup();
+        write(&dir, "src.md", "source");
+        write(&dir, "dst.md", "destination");
+        write(&dir, "link.md", "[[src]]");
+
+        let message = error_text(h.move_note(Parameters(MoveNoteParams {
+            vault,
+            filename: "src".into(),
+            folder: None,
+            new_folder: None,
+            new_filename: Some("dst".into()),
+        })));
+
+        assert!(message.contains("dst.md") && message.contains("already exists"));
+        assert_eq!(
+            fs::read_to_string(dir.path().join("src.md")).unwrap(),
+            "source"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join("dst.md")).unwrap(),
+            "destination"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join("link.md")).unwrap(),
+            "[[src]]"
+        );
+    }
+
+    #[test]
+    fn move_note_reports_a_partial_link_update() {
+        let (dir, h, vault) = setup();
+        write(&dir, "src.md", "source");
+        write(&dir, "link.md", "[[src]]");
+        fs::write(dir.path().join("unreadable.md"), b"[[src]]\xff").unwrap();
+
+        let result = h
+            .move_note(Parameters(MoveNoteParams {
+                vault,
+                filename: "src".into(),
+                folder: None,
+                new_folder: None,
+                new_filename: Some("dst".into()),
+            }))
+            .unwrap();
+
+        assert_ne!(result.is_error, Some(true));
+        let message = &result.content[0].as_text().unwrap().text;
+        assert!(message.contains("Moved note to"));
+        assert!(message.contains("Updated links in 1 note(s): link.md"));
+        assert!(message.contains("unreadable.md") && message.contains("UTF-8"));
+        assert!(!dir.path().join("src.md").exists());
+        assert_eq!(
+            fs::read_to_string(dir.path().join("dst.md")).unwrap(),
+            "source"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join("link.md")).unwrap(),
+            "[[dst]]"
+        );
     }
 
     #[test]
@@ -1312,12 +1584,55 @@ mod tests {
     fn rename_tag_ok() {
         let (dir, h, vault) = setup();
         write(&dir, "t.md", "---\ntags:\n  - alpha\n---\n");
-        let r = h.rename_tag(Parameters(RenameTagParams {
-            vault,
-            old_tag: "alpha".into(),
-            new_tag: "beta".into(),
-        }));
+        let arguments = serde_json::json!({"vault": vault, "oldTag": "alpha", "newTag": "beta"});
+        let r = h.rename_tag(Parameters(serde_json::from_value(arguments).unwrap()));
         assert!(r.is_ok());
+        assert_eq!(
+            fs::read_to_string(dir.path().join("t.md")).unwrap(),
+            "---\ntags:\n  - beta\n---\n"
+        );
+    }
+
+    #[test]
+    fn rename_tag_dry_run_lists_only_notes_that_apply_changes() {
+        let (dir, h, vault) = setup();
+        let notes = [
+            ("z.md", "A #old tag."),
+            ("a.md", "---\ntags:\n  - old\n---\n"),
+            ("only-child.md", "#old/child"),
+            ("longer-tag.md", "#old-tag"),
+        ];
+        for (path, content) in notes {
+            write(&dir, path, content);
+        }
+        let rename = |dry_run| {
+            let arguments = serde_json::json!({"vault": vault, "oldTag": "old", "newTag": "new", "dryRun": dry_run});
+            let result = h
+                .rename_tag(Parameters(serde_json::from_value(arguments).unwrap()))
+                .unwrap();
+            assert_ne!(result.is_error, Some(true));
+            result.content[0].as_text().unwrap().text.clone()
+        };
+
+        assert_eq!(
+            rename(true),
+            "Dry run. No notes changed. Would rename tag 'old' to 'new' in 2 file(s): a.md, z.md"
+        );
+        for (path, content) in notes {
+            assert_eq!(fs::read_to_string(dir.path().join(path)).unwrap(), content);
+        }
+        assert_eq!(
+            rename(false),
+            "Renamed tag 'old' to 'new' in 2 file(s): a.md, z.md"
+        );
+        for (path, content) in [
+            ("a.md", "---\ntags:\n  - new\n---\n"),
+            ("z.md", "A #new tag."),
+            notes[2],
+            notes[3],
+        ] {
+            assert_eq!(fs::read_to_string(dir.path().join(path)).unwrap(), content);
+        }
     }
 
     // ── list_vaults ─────────────────────────────────────────────────
@@ -1383,6 +1698,7 @@ mod tests {
             search: None,
             target_type: None,
             target: None,
+            expected_revision: None,
         }));
         assert!(r.is_err());
         assert!(r.unwrap_err().message.contains("--no-edit"));
@@ -1462,13 +1778,16 @@ mod tests {
     fn no_edit_blocks_rename_tag() {
         let (dir, h, vault) = setup_readonly();
         write(&dir, "t.md", "---\ntags:\n  - alpha\n---\n");
-        let r = h.rename_tag(Parameters(RenameTagParams {
-            vault,
-            old_tag: "alpha".into(),
-            new_tag: "beta".into(),
-        }));
-        assert!(r.is_err());
-        assert!(r.unwrap_err().message.contains("--no-edit"));
+        for dry_run in [false, true] {
+            let r = h.rename_tag(Parameters(RenameTagParams {
+                vault: vault.clone(),
+                old_tag: "alpha".into(),
+                new_tag: "beta".into(),
+                dry_run,
+            }));
+            assert!(r.is_err());
+            assert!(r.unwrap_err().message.contains("--no-edit"));
+        }
     }
 
     #[test]
@@ -1494,7 +1813,13 @@ mod tests {
                 "--no-edit must not advertise '{write_tool}': {listed:?}"
             );
         }
-        for read_tool in ["read_note", "search_notes", "vault_links", "list_vaults"] {
+        for read_tool in [
+            "read_note",
+            "search_notes",
+            "vault_links",
+            "list_vaults",
+            "get_writing_guide",
+        ] {
             assert!(listed.iter().any(|n| n == read_tool), "missing {read_tool}");
         }
         assert!(
@@ -1506,7 +1831,7 @@ mod tests {
     #[test]
     fn every_tool_is_listed_when_writes_are_allowed() {
         let (_dir, h, _) = setup();
-        assert_eq!(h.tool_router.list_all().len(), 15);
+        assert_eq!(h.tool_router.list_all().len(), 25);
     }
 
     #[test]

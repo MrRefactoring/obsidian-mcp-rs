@@ -1,6 +1,6 @@
 use std::{
-    fs,
-    path::{Path, PathBuf},
+    fs, io,
+    path::{Component, Path, PathBuf},
 };
 
 use crate::error::VaultError;
@@ -45,6 +45,12 @@ pub(crate) fn safe_join(
         Some(f) if !f.is_empty() => root.join(f).join(filename),
         _ => root.join(filename),
     };
+    let escapes =
+        |_| VaultError::InvalidPath(format!("path '{}' escapes vault root", joined.display()));
+    let relative = joined.strip_prefix(root).map_err(escapes)?;
+    normalize_relative(relative).map_err(|_| {
+        VaultError::InvalidPath(format!("path '{}' escapes vault root", joined.display()))
+    })?;
 
     let canon_root =
         fs::canonicalize(root).map_err(|e| VaultError::io(root.display().to_string(), e))?;
@@ -75,6 +81,44 @@ pub(crate) fn safe_join(
     }
 
     Ok(joined)
+}
+
+pub(crate) fn normalize_relative(path: &Path) -> Result<PathBuf, VaultError> {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(name) => normalized.push(name),
+            Component::CurDir => {}
+            Component::ParentDir if normalized.pop() => {}
+            _ => return Err(VaultError::InvalidPath(path.display().to_string())),
+        }
+    }
+    Ok(normalized)
+}
+
+pub(crate) fn projected_path(path: &Path) -> Result<PathBuf, VaultError> {
+    let mut ancestor = path;
+    loop {
+        match fs::canonicalize(ancestor) {
+            Ok(canonical) => {
+                let tail = path
+                    .strip_prefix(ancestor)
+                    .map_err(|_| VaultError::InvalidPath(path.display().to_string()))?;
+                let tail = normalize_relative(tail)?;
+                return Ok(if tail.as_os_str().is_empty() {
+                    canonical
+                } else {
+                    canonical.join(tail)
+                });
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                ancestor = ancestor
+                    .parent()
+                    .ok_or_else(|| VaultError::io(path.display().to_string(), e))?;
+            }
+            Err(e) => return Err(VaultError::io(path.display().to_string(), e)),
+        }
+    }
 }
 
 pub(crate) fn ensure_md_extension(filename: &str) -> String {

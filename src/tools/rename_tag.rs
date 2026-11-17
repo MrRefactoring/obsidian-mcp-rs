@@ -10,4 +10,7 @@ pub struct RenameTagParams {
     /// New tag name, for example "new-tag".
     #[serde(rename = "newTag")]
     pub new_tag: String,
+    #[doc = "Set to true to list the notes that would change without writing to them."]
+    #[serde(rename = "dryRun", default)]
+    pub dry_run: bool,
 }

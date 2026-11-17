@@ -199,9 +199,9 @@ Every backend copies the previous file to `<config>.bak` before writing, so this
 
 ## Features
 
-- **15 tools** covering note CRUD, search, links, frontmatter, daily notes, directory management, and tag operations
+- **25 MCP tools** for notes, search, links, properties, tasks, Canvas, and Obsidian Markdown guidance
 - **Ranked search** — BM25 relevance with field boosts (a term in the title outranks the same term buried in a paragraph), returned best-first and capped so a common word can't flood the model's context
-- **Link-aware moves** — renaming a note rewrites every `[[wikilink]]` and markdown link pointing at it, so moving a note never silently orphans references
+- **Link-aware moves** update inbound Markdown links and Canvas cards. Batch previews list affected files and blockers before you confirm the move.
 - **Link graph** — `vault_links` answers backlinks, outgoing, broken links and orphans
 - **Section-scoped edits** — point `edit_note` at one heading or one `^block-id` and only those bytes are rewritten; the rest of the note is passed through untouched
 - **Frontmatter access** — `note_properties` reads and writes any YAML key, not just `tags`, and touches only the key you named
@@ -209,7 +209,9 @@ Every backend copies the previous file to `<config>.bak` before writing, so this
 - **Recoverable deletes** — `delete_note` moves the note to the vault's `.trash/` (as Obsidian does) rather than erasing it; a trashed note disappears from search and the link graph, but the user can still get it back
 - **Daily notes** — `periodic_notes` reads/creates daily…yearly notes using the vault's *own* Obsidian settings (name format, folder, template), so it writes to the note you actually keep
 - **Vault orientation** — `vault_info` answers what tags exist, what changed recently, and how big the vault is
-- **Read-only mode** — `--no-edit` removes every write tool from `tools/list` entirely, so a read-only server describes itself as one
+- **Write controls** with read-only mode, folder allowlists, and revision checks for note edits
+- **Markdown tasks** stay in their source notes. Find, add, finish, or reschedule tasks and preview changes across files.
+- **JSON Canvas** lets agents read or edit nodes and edges while preserving untouched fields.
 - **Zero runtime dependencies** — the server is a single static binary, and it is what your client runs: `install` places it and points the config straight at it, so no Node process sits in between. Node.js 22+ is needed only to *run the installer*; grab a binary from [Releases](https://github.com/MrRefactoring/obsidian-mcp-rs/releases) or `cargo install` to skip it entirely.
 - **Cross-platform** — macOS (ARM64 + x64), Linux (x64 + ARM64 + musl), Windows (x64 + ARM64)
 - **Tag search** via `tag:` prefix in queries
@@ -310,7 +312,7 @@ Add the server to Cursor's MCP settings via **Settings → MCP → Add Server**,
 }
 ```
 
-Once added, Cursor's AI will have access to all 15 vault tools. You can verify with the MCP panel in Settings.
+Once added, Cursor's AI will have access to all 25 MCP tools in the default configuration. You can verify with the MCP panel in Settings.
 
 ### OpenClaw (`~/.openclaw/openclaw.json`)
 
@@ -330,17 +332,28 @@ Once added, Cursor's AI will have access to all 15 vault tools. You can verify w
 
 ## Read-only mode (`--no-edit`)
 
-Pass `--no-edit` to start the server in read-only mode. The eight write-only tools are **removed from `tools/list` entirely** — a read-only server describes itself as one, rather than advertising tools it will only refuse — and they are unreachable via `tools/call` as well.
+Pass `--no-edit` to start the server in read-only mode. The thirteen write-only tools are removed from `tools/list` and cannot be called.
 
 **Removed under `--no-edit`** (the write-only tools):
-`create_note`, `edit_note`, `delete_note`, `move_note`, `create_folder`, `add_note_tags`, `remove_note_tags`, `rename_vault_tag`
+`create_note`, `edit_note`, `delete_note`, `move_note`, `create_folder`, `add_note_tags`, `remove_note_tags`, `rename_vault_tag`, `create_task`, `update_task`, `apply_task_batch`, `create_canvas`, `edit_canvas`
 
 **Still listed, because they read as well as write** — these are gated *per action*, so the reads work and the writes are refused:
 - `note_properties` — `get` works; `set` and `remove` are refused
 - `periodic_notes` — `get` and `list` work; `create` is refused
+- `batch_move_notes` — preview works; applying a preview is refused
 
 **Pure reads, always available:**
-`read_note`, `search_notes`, `vault_links`, `vault_info`, `list_vaults`
+`read_note`, `search_notes`, `vault_links`, `vault_info`, `list_vaults`, `get_writing_guide`, `list_tasks`, `preview_task_batch`, `read_canvas`
+
+### Limit writes to selected folders
+
+Pass `--write-folder VAULT=FOLDER` when starting the server or running `install`. Use a vault name from `list_vaults` and a vault-relative folder path. Repeat the flag for multiple folders. Use `VAULT=.` to allow writes in all folders of one vault. If a vault name is ambiguous, use its canonical path.
+
+```bash
+obsidian-mcp-rs install claude --write-folder "MyVault=Inbox" ~/Obsidian/MyVault
+```
+
+With at least one rule, all configured vaults remain readable and only listed folders allow writes. A move or tag rename fails before it changes files if it needs to update a protected note. A normal delete from an allowed folder can move the note to the vault trash. Without rules, the server uses the default full write access. `--no-edit` disables writes regardless of these rules.
 
 ### Manual config with `--no-edit`
 
@@ -373,6 +386,19 @@ npx obsidian-mcp-rs install claude --no-edit ~/Documents/Obsidian/MyVault
 | Windows | x64 | `x86_64-pc-windows-msvc` |
 | Windows | ARM64 | `aarch64-pc-windows-msvc` |
 
+## Import notes
+
+Use `import-markdown` for a local folder of Markdown notes and attachments. The command reads an existing MCP connection to select the vault and enforce its write rules. Omit `--apply` to preview the files, link changes, and blockers. Check the plan with the person who owns the vault before applying it with the same arguments and returned `plan_id`.
+
+```bash
+obsidian-mcp-rs import-markdown --client claude-code --vault MyVault --source ./export --folder Inbox
+obsidian-mcp-rs import-markdown --client claude-code --vault MyVault --source ./export --folder Inbox --apply "$PLAN_ID"
+```
+
+Use `--global` for a global connection. Use one `--exclude PATH` per source-relative path to skip. Use `--allow-missing-attachments` only when the user accepts the unresolved attachments listed in the preview. The offline import preserves source files and rejects occupied destinations.
+
+For other formats supported by the official Obsidian Importer, ask the user before opening it. `obsidian-mcp-rs open-importer --vault MyVault` opens the Importer for the named vault when Obsidian CLI and the official Importer plugin are available. The user chooses the source and confirms the import in Obsidian. [Import guide](docs/import.md)
+
 ## Tool Reference
 
 **Migration:** Tool names changed to the snake_case names below. Update clients that call the old names; aliases are not provided.
@@ -390,6 +416,8 @@ Read the content of an existing note.
 | `limit` | number | | Most lines to return (default 400) |
 
 Reads are capped so that one long note cannot consume the model's whole context. Past the limit the note is cut off with a marker saying which lines you got and what `offset` to pass for the rest; a note that fits comes back untouched. `offset` speaks the same line numbers `view: "outline"` prints, so one can be pasted straight into the other.
+
+The second text block contains the revision of the complete file, even for an outline or partial response.
 
 ### `create_note`
 Create a new note with Markdown content.
@@ -412,6 +440,8 @@ Edit an existing note.
 | `content` | string | ✓ | Content to apply |
 | `folder` | string | | Subfolder path |
 | `search` | string | | Search text (required for `find_and_replace`) |
+| `targetType`, `target` | string | | Select a heading or block. Pass both fields together. |
+| `expectedRevision` | string | | Revision returned by the read. If the file changed, read it again before applying the edit. |
 
 ### `delete_note`
 Delete a note from the vault.
@@ -433,7 +463,7 @@ Move or rename a note within the vault.
 | `newFolder` | string | | Destination folder. **Omit to keep the note where it is** — that is how you rename in place. Pass `""` to move it to the vault root. |
 | `newFilename` | string | | New filename (same if omitted) |
 
-At least one of `newFolder` / `newFilename` is required — a move that carries neither is refused rather than guessed at. Inbound `[[wikilinks]]` are rewritten so they follow the note.
+Pass at least one of `newFolder` or `newFilename`. The move rejects an occupied destination. It updates inbound Markdown links and Canvas file cards, and reports any link updates that could not finish after the move.
 
 ### `create_folder`
 Create a new directory in the vault.
@@ -534,15 +564,55 @@ Remove tags from notes.
 
 ### `rename_vault_tag`
 Rename a tag across all notes in the vault.
+The tool is available when the server has write access.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `vault` | string | ✓ | Vault name |
 | `oldTag` | string | ✓ | Current tag name |
 | `newTag` | string | ✓ | New tag name |
+| `dryRun` | boolean | | Set to `true` to list the notes that would change without writing to them. The default is `false`. |
 
 ### `list_vaults`
 List all vaults configured for this server. Takes no parameters.
+
+### `get_writing_guide`
+
+Read [Obsidian Markdown rules, examples, and note recipes](docs/writing-guide.md). This tool works offline and is available in read-only mode.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `topics` | string[] | | Up to four different topic names. Omit to list the topics. |
+
+For example, request `{"topics":["links","callouts","meeting"]}`. Use the official `obsidian-markdown` skill when it is installed. Use the `sources` topic to see the pinned upstream revision and license.
+
+### Task tools
+
+| Tool | Use |
+|------|-----|
+| `list_tasks` | Find Markdown checkboxes in a vault, recursive folder, note, or today's daily note. Filter by status, dates, priority, tags, or blockers. Use `next_offset` to read more. |
+| `create_task` | Add a task to a note or daily note. Select a section with `destination.heading`. |
+| `update_task` | Pass the task's path, line, and revision from `list_tasks`. Change its text, status, due or scheduled date, or priority. |
+| `preview_task_batch` | Preview up to 50 moves or date changes. Review warnings and affected files with the user. |
+| `apply_task_batch` | After confirmation, submit the same operations and `plan_id`. Inspect per-file results if the batch stops before completion. |
+
+For example, `{"vault":"MyVault","status":"todo","date":{"field":"due","match":"overdue"}}` lists overdue tasks. Use `scope: {"kind":"today"}` to find tasks written in today's daily note. The tools keep tasks in their source notes. Supported Obsidian Tasks fields, recurrence, and ready-to-use prompts are listed in the workflow guide. [Task workflows](docs/task-workflows.md)
+
+### Canvas tools
+
+| Tool | Use |
+|------|-----|
+| `read_canvas` | Read a board's nodes, edges, and revision by vault-relative path. |
+| `create_canvas` | Create a board at an unused path. Pass JSON Canvas `nodes` and `edges`, or create an empty board. |
+| `edit_canvas` | Pass `expectedRevision` and add, update, or remove nodes and edges. Existing nodes keep their positions unless you change them. |
+
+Omit both `x` and `y` to place a new node automatically. Use node IDs in edge endpoints and edit patches. [JSON Canvas format](https://jsoncanvas.org/spec/1.0/)
+
+### `batch_move_notes`
+
+Submit `moves`, each with `sourceVault`, `sourcePath`, `destinationVault`, and `destinationPath`. Use exact vault-relative note paths. The response lists changes and blockers and returns `preview_id`. Use `offset` and `limit` to page through the details.
+
+Show the preview to the user before applying it. Use `allowAttachmentCopy` if the user agrees to copy referenced files while keeping the originals. Use `allowEmbedConversion` and `allowCanvasConversion` only if the user agrees to convert cross-vault embeds and Canvas file cards to clickable links. If you change an option, get a new preview. To apply, send the same moves and options with `previewId`. If a file changed since the preview, review and confirm a new plan.
 
 ## Development
 
@@ -667,7 +737,7 @@ npx obsidian-mcp-rs /vault/path
           │
           ├── clap → CLI args parsing
           ├── VaultManager → filesystem operations
-          ├── ObsidianHandler → 15 MCP tool implementations
+          ├── ObsidianHandler → 25 MCP tool implementations
           └── rmcp → JSON-RPC / MCP protocol
 ```
 

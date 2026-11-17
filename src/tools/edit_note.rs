@@ -10,7 +10,7 @@ pub struct EditNoteParams {
     pub filename: String,
     /// What to do: "append" adds to the end, "prepend" to the start, "replace" overwrites, "find_and_replace" swaps the first occurrence of `search` for `content`
     pub operation: EditOperation,
-    /// Content to apply according to the chosen operation
+    /// Text for the chosen operation. For Obsidian syntax, use `get_writing_guide`.
     pub content: String,
     /// Folder path relative to the vault root
     pub folder: Option<String>,
@@ -24,6 +24,9 @@ pub struct EditNoteParams {
     /// Which heading ("## Log" or just "Log") or block id ("^n1" or "n1") to
     /// edit. Only used with `targetType`. The first match wins.
     pub target: Option<String>,
+    #[doc = "Revision from the note read. Set it to reject the edit if the note has changed."]
+    #[serde(rename = "expectedRevision")]
+    pub expected_revision: Option<String>,
 }
 
 #[cfg(test)]

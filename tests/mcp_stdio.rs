@@ -12,7 +12,7 @@ use std::process::{Command, Stdio};
 use serde_json::{Value, json};
 
 /// Write-only tools that `--no-edit` must not advertise.
-const WRITE_TOOLS: [&str; 8] = [
+const WRITE_TOOLS: [&str; 13] = [
     "create_note",
     "edit_note",
     "delete_note",
@@ -21,6 +21,11 @@ const WRITE_TOOLS: [&str; 8] = [
     "add_note_tags",
     "remove_note_tags",
     "rename_vault_tag",
+    "create_task",
+    "update_task",
+    "apply_task_batch",
+    "create_canvas",
+    "edit_canvas",
 ];
 
 /// Drive a real server over stdio and collect its responses by request id.
@@ -117,9 +122,15 @@ fn stdio_handshake_lists_tools_and_reads_a_note() {
 
     let init = by_id.get(&1).expect("no response to initialize");
     assert!(init.get("result").is_some(), "initialize errored: {init}");
+    assert!(
+        init["result"]["instructions"]
+            .as_str()
+            .unwrap()
+            .contains("get_writing_guide")
+    );
 
     let names = tool_names(&by_id);
-    assert_eq!(names.len(), 15, "expected 15 tools, got {names:?}");
+    assert_eq!(names.len(), 25, "expected 25 tools, got {names:?}");
     for expected in [
         "read_note",
         "create_note",
@@ -136,6 +147,11 @@ fn stdio_handshake_lists_tools_and_reads_a_note() {
         "note_properties",
         "vault_info",
         "periodic_notes",
+        "get_writing_guide",
+        "list_tasks",
+        "preview_task_batch",
+        "read_canvas",
+        "batch_move_notes",
     ] {
         assert!(names.iter().any(|n| n == expected), "missing {expected}");
     }
@@ -146,6 +162,8 @@ fn stdio_handshake_lists_tools_and_reads_a_note() {
         .and_then(Value::as_str)
         .expect("no text content in read_note response");
     assert!(text.contains("hi there"), "unexpected note content: {text}");
+    let revision = by_id[&3]["result"]["content"][1]["text"].as_str().unwrap();
+    assert!(revision.starts_with("Note revision: sha256:"));
 }
 
 #[test]
@@ -159,6 +177,10 @@ fn no_edit_does_not_advertise_the_write_tools_over_the_wire() {
         "jsonrpc": "2.0", "id": 3, "method": "tools/call",
         "params": {"name": "delete_note", "arguments": {"vault": vault_name, "filename": "hello"}}
     }));
+    msgs.push(json!({
+        "jsonrpc": "2.0", "id": 4, "method": "tools/call",
+        "params": {"name": "get_writing_guide", "arguments": {"topics": ["meeting", "callouts"]}}
+    }));
 
     let by_id = talk(&["--no-edit"], vault.path(), &msgs);
     let names = tool_names(&by_id);
@@ -169,9 +191,18 @@ fn no_edit_does_not_advertise_the_write_tools_over_the_wire() {
             "--no-edit advertised '{write_tool}' to the client: {names:?}"
         );
     }
-    assert_eq!(names.len(), 7, "expected the 7 read tools, got {names:?}");
+    assert_eq!(
+        names.len(),
+        12,
+        "expected 12 available tools, got {names:?}"
+    );
     // `frontmatter` stays listed because `get` reads without writing.
     assert!(names.iter().any(|n| n == "note_properties"));
+    assert!(names.iter().any(|n| n == "get_writing_guide"));
+    let guide = by_id[&4]["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(guide.contains("## Decisions"));
+    assert!(guide.contains("## Actions"));
+    assert!(guide.contains("## callouts"));
 
     // The removed route must reject calls.
     let del = by_id.get(&3).expect("no response to delete_note");
@@ -460,7 +491,18 @@ fn a_client_on_the_new_lifecycle_discovers_and_calls_tools() {
         "discover does not identify this server: {discover}"
     );
 
-    assert_eq!(tool_names(&by_id).len(), 15);
+    assert_eq!(tool_names(&by_id).len(), 25);
+    assert!(
+        tool_names(&by_id)
+            .iter()
+            .any(|name| name == "get_writing_guide")
+    );
+    assert!(
+        discover["result"]["instructions"]
+            .as_str()
+            .unwrap()
+            .contains("get_writing_guide")
+    );
 
     let text = by_id
         .get(&3)
