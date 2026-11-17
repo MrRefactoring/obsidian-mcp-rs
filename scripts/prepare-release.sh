@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# prepare-release.sh — bump all version strings and create a release commit + tag
+# Update version strings and print the release commit and tag steps.
 #
 # Usage:
 #   ./scripts/prepare-release.sh <new-version>
@@ -17,7 +17,7 @@ if [[ -z "$NEW_VERSION" ]]; then
   exit 1
 fi
 
-# Validate semver format (major.minor.patch)
+# Check the major.minor.patch version format.
 if ! [[ "$NEW_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   echo "Error: version must be in semver format (e.g. 1.2.3), got: $NEW_VERSION"
   exit 1
@@ -26,7 +26,7 @@ fi
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-# Detect current version from Cargo.toml (line 3: version = "x.y.z")
+# Read the current version from Cargo.toml.
 CURRENT_VERSION=$(grep -m1 '^version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
 echo "Current version: $CURRENT_VERSION"
 echo "New version:     $NEW_VERSION"
@@ -63,14 +63,13 @@ for dir in "${PLATFORM_DIRS[@]}"; do
   pkg="$dir/package.json"
   if [[ -f "$pkg" ]]; then
     sed -i '' "s/\"version\": \"$CURRENT_VERSION\"/\"version\": \"$NEW_VERSION\"/" "$pkg"
-    # Update optionalDependencies — match any existing version, not just CURRENT_VERSION,
-    # because platform package versions may lag behind the wrapper version.
+    # Update optionalDependencies even if their versions differ from the wrapper.
     sed -i '' "s/\"@obsidian-mcp-rs\/\([^\"]*\)\": \"[^\"]*\"/\"@obsidian-mcp-rs\/\1\": \"$NEW_VERSION\"/g" "$pkg"
     echo "  Updated $pkg"
   fi
 done
 
-# Re-run npm install in wrapper to update package-lock.json
+# Update the wrapper package-lock.json.
 echo "Updating package-lock.json..."
 (cd npm/obsidian-mcp-rs && npm install --package-lock-only --silent)
 
@@ -80,7 +79,7 @@ if grep -q "\[${NEW_VERSION}\]" CHANGELOG.md; then
   echo "CHANGELOG.md already has an entry for $NEW_VERSION — skipping."
 else
   echo "Adding CHANGELOG.md placeholder for $NEW_VERSION..."
-  # Insert new section after the first line (# Changelog)
+  # Insert the new section after the # Changelog heading.
   PLACEHOLDER="## [$NEW_VERSION] - $TODAY
 
 ### Added
@@ -96,7 +95,7 @@ else
 -
 
 "
-  # Use Python for reliable multi-line insertion
+  # Use Python to insert multiple lines.
   python3 - <<PYEOF
 import re, pathlib
 content = pathlib.Path("CHANGELOG.md").read_text()

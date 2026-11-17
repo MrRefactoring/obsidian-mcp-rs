@@ -1,44 +1,44 @@
-name: Ошибка
-description: Сообщить об ошибке в работе obsidian-mcp-rs.
+name: Bug report
+description: Report a bug in obsidian-mcp-rs.
 title: "[Bug]: "
 labels: [bug]
 body:
   - type: markdown
     attributes:
       value: |
-        Об уязвимостях сообщайте по инструкции в [SECURITY.md](https://github.com/MrRefactoring/obsidian-mcp-rs/security/policy).
-        Для воспроизведения используйте тестовые заметки. Удалите личные данные и токены из журналов.
+        Report vulnerabilities as described in [SECURITY.md](https://github.com/MrRefactoring/obsidian-mcp-rs/security/policy).
+        Use test notes to reproduce the issue. Remove personal data and tokens from logs.
   - type: input
     id: version
     attributes:
-      label: Версия сервера
-      description: Результат obsidian-mcp-rs --version для бинарника, который запускает клиент.
+      label: Server version
+      description: Output of obsidian-mcp-rs --version for the binary launched by the client.
       placeholder: obsidian-mcp-rs 0.8.0
     validations:
       required: true
   - type: input
     id: environment
     attributes:
-      label: ОС, архитектура и MCP-клиент
+      label: OS, architecture, and MCP client
       placeholder: macOS arm64, Codex CLI
     validations:
       required: true
   - type: dropdown
     id: installation
     attributes:
-      label: Способ установки
+      label: Installation method
       options:
         - npm / npx install
         - cargo install
-        - Бинарник GitHub Release
-        - Сборка из исходников
-        - Другой способ
+        - GitHub Release binary
+        - Build from source
+        - Other
     validations:
       required: true
   - type: dropdown
     id: transport
     attributes:
-      label: Транспорт
+      label: Transport
       options:
         - stdio
         - HTTP
@@ -47,25 +47,25 @@ body:
   - type: textarea
     id: reproduction
     attributes:
-      label: Как воспроизвести
-      description: Команда или вызов инструмента, минимальная тестовая заметка и последовательность действий.
+      label: Steps to reproduce
+      description: Command or tool call, minimal test note, and sequence of steps.
     validations:
       required: true
   - type: textarea
     id: expected
     attributes:
-      label: Ожидаемый результат
+      label: Expected result
     validations:
       required: true
   - type: textarea
     id: actual
     attributes:
-      label: Фактический результат
+      label: Actual result
     validations:
       required: true
   - type: textarea
     id: logs
     attributes:
-      label: Журнал
-      description: Выполните obsidian-mcp-rs logs; при --log-file укажите тот же путь. Проверьте текст перед отправкой — старые версии могли логировать содержимое заметок.
+      label: Logs
+      description: Run obsidian-mcp-rs logs; if using --log-file, pass the same path. Review the output before sharing: older versions may have logged note contents.
       render: text

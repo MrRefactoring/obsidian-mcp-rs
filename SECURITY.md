@@ -1,43 +1,42 @@
-# Безопасность
+# Security
 
-## Поддерживаемые версии
+## Supported versions
 
-Исправления безопасности выпускаются для последней стабильной версии
-`obsidian-mcp-rs`. Если используется более ранний выпуск, сначала проверьте,
-воспроизводится ли проблема на актуальной версии.
+Security fixes are released for the latest stable version of `obsidian-mcp-rs`.
+If you use an earlier release, first check whether the issue occurs on the latest version.
 
-## Сообщить об уязвимости
+## Reporting a vulnerability
 
-Отправьте сообщение владельцу проекта Владиславу Тупикину:
+Contact project owner Vladislav Tupikin at
 [mrrefactoring@yandex.ru](mailto:mrrefactoring@yandex.ru).
-Не публикуйте детали эксплуатации в общедоступном issue до согласования раскрытия.
+Do not publish exploitation details in a public issue before coordinating disclosure.
 
-Укажите версию сервера, ОС, способ установки, используемый транспорт и минимальные
-шаги воспроизведения. Опишите ожидаемую границу доступа и результат её нарушения.
-По возможности приложите пример с отдельным тестовым vault. Удалите из материалов
-токены, содержимое личных заметок, поисковые запросы и приватные пути.
+Include the server version, OS, installation method, transport, and minimal reproduction
+steps. Describe the expected access boundary and the result of crossing it. If possible,
+include an example using a separate test vault. Remove tokens, private note contents,
+search queries, and private paths from the report.
 
-После проверки отчёта согласуем дальнейшие действия и сроки раскрытия.
-Обычные ошибки работы сервера следует отправлять через
-[шаблон bug report](https://github.com/MrRefactoring/obsidian-mcp-rs/issues/new/choose).
+After reviewing the report, we will coordinate next steps and a disclosure timeline.
+Report ordinary server bugs through the
+[bug report template](https://github.com/MrRefactoring/obsidian-mcp-rs/issues/new/choose).
 
-## Границы защиты
+## Security boundaries
 
-- Сервер выполняет действия, которые запрашивает MCP-клиент, с правами запустившего
-  его пользователя. По умолчанию доступны чтение, создание, изменение, перемещение
-  и удаление заметок; отдельного подтверждения каждого вызова нет.
-- `vault::safe_join` проверяет пути относительно корня vault и блокирует выход через
-  `..`, абсолютные пути и символические ссылки. Это не изоляция от другого процесса,
-  который уже имеет право менять каталог vault, и не защита от вредоносного MCP-клиента,
-  выполняющего разрешённые операции внутри vault.
-- `--no-edit` убирает инструменты, предназначенные только для записи, из `tools/list`
-  и запрещает изменяющие действия смешанных инструментов. Чтение остаётся доступным.
-- Дополнительный HTTP-транспорт проверяет `Origin`, но не реализует аутентификацию.
-  Он предназначен для доверенного локального окружения.
-- Автообновление установленной копии использует GitHub Releases с выдержкой 48 часов,
-  проверяет checksum и версию загруженного бинарника. Checksum проверяет целостность
-  загрузки и не заменяет подпись издателя. Управление обновлениями описано в
-  [README.ru.md](README.ru.md#обновление).
-- Файловый журнал содержит диагностические данные, пути и поисковые запросы.
-  В актуальной версии ответы с содержимым заметок не логируются; журналы старых
-  версий нужно проверять перед передачей.
+- The server performs actions requested by the MCP client with the permissions of the
+  user who launched it. By default, notes can be read, created, edited, moved, and
+  deleted without separate confirmation of each call.
+- `vault::safe_join` checks paths against the vault root and blocks escape through
+  `..`, absolute paths, and symbolic links. It does not isolate the vault from another
+  process already allowed to modify its directory, or protect against a malicious MCP
+  client performing permitted operations inside the vault.
+- `--no-edit` removes write-only tools from `tools/list` and blocks mutating actions
+  of mixed-purpose tools. Reading remains available.
+- The optional HTTP transport checks `Origin` but does not authenticate clients. It is
+  intended for a trusted local environment.
+- Auto-update of the installed copy uses GitHub Releases after a 48-hour hold and
+  verifies the downloaded binary's checksum and version. The checksum verifies download
+  integrity and does not replace a publisher signature. Update controls are described
+  in [README.md](README.md#updating).
+- The log file contains diagnostic information, paths, and search queries. The current
+  version does not log responses containing note contents; inspect logs from older
+  versions before sharing them.

@@ -38,18 +38,34 @@
 >
 > To restrict the server to read-only access, pass `--no-edit` — see [Read-only mode](#read-only-mode-no-edit).
 
+### Ask your AI to connect Obsidian
+
+```text
+Connect my Obsidian vault to this AI client. Follow https://github.com/MrRefactoring/obsidian-mcp-rs/blob/master/INSTALL.md. Ask me for the vault path and use my preferred language.
+```
+
+Official sources: [GitHub Releases](https://github.com/MrRefactoring/obsidian-mcp-rs/releases), [npm](https://www.npmjs.com/package/obsidian-mcp-rs), and [crates.io](https://crates.io/crates/obsidian-mcp-rs).
+
 ## Setup
 
-> **You need [Node.js](https://nodejs.org/) 22 or newer** to *run the installer* — that is how it is distributed.
-> Node is not needed to **run the server**: the installer places a single static binary and points your client straight at it, so nothing but that binary runs afterwards. If you would rather skip Node entirely, grab the binary for your platform from [Releases](https://github.com/MrRefactoring/obsidian-mcp-rs/releases) or `cargo install obsidian-mcp-rs`, then run its `install` subcommand.
+Choose npm or Cargo to install the server. Both paths run the same installer, which copies the server to a fixed location and configures your client. Node is not needed to run the installed server.
 
-**The fastest way: just ask your AI agent to install it.** If you already work inside an agentic client (Claude Code, Cursor, Windsurf, …), you never touch a config file — paste one prompt and let the agent run the installer for you. Swap in your own vault path:
+### Cargo
 
-> Install the **obsidian-mcp-rs** MCP server for this editor. My Obsidian vault is at `~/Documents/Obsidian/MyVault`. Run `npx -y obsidian-mcp-rs install claude-code ~/Documents/Obsidian/MyVault` (use `cursor`, `windsurf`, `vscode`, `claude`, … for other clients). It copies the server to a fixed location and writes that path into my client config — so tell me where it landed, and tell me whether it said the server will keep itself up to date. Then tell me to restart the session and approve the server if the client asks.
+Install from source with [Rust and Cargo](https://www.rust-lang.org/tools/install), then configure your client:
 
-> **Heads-up:** clients read MCP config at **session start**, so the agent can write it but can't hot-load it. After it installs the server, **restart** the client — and in Claude Code approve a project-scoped `.mcp.json` server via the `/mcp` panel — before the 15 tools appear.
+```bash
+cargo install --locked obsidian-mcp-rs
+obsidian-mcp-rs install claude-code ~/Documents/Obsidian/MyVault
+```
 
-### Prefer a CLI? (or not using an agent)
+Ensure Cargo’s bin directory is on your `PATH`. Replace `claude-code` and the vault path for your setup. You can also run `obsidian-mcp-rs install` for the interactive wizard.
+
+If you have [cargo-binstall](https://github.com/cargo-bins/cargo-binstall), use `cargo binstall obsidian-mcp-rs` to install a prebuilt release instead of compiling. Then run the same `obsidian-mcp-rs install` command above.
+
+### npm
+
+The npm installer requires [Node.js](https://nodejs.org/) 22 or newer.
 
 Not inside an agentic client — e.g. **Claude Desktop**, which can't run shell commands — or just prefer to do it yourself? The interactive wizard scans for installed AI clients, lets you pick where to install, and writes the config automatically:
 
@@ -102,7 +118,7 @@ It copies the server binary to a fixed per-user location and writes **that absol
 
 Your config therefore runs **one process** — the server itself, as a direct child of your AI client. It does not run `npx`, which would start three (npm → a Node launcher → the server) and leave the extra two behind whenever a client terminates only the first. It also means the server can tell when your client goes away, and exit with it instead of lingering with write access to your vault.
 
-`npx` is still how you *run the installer*, and it is still the quickest way to try the server. It is simply no longer what ends up written into a config permanently.
+Run the installer with either `npx obsidian-mcp-rs install` or `obsidian-mcp-rs install` after installing with Cargo. Neither command puts `npx` in the client config.
 
 ### Updating
 
@@ -186,13 +202,13 @@ Every backend copies the previous file to `<config>.bak` before writing, so this
 - **15 tools** covering note CRUD, search, links, frontmatter, daily notes, directory management, and tag operations
 - **Ranked search** — BM25 relevance with field boosts (a term in the title outranks the same term buried in a paragraph), returned best-first and capped so a common word can't flood the model's context
 - **Link-aware moves** — renaming a note rewrites every `[[wikilink]]` and markdown link pointing at it, so moving a note never silently orphans references
-- **Link graph** — `wikilinks` answers backlinks, outgoing, broken links and orphans
-- **Section-scoped edits** — point `edit-note` at one heading or one `^block-id` and only those bytes are rewritten; the rest of the note is passed through untouched
-- **Frontmatter access** — `frontmatter` reads and writes any YAML key, not just `tags`, and touches only the key you named
+- **Link graph** — `vault_links` answers backlinks, outgoing, broken links and orphans
+- **Section-scoped edits** — point `edit_note` at one heading or one `^block-id` and only those bytes are rewritten; the rest of the note is passed through untouched
+- **Frontmatter access** — `note_properties` reads and writes any YAML key, not just `tags`, and touches only the key you named
 - **Multi-vault** support — pass multiple vault paths as arguments
-- **Recoverable deletes** — `delete-note` moves the note to the vault's `.trash/` (as Obsidian does) rather than erasing it; a trashed note disappears from search and the link graph, but the user can still get it back
-- **Daily notes** — `periodic` reads/creates daily…yearly notes using the vault's *own* Obsidian settings (name format, folder, template), so it writes to the note you actually keep
-- **Vault orientation** — `vault-info` answers what tags exist, what changed recently, and how big the vault is
+- **Recoverable deletes** — `delete_note` moves the note to the vault's `.trash/` (as Obsidian does) rather than erasing it; a trashed note disappears from search and the link graph, but the user can still get it back
+- **Daily notes** — `periodic_notes` reads/creates daily…yearly notes using the vault's *own* Obsidian settings (name format, folder, template), so it writes to the note you actually keep
+- **Vault orientation** — `vault_info` answers what tags exist, what changed recently, and how big the vault is
 - **Read-only mode** — `--no-edit` removes every write tool from `tools/list` entirely, so a read-only server describes itself as one
 - **Zero runtime dependencies** — the server is a single static binary, and it is what your client runs: `install` places it and points the config straight at it, so no Node process sits in between. Node.js 22+ is needed only to *run the installer*; grab a binary from [Releases](https://github.com/MrRefactoring/obsidian-mcp-rs/releases) or `cargo install` to skip it entirely.
 - **Cross-platform** — macOS (ARM64 + x64), Linux (x64 + ARM64 + musl), Windows (x64 + ARM64)
@@ -203,7 +219,7 @@ Every backend copies the previous file to `<config>.bak` before writing, so this
 
 ### Search
 
-`search-vault` ranks hits with **BM25**, the same scoring family a full-text engine uses — but computed straight from the parallel vault walk, so there is no index to build, no watcher to keep in sync, and nothing to go stale when you edit a note in Obsidian.
+`search_notes` ranks hits with **BM25**, the same scoring family a full-text engine uses — but computed straight from the parallel vault walk, so there is no index to build, no watcher to keep in sync, and nothing to go stale when you edit a note in Obsidian.
 
 Terms are weighted by where they occur: filename ×5, tags ×4, headings ×3, frontmatter ×2, body ×1. Rare terms count for more than common ones, so a query like `the kafka` ranks the note *about* Kafka above the note that merely says "the" a lot.
 
@@ -218,7 +234,7 @@ Both are computed inside the walk that already reads every note, so neither cost
 
 ## Performance
 
-Vault-wide operations (`search-vault`, `rename-tag`) walk the vault with the [`ignore`](https://crates.io/crates/ignore) crate and process files in parallel via [`rayon`](https://crates.io/crates/rayon). Measured with the criterion suite in [`benches/`](benches/vault_bench.rs) on a synthetic vault, Apple Silicon (10 logical cores); "serial" is the same code pinned to one thread (`RAYON_NUM_THREADS=1`):
+Vault-wide operations (`search_notes`, `rename_vault_tag`) walk the vault with the [`ignore`](https://crates.io/crates/ignore) crate and process files in parallel via [`rayon`](https://crates.io/crates/rayon). Measured with the criterion suite in [`benches/`](benches/vault_bench.rs) on a synthetic vault, Apple Silicon (10 logical cores); "serial" is the same code pinned to one thread (`RAYON_NUM_THREADS=1`):
 
 | Operation                  | Serial (1 thread) | Parallel  | Speedup |
 | -------------------------- | ----------------- | --------- | ------- |
@@ -226,7 +242,7 @@ Vault-wide operations (`search-vault`, `rename-tag`) walk the vault with the [`i
 | Tag search (2000 notes)    | 45.6 ms           | 24.4 ms   | ~1.9×   |
 | Tag rename (500 notes)     | 84.3 ms           | 60.0 ms   | ~1.4×   |
 
-Single-note operations (`read-note`, `create-note`, `edit-note`, …) touch one file and are unaffected. Numbers vary with core count and disk; reproduce locally with `cargo bench`.
+Single-note operations (`read_note`, `create_note`, `edit_note`, …) touch one file and are unaffected. Numbers vary with core count and disk; reproduce locally with `cargo bench`.
 
 ## Configuration
 
@@ -317,14 +333,14 @@ Once added, Cursor's AI will have access to all 15 vault tools. You can verify w
 Pass `--no-edit` to start the server in read-only mode. The eight write-only tools are **removed from `tools/list` entirely** — a read-only server describes itself as one, rather than advertising tools it will only refuse — and they are unreachable via `tools/call` as well.
 
 **Removed under `--no-edit`** (the write-only tools):
-`create-note`, `edit-note`, `delete-note`, `move-note`, `create-directory`, `add-tags`, `remove-tags`, `rename-tag`
+`create_note`, `edit_note`, `delete_note`, `move_note`, `create_folder`, `add_note_tags`, `remove_note_tags`, `rename_vault_tag`
 
 **Still listed, because they read as well as write** — these are gated *per action*, so the reads work and the writes are refused:
-- `frontmatter` — `get` works; `set` and `remove` are refused
-- `periodic` — `get` and `list` work; `create` is refused
+- `note_properties` — `get` works; `set` and `remove` are refused
+- `periodic_notes` — `get` and `list` work; `create` is refused
 
 **Pure reads, always available:**
-`read-note`, `search-vault`, `wikilinks`, `vault-info`, `list-available-vaults`
+`read_note`, `search_notes`, `vault_links`, `vault_info`, `list_vaults`
 
 ### Manual config with `--no-edit`
 
@@ -359,7 +375,9 @@ npx obsidian-mcp-rs install claude --no-edit ~/Documents/Obsidian/MyVault
 
 ## Tool Reference
 
-### `read-note`
+**Migration:** Tool names changed to the snake_case names below. Update clients that call the old names; aliases are not provided.
+
+### `read_note`
 Read the content of an existing note.
 
 | Parameter | Type | Required | Description |
@@ -373,7 +391,7 @@ Read the content of an existing note.
 
 Reads are capped so that one long note cannot consume the model's whole context. Past the limit the note is cut off with a marker saying which lines you got and what `offset` to pass for the rest; a note that fits comes back untouched. `offset` speaks the same line numbers `view: "outline"` prints, so one can be pasted straight into the other.
 
-### `create-note`
+### `create_note`
 Create a new note with Markdown content.
 
 | Parameter | Type | Required | Description |
@@ -383,7 +401,7 @@ Create a new note with Markdown content.
 | `content` | string | ✓ | Markdown content |
 | `folder` | string | | Subfolder path (created automatically) |
 
-### `edit-note`
+### `edit_note`
 Edit an existing note.
 
 | Parameter | Type | Required | Description |
@@ -395,7 +413,7 @@ Edit an existing note.
 | `folder` | string | | Subfolder path |
 | `search` | string | | Search text (required for `find_and_replace`) |
 
-### `delete-note`
+### `delete_note`
 Delete a note from the vault.
 
 | Parameter | Type | Required | Description |
@@ -404,7 +422,7 @@ Delete a note from the vault.
 | `filename` | string | ✓ | Note filename |
 | `folder` | string | | Subfolder path |
 
-### `move-note`
+### `move_note`
 Move or rename a note within the vault.
 
 | Parameter | Type | Required | Description |
@@ -417,7 +435,7 @@ Move or rename a note within the vault.
 
 At least one of `newFolder` / `newFilename` is required — a move that carries neither is refused rather than guessed at. Inbound `[[wikilinks]]` are rewritten so they follow the note.
 
-### `create-directory`
+### `create_folder`
 Create a new directory in the vault.
 
 | Parameter | Type | Required | Description |
@@ -426,7 +444,7 @@ Create a new directory in the vault.
 | `path` | string | ✓ | Directory path relative to vault root |
 | `recursive` | boolean | | Create parent dirs (default: `true`) |
 
-### `search-vault`
+### `search_notes`
 Search notes by content, filename, or tag. Results are BM25-ranked, best-first, and paged.
 
 | Parameter | Type | Required | Description |
@@ -444,7 +462,7 @@ Search notes by content, filename, or tag. Results are BM25-ranked, best-first, 
 
 Each hit carries a `path` — pass it straight back as any note tool's `filename`.
 
-### `wikilinks`
+### `vault_links`
 The vault's link graph, in one parallel pass.
 
 | Parameter | Type | Required | Description |
@@ -458,7 +476,7 @@ The vault's link graph, in one parallel pass.
 
 Links inside code fences are ignored: a `[[link]]` in a code sample is documentation, not a reference.
 
-### `frontmatter`
+### `note_properties`
 Read or write any YAML frontmatter key — not just `tags`. Writes are line surgery on the one key named, so the rest of the block (comments, key order, quoting) survives byte for byte.
 
 | Parameter | Type | Required | Description |
@@ -472,7 +490,7 @@ Read or write any YAML frontmatter key — not just `tags`. Writes are line surg
 
 Under `--no-edit` this is gated per action: `get` works, `set`/`remove` are refused.
 
-### `vault-info`
+### `vault_info`
 What's actually in this vault — the questions you ask *before* you know what to search for.
 
 | Parameter | Type | Required | Description |
@@ -481,7 +499,7 @@ What's actually in this vault — the questions you ask *before* you know what t
 | `query` | string | ✓ | `tags` (every tag + how many notes carry it, commonest first), `recent` (newest first), or `stats` |
 | `limit` | number | | Cap the list (default 20) |
 
-### `periodic`
+### `periodic_notes`
 Today's daily note, and its weekly/monthly/quarterly/yearly siblings — read from Obsidian's *own* settings (the Periodic Notes plugin's `data.json`, then core's `daily-notes.json`, then Obsidian's defaults), so it lands where Obsidian would rather than creating a stray note.
 
 | Parameter | Type | Required | Description |
@@ -493,7 +511,7 @@ Today's daily note, and its weekly/monthly/quarterly/yearly siblings — read fr
 | `content` | string | | Text for a note `create` brings into existence; without it, the configured template is used |
 | `limit` | number | | How many notes `list` walks back (default 10) |
 
-### `add-tags`
+### `add_note_tags`
 Add tags to notes in frontmatter and/or content.
 
 | Parameter | Type | Required | Description |
@@ -505,7 +523,7 @@ Add tags to notes in frontmatter and/or content.
 | `normalize` | boolean | | Normalize tag format (default: `true`) |
 | `position` | string | | `start` or `end` (default) — where an inline tag goes |
 
-### `remove-tags`
+### `remove_note_tags`
 Remove tags from notes.
 
 | Parameter | Type | Required | Description |
@@ -514,7 +532,7 @@ Remove tags from notes.
 | `files` | string[] | ✓ | Note filenames |
 | `tags` | string[] | ✓ | Tags to remove |
 
-### `rename-tag`
+### `rename_vault_tag`
 Rename a tag across all notes in the vault.
 
 | Parameter | Type | Required | Description |
@@ -523,14 +541,14 @@ Rename a tag across all notes in the vault.
 | `oldTag` | string | ✓ | Current tag name |
 | `newTag` | string | ✓ | New tag name |
 
-### `list-available-vaults`
+### `list_vaults`
 List all vaults configured for this server. Takes no parameters.
 
 ## Development
 
 ### Prerequisites
 
-- [Rust](https://rustup.rs/) (stable; MSRV 1.88)
+- [Rust](https://rustup.rs/) (stable; MSRV 1.89)
 - [Node.js](https://nodejs.org/) 22+ (for npm wrapper)
 
 ### Build from source
