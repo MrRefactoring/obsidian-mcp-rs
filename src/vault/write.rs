@@ -1,14 +1,83 @@
 use std::{
     fs,
-    io::Write,
+    io::{self, Read, Write},
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
 };
 
 use crate::error::VaultError;
+use sha2::{Digest, Sha256};
 
-/// Monotonic counter making temp filenames unique within this process; combined
-/// with the PID it stays unique across concurrent processes too.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub(crate) fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
+    use std::{ffi::CString, os::unix::ffi::OsStrExt};
+
+    let from = CString::new(from.as_os_str().as_bytes()).map_err(io::Error::other)?;
+    let to = CString::new(to.as_os_str().as_bytes()).map_err(io::Error::other)?;
+    #[cfg(target_os = "macos")]
+    let result = unsafe { libc::renamex_np(from.as_ptr(), to.as_ptr(), libc::RENAME_EXCL) };
+    #[cfg(target_os = "linux")]
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_renameat2,
+            libc::AT_FDCWD,
+            from.as_ptr(),
+            libc::AT_FDCWD,
+            to.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(windows)]
+pub(crate) fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
+    rename_windows(from, to, 0)
+}
+
+#[cfg(windows)]
+fn rename_windows(from: &Path, to: &Path, flags: u32) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
+
+    fn wide_path(path: &Path) -> io::Result<Vec<u16>> {
+        let path = std::path::absolute(path)?;
+        let parent = path
+            .parent()
+            .ok_or(io::ErrorKind::InvalidInput)?
+            .canonicalize()?;
+        let path = parent.join(path.file_name().ok_or(io::ErrorKind::InvalidInput)?);
+        let mut units: Vec<_> = path.as_os_str().encode_wide().collect();
+        if units.contains(&0) {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        units.push(0);
+        Ok(units)
+    }
+
+    let from = wide_path(from)?;
+    let to = wide_path(to)?;
+    if unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), flags) } != 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+pub(crate) fn rename_no_replace(_from: &Path, _to: &Path) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "This platform does not support moving notes without replacing an existing file",
+    ))
+}
+
+/// Counter for temporary filenames. The PID distinguishes concurrent processes.
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Write `contents` to `path` atomically.
@@ -19,19 +88,131 @@ static COUNTER: AtomicU64 = AtomicU64::new(0);
 /// lives beside the target so the final `rename` stays on one filesystem
 /// (cross-device renames aren't atomic and would fail).
 pub(crate) fn atomic_write(path: &Path, contents: &[u8]) -> Result<(), VaultError> {
+    stage_write(path, contents, |from, to| fs::rename(from, to))
+}
+
+pub(crate) fn atomic_write_new(path: &Path, contents: &[u8]) -> Result<(), VaultError> {
+    stage_write(path, contents, rename_no_replace)
+}
+
+pub(crate) fn atomic_write_durable(
+    path: &Path,
+    contents: &[u8],
+    new: bool,
+) -> Result<(), VaultError> {
+    stage_write_using(
+        path,
+        |file| file.write_all(contents).and_then(|()| file.sync_all()),
+        |from, to| durable_rename(from, to, new),
+    )?;
+    #[cfg(unix)]
+    if let Some(parent) = path.parent() {
+        fs::File::open(parent)
+            .and_then(|dir| dir.sync_all())
+            .map_err(|e| VaultError::io(parent.display().to_string(), e))?;
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn durable_rename(from: &Path, to: &Path, new: bool) -> io::Result<()> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    let mut flags = MOVEFILE_WRITE_THROUGH;
+    if !new {
+        flags |= MOVEFILE_REPLACE_EXISTING;
+    }
+    rename_windows(from, to, flags)
+}
+
+#[cfg(not(windows))]
+fn durable_rename(from: &Path, to: &Path, new: bool) -> io::Result<()> {
+    if new {
+        rename_no_replace(from, to)
+    } else {
+        fs::rename(from, to)
+    }
+}
+
+pub(crate) fn atomic_write_new_using(
+    path: &Path,
+    write: impl FnOnce(&mut fs::File) -> io::Result<()>,
+) -> Result<(), VaultError> {
+    stage_write_using(path, write, rename_no_replace)
+}
+
+pub(crate) fn stream_revision(path: &Path) -> Result<String, VaultError> {
+    stream_content(path, &mut io::sink())
+        .map_err(|error| VaultError::io(path.display().to_string(), error))
+}
+
+pub(crate) fn copy_verified(
+    source: &Path,
+    output: &Path,
+    revision: &str,
+) -> Result<(), VaultError> {
+    atomic_write_new_using(output, |file| {
+        let actual = stream_content(source, file)?;
+        if actual != revision {
+            return Err(io::Error::other(format!(
+                "Source changed: {}",
+                source.display()
+            )));
+        }
+        Ok(())
+    })
+}
+
+fn stream_content(path: &Path, output: &mut impl Write) -> io::Result<String> {
+    let mut input = fs::File::open(path)?;
+    let mut hash = Sha256::new();
+    let mut buffer = [0u8; 8192];
+    loop {
+        let length = input.read(&mut buffer)?;
+        if length == 0 {
+            break;
+        }
+        let chunk = &buffer[..length];
+        hash.update(chunk);
+        output.write_all(chunk)?;
+    }
+    use std::fmt::Write as _;
+    let mut revision = String::from("sha256:");
+    for byte in hash.finalize() {
+        write!(&mut revision, "{byte:02x}").expect("format import revision");
+    }
+    Ok(revision)
+}
+
+fn stage_write(
+    path: &Path,
+    contents: &[u8],
+    rename: impl FnOnce(&Path, &Path) -> io::Result<()>,
+) -> Result<(), VaultError> {
+    stage_write_using(path, |file| file.write_all(contents), rename)
+}
+
+fn stage_write_using(
+    path: &Path,
+    write: impl FnOnce(&mut fs::File) -> io::Result<()>,
+    rename: impl FnOnce(&Path, &Path) -> io::Result<()>,
+) -> Result<(), VaultError> {
     let tmp = temp_path(path);
 
-    // Scoped so the file handle is dropped (flushed + closed) before the rename.
+    // Close the file before the rename.
     {
         let mut file =
-            fs::File::create(&tmp).map_err(|e| VaultError::io(tmp.display().to_string(), e))?;
-        if let Err(e) = file.write_all(contents).and_then(|()| file.flush()) {
+            fs::File::create_new(&tmp).map_err(|e| VaultError::io(tmp.display().to_string(), e))?;
+        if let Err(e) = write(&mut file).and_then(|()| file.flush()) {
+            drop(file);
             let _ = fs::remove_file(&tmp); // best-effort cleanup; keep original error
             return Err(VaultError::io(tmp.display().to_string(), e));
         }
     }
 
-    fs::rename(&tmp, path).map_err(|e| {
+    rename(&tmp, path).map_err(|e| {
         let _ = fs::remove_file(&tmp);
         VaultError::io(path.display().to_string(), e)
     })

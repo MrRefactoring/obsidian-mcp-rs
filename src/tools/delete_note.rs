@@ -2,12 +2,11 @@ use serde::Deserialize;
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct DeleteNoteParams {
-    /// Name of the vault containing the note
+    /// Name of the vault.
     pub vault: String,
-    /// Note to act on: a vault-relative path (`projects/apollo.md`) or a bare
-    /// filename. `.md` optional. `search-vault`'s `path` works as-is.
+    /// Note path relative to the vault root. You can omit `.md`. Use the `path` from `search_notes`.
     pub filename: String,
-    /// Optional subfolder path relative to vault root
+    /// Folder path relative to the vault root
     pub folder: Option<String>,
     /// Erase the note instead of moving it to the vault's `.trash/`, where the
     /// user can still recover it. There is no undo. (default: false)

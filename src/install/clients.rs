@@ -67,7 +67,7 @@ pub enum ConfigFormat {
     VSCode,
     /// Amp — top-level dotted key: { "amp.mcpServers": { "obsidian": { "command": ..., "args": [...] } } }
     Amp,
-    /// opencode — { "mcp": { "obsidian": { "type": "local", "command": ["npx", ...all-args] } } }
+    /// opencode — { "mcp": { "obsidian": { "type": "local", "command": ["<binary>", ...args] } } }
     OpenCode,
     /// Codex CLI — TOML: [mcp_servers.obsidian] with command/args keys
     Codex,

@@ -64,6 +64,10 @@ pub fn check_status(path: &Path, format: &ConfigFormat) -> InstallStatus {
     backend(format).check_status(path)
 }
 
+pub(crate) fn read_launch(path: &Path, format: &ConfigFormat) -> Result<Launch> {
+    backend(format).read_launch(path)
+}
+
 /// Add (or overwrite) the obsidian-mcp-rs entry in the config file.
 ///
 /// When `force` is true, an existing entry is replaced. When false,
@@ -103,6 +107,7 @@ pub fn discard_backup(path: &Path) -> Option<PathBuf> {
 /// mapping it to a backend in [`backend`] — existing impls stay untouched (OCP).
 trait ConfigBackend {
     fn check_status(&self, path: &Path) -> InstallStatus;
+    fn read_launch(&self, path: &Path) -> Result<Launch>;
     fn write_entry(
         &self,
         path: &Path,
@@ -181,6 +186,41 @@ fn descend<'a>(root: &CstRootNode, path: &'a [&'a str]) -> (CstObject, &'a str) 
 }
 
 impl ConfigBackend for JsonBackend {
+    fn read_launch(&self, path: &Path) -> Result<Launch> {
+        let text = read_to_string(path)?;
+        let root = CstRootNode::parse(&text, &ParseOptions::default())
+            .with_context(|| format!("Invalid JSONC in {}", path.display()))?;
+        let mut entry = root
+            .object_value()
+            .and_then(|object| object.to_serde_value())
+            .context("Expected a JSON configuration object")?;
+        for key in self.entry_path {
+            entry = entry
+                .get_mut(key)
+                .map(Value::take)
+                .context("Obsidian entry not found")?;
+        }
+        anyhow::ensure!(
+            entry.get("enabled").and_then(Value::as_bool) != Some(false)
+                && entry.get("disabled").and_then(Value::as_bool) != Some(true),
+            "The Obsidian entry is disabled"
+        );
+        match entry.get("command") {
+            Some(Value::String(command)) => Ok(Launch {
+                command: command.clone(),
+                args: json_string_args(entry.get("args").context("Obsidian args not found")?)?,
+            }),
+            Some(Value::Array(_)) if entry.get("args").is_none() => {
+                let mut argv = json_string_args(&entry["command"])?.into_iter();
+                Ok(Launch {
+                    command: argv.next().context("Obsidian command not found")?,
+                    args: argv.collect(),
+                })
+            }
+            _ => anyhow::bail!("Expected a configured local Obsidian MCP command"),
+        }
+    }
+
     fn check_status(&self, path: &Path) -> InstallStatus {
         if !path.exists() {
             return InstallStatus::FileNotFound;
@@ -310,6 +350,19 @@ fn entry_command(entry: &Value) -> Option<String> {
     }
 }
 
+fn json_string_args(value: &Value) -> Result<Vec<String>> {
+    value
+        .as_array()
+        .context("Expected an argument array")?
+        .iter()
+        .map(|item| {
+            item.as_str()
+                .map(str::to_owned)
+                .context("Expected a string argument")
+        })
+        .collect()
+}
+
 /// A `serde_json::Value` as something the CST can splice in. The entry builders
 /// stay written in `json!`, which is far easier to read than a CST literal.
 fn to_cst(v: &Value) -> CstInputValue {
@@ -339,10 +392,19 @@ pub(crate) struct Launch {
 }
 
 impl Launch {
-    pub(crate) fn new(binary: &Path, vaults: &[String], no_edit: bool) -> Self {
+    pub(crate) fn new(
+        binary: &Path,
+        vaults: &[String],
+        no_edit: bool,
+        write_folders: &[String],
+    ) -> Self {
         let mut args = Vec::new();
         if no_edit {
             args.push("--no-edit".to_string());
+        }
+        for folder in write_folders {
+            args.push("--write-folder".to_string());
+            args.push(folder.clone());
         }
         args.extend(vaults.iter().cloned());
         Self {
@@ -433,6 +495,34 @@ fn backup_path(path: &Path) -> PathBuf {
 struct TomlBackend;
 
 impl ConfigBackend for TomlBackend {
+    fn read_launch(&self, path: &Path) -> Result<Launch> {
+        let doc = read_to_string(path)?
+            .parse::<toml_edit::DocumentMut>()
+            .with_context(|| format!("Invalid TOML in {}", path.display()))?;
+        let entry = doc
+            .get("mcp_servers")
+            .and_then(|servers| servers.get("obsidian"))
+            .context("Obsidian entry not found")?;
+        anyhow::ensure!(
+            entry.get("enabled").and_then(|value| value.as_bool()) != Some(false),
+            "The Obsidian entry is disabled"
+        );
+        Ok(Launch {
+            command: toml_obsidian_command(&doc).context("Obsidian command not found")?,
+            args: entry
+                .get("args")
+                .and_then(|value| value.as_array())
+                .context("Obsidian args not found")?
+                .iter()
+                .map(|item| {
+                    item.as_str()
+                        .map(str::to_owned)
+                        .context("Expected a string argument")
+                })
+                .collect::<Result<_>>()?,
+        })
+    }
+
     fn check_status(&self, path: &Path) -> InstallStatus {
         if !path.exists() {
             return InstallStatus::FileNotFound;
@@ -567,6 +657,34 @@ fn toml_obsidian_command(doc: &toml_edit::DocumentMut) -> Option<String> {
 struct YamlBackend;
 
 impl ConfigBackend for YamlBackend {
+    fn read_launch(&self, path: &Path) -> Result<Launch> {
+        let doc = crate::yaml::parse::<noyalib::Value>(&read_to_string(path)?)
+            .with_context(|| format!("Invalid YAML in {}", path.display()))?;
+        anyhow::ensure!(
+            yaml_obsidian_positions(&doc).len() == 1,
+            "Expected one Obsidian entry"
+        );
+        let entry = yaml_obsidian_entry(&doc).context("Obsidian entry not found")?;
+        anyhow::ensure!(
+            entry.get("enabled").and_then(|value| value.as_bool()) != Some(false),
+            "The Obsidian entry is disabled"
+        );
+        Ok(Launch {
+            command: yaml_obsidian_command(&doc).context("Obsidian command not found")?,
+            args: entry
+                .get("args")
+                .and_then(|value| value.as_sequence())
+                .context("Obsidian args not found")?
+                .iter()
+                .map(|item| {
+                    item.as_str()
+                        .map(str::to_owned)
+                        .context("Expected a string argument")
+                })
+                .collect::<Result<_>>()?,
+        })
+    }
+
     fn check_status(&self, path: &Path) -> InstallStatus {
         if !path.exists() {
             return InstallStatus::FileNotFound;
@@ -730,7 +848,7 @@ mod tests {
             .iter()
             .map(|p| p.to_string_lossy().into_owned())
             .collect();
-        Launch::new(Path::new(TEST_BINARY), &strings, no_edit)
+        Launch::new(Path::new(TEST_BINARY), &strings, no_edit, &[])
     }
 
     const TEST_BINARY: &str = "/opt/obsidian-mcp-rs/bin/obsidian-mcp-rs";

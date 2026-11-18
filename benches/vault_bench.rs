@@ -8,8 +8,8 @@ use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use obsidian_mcp_rs::vault::{MetaFilter, SearchLimits, SearchQuery, SearchType, VaultManager};
 use tempfile::TempDir;
 
-/// Build a temp vault of `n` notes spread across subfolders. Each note carries
-/// a frontmatter `alpha` tag and one line containing the `needle` token.
+/// Build a temporary vault with `n` notes in subfolders. Each note has an
+/// `alpha` frontmatter tag and a line with the `needle` token.
 fn build_vault(n: usize) -> (TempDir, VaultManager, String) {
     let dir = TempDir::new().unwrap();
     for i in 0..n {

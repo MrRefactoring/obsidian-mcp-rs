@@ -248,9 +248,8 @@ pub(crate) fn parse_links(content: &str) -> Vec<Link> {
     links
 }
 
-/// Resolves link targets to vault notes, the way Obsidian does: a bare name
-/// matches by basename anywhere in the vault; a name containing `/` is a
-/// vault-relative path.
+/// Resolve link targets to vault notes. A bare name matches a basename anywhere
+/// in the vault. A name containing `/` is a vault-relative path.
 pub(crate) struct Resolver {
     /// Lowercased file stem → notes with that name.
     by_stem: HashMap<String, Vec<PathBuf>>,

@@ -39,7 +39,7 @@ pub struct Snippet {
 
 // There used to be a `filename` field here alongside `path` — the bare stem, no
 // folder and no extension. It was a trap: the model reached for the field called
-// `filename`, handed it to `read-note`, and `read-note` couldn't find the note,
+// `filename`, handed it to `read_note`, and `read_note` couldn't find the note,
 // because the folder had been thrown away. `path` is now the only identifier, and
 // every note tool takes it verbatim.
 //
@@ -51,7 +51,7 @@ pub struct Snippet {
 pub struct SearchResult {
     /// Vault-relative path. Pass straight back as any note tool's `filename`.
     pub path: String,
-    /// Relevance; results come back best-first.
+    /// Relevance score; results are sorted by descending score.
     pub score: f32,
     /// Lines that matched, before `maxMatchesPerFile` clipped them.
     pub match_count: usize,
@@ -80,7 +80,7 @@ pub struct SearchOutput {
 // The `schemars(description)` is deliberate: `#[derive(JsonSchema)]` promotes
 // rustdoc straight onto the wire, and the paragraph above is for maintainers, not
 // for the model, which pays for it in context on every conversation.
-/// What the query is matched against.
+/// The part of the note to search.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum SearchType {

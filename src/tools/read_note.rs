@@ -4,29 +4,27 @@ use crate::vault::{NoteView, ReadWindow};
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ReadNoteParams {
-    /// Name of the vault containing the note
+    /// Name of the vault.
     pub vault: String,
-    /// Note to act on: a vault-relative path (`projects/apollo.md`) or a bare
-    /// filename. `.md` optional. `search-vault`'s `path` works as-is.
+    /// Note path relative to the vault root. You can omit `.md`. Use the `path` from `search_notes`.
     pub filename: String,
-    /// Optional subfolder path relative to vault root (e.g. "journal/2024")
+    /// Folder path relative to the vault root (e.g. "journal/2024")
     pub folder: Option<String>,
     /// How much to return: "content" for the note's text (default), or
     /// "outline" for just its headings, block references and frontmatter keys —
-    /// the targets `edit-note` and `frontmatter` can aim at.
+    /// the targets `edit_note` and `note_properties` can aim at.
     pub view: Option<NoteView>,
     /// First line to return, 1-based (default: 1). These are the same line
     /// numbers `view: "outline"` reports, so one can be pasted straight in.
     pub offset: Option<usize>,
-    /// Most lines to return (default: 400). A longer note is cut off with a
-    /// marker saying which lines you got and what `offset` to pass for the rest.
-    /// Ignored by `view: "outline"`, which is short by construction.
+    /// Maximum lines to return (default: 400). A marker identifies the returned
+    /// lines and the `offset` for the rest. Ignored by `view: "outline"`.
     pub limit: Option<usize>,
 }
 
 impl ReadNoteParams {
     /// The slice of the note to read, with the defaults applied. These exist for
-    /// the same reason `search-vault`'s limits do: without them one read of one
+    /// the same reason `search_notes`'s limits do: without them one read of one
     /// long note can consume the model's whole context window.
     pub fn window(&self) -> ReadWindow {
         let d = ReadWindow::default();

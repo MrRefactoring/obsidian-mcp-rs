@@ -195,8 +195,8 @@ pub(crate) fn rename_tag_in_note(content: &str, old_tag: &str, new_tag: &str) ->
 
 // ── Inline (`#tag`) matching ─────────────────────────────────────────────────
 //
-// Search and rewrite must agree on where a tag ends, or `search-vault` reports a
-// note that `rename-tag` then declines to change. Both go through the boundary
+// Search and rewrite must agree on where a tag ends, or `search_notes` reports a
+// note that `rename_vault_tag` then declines to change. Both go through the boundary
 // checks below.
 
 /// `#foo` continues with these characters — used as a negative right-boundary

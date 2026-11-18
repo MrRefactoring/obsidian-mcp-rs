@@ -2,10 +2,10 @@ use serde::Deserialize;
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct RemoveTagsParams {
-    /// Name of the vault containing the notes
+    /// Name of the vault.
     pub vault: String,
-    /// Array of note filenames to remove tags from (must include .md extension)
+    /// Note paths relative to the vault root. Include the `.md` extension.
     pub files: Vec<String>,
-    /// Array of tags to remove (e.g. "status/active", "project/docs")
+    /// Tags to remove, for example "status/active".
     pub tags: Vec<String>,
 }

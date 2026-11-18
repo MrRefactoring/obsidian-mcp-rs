@@ -4,25 +4,25 @@ use crate::vault::{MetaFilter, SearchLimits, SearchType};
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SearchVaultParams {
-    /// Name of the vault to search in
+    /// Name of the vault.
     pub vault: String,
     /// Search query. Plain terms are ranked by relevance; "tag:" searches a tag
     /// (e.g. "tag:status/active"); with `regex: true` the query is a regular
     /// expression. May be empty when filtering by `frontmatter` alone.
     pub query: String,
-    /// Optional subfolder path within the vault to limit the search scope
+    /// Folder to search, relative to the vault root.
     pub path: Option<String>,
-    /// Whether to perform case-sensitive search (default: false)
+    /// Use case-sensitive search. Default: false.
     #[serde(rename = "caseSensitive")]
     pub case_sensitive: Option<bool>,
-    /// What to match the query against (default: "content")
+    /// Select what to search. Default: "content".
     #[serde(rename = "searchType")]
     pub search_type: Option<SearchType>,
-    /// Maximum number of files to return, best-matching first (default: 20)
+    /// Maximum number of files to return. Default: 20.
     pub limit: Option<usize>,
     /// Skip this many files — use with `limit` to page through matches (default: 0)
     pub offset: Option<usize>,
-    /// Maximum matching lines to quote per file (default: 3)
+    /// Maximum matching lines to return per file. Default: 3.
     #[serde(rename = "maxMatchesPerFile")]
     pub max_matches_per_file: Option<usize>,
     /// Read `query` as a regular expression instead of words (default: false).

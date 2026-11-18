@@ -132,7 +132,7 @@ describe("resolveBinaryPath", () => {
       (p) => String(p).includes("linux-x64") && !String(p).endsWith("package.json"),
     );
     const { resolveBinaryPath } = await import("./platform");
-    // With the fallback candidate the path is built from __dirname
+    // The fallback candidate uses __dirname to build the path.
     const result = resolveBinaryPath("linux-x64");
     expect(result).toContain("linux-x64");
   });

@@ -1,5 +1,8 @@
+mod batch_move;
 mod cache;
+pub mod canvas;
 mod frontmatter;
+pub mod import;
 mod info;
 mod links;
 pub(crate) mod lock;
@@ -8,29 +11,32 @@ mod path;
 mod periodic;
 mod search;
 mod tags;
+pub mod tasks;
 mod walk;
 mod write;
 
 use std::{
     collections::HashMap,
-    fs,
+    fs, io,
     path::{Path, PathBuf},
     sync::Mutex,
 };
 
 use rayon::prelude::*;
+use sha2::{Digest, Sha256};
 
 use crate::error::VaultError;
 
 use frontmatter::content_has_tag;
-use path::{ensure_md_extension, safe_join};
+use path::{ensure_md_extension, normalize_relative, projected_path, safe_join};
 use tags::{
     add_tags_to_content, add_tags_to_frontmatter, normalize_tag, remove_tags_from_note,
     rename_tag_in_note,
 };
 use walk::md_files;
-use write::atomic_write;
+use write::{atomic_write, atomic_write_new, rename_no_replace};
 
+pub use batch_move::BatchMoveResult;
 pub use info::{DEFAULT_RECENT, InfoOutput, InfoQuery, RecentNote, Stats, TagCount};
 pub use links::{LinkKind, LinkRef};
 pub use patch::TargetKind;
@@ -62,7 +68,7 @@ pub struct Target<'a> {
 }
 
 /// One edit to one note. Without a `target` the operation applies to the whole
-/// note, which is what `edit-note` did before patching existed.
+/// note, which is what `edit_note` did before patching existed.
 pub struct Edit<'a> {
     pub operation: EditOperation,
     pub content: &'a str,
@@ -96,7 +102,7 @@ pub enum NoteView {
     Outline,
 }
 
-/// Lines returned by a `read-note` that doesn't say otherwise.
+/// Lines returned by a `read_note` that doesn't say otherwise.
 pub const DEFAULT_READ_LINES: usize = 400;
 
 /// The most bytes one read may return, whatever `limit` says. A line cap is not
@@ -112,6 +118,31 @@ pub struct ReadWindow {
     pub offset: usize,
     /// Most lines to return.
     pub limit: usize,
+}
+
+pub struct NoteRead {
+    pub content: String,
+    pub revision: String,
+}
+
+pub(crate) fn note_revision(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let mut revision = String::from("sha256:");
+    for byte in Sha256::digest(bytes) {
+        write!(revision, "{byte:02x}").unwrap();
+    }
+    revision
+}
+
+pub(crate) fn check_note_revision(
+    path: &Path,
+    bytes: &[u8],
+    expected: &str,
+) -> Result<(), VaultError> {
+    if note_revision(bytes) != expected {
+        return Err(VaultError::RevisionConflict(path.display().to_string()));
+    }
+    Ok(())
 }
 
 impl Default for ReadWindow {
@@ -184,11 +215,11 @@ fn clip(content: &str, w: &ReadWindow) -> String {
     let note = match cut {
         Some(n) => format!(
             "\n[truncated: line {n} on its own is over the {} KB read budget, so it was cut. \
-             Use search-vault to find what you need inside it.]\n",
+             Use search_notes to find what you need inside it.]\n",
             MAX_READ_BYTES / 1000
         ),
         None if last < total => format!(
-            "\n[showed lines {}-{} of {total}. Call read-note again with offset={} for the rest, \
+            "\n[showed lines {}-{} of {total}. Call read_note again with offset={} for the rest, \
              or view=\"outline\" for a map of the note.]\n",
             start + 1,
             last,
@@ -204,7 +235,7 @@ fn clip(content: &str, w: &ReadWindow) -> String {
     out
 }
 
-/// What the `frontmatter` tool should do with a note's YAML frontmatter.
+/// What the `note_properties` tool should do with a note's YAML frontmatter.
 #[derive(Debug, Clone, PartialEq, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum FrontmatterAction {
@@ -230,7 +261,7 @@ pub struct FrontmatterOutput {
 }
 
 /// Where a deleted note goes. Hidden, so `md_files` — and therefore search, the
-/// link graph and `rename-tag` — never sees it again.
+/// link graph and `rename_vault_tag` — never sees it again.
 const TRASH: &str = ".trash";
 
 // Typed, like every other vocabulary in this crate, so an unrecognised value is
@@ -240,7 +271,7 @@ const TRASH: &str = ".trash";
 //
 // Doc comments here reach the model, via schemars → the tool's inputSchema, and
 // every conversation pays for them. Reasoning goes in `//` comments like this.
-/// Where `add-tags` writes a tag.
+/// Where `add_note_tags` writes a tag.
 #[derive(Debug, Clone, Copy, Default, PartialEq, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum TagLocation {
@@ -270,20 +301,32 @@ fn basename(path: &Path) -> String {
         .to_string()
 }
 
-/// What `delete-note` did.
+/// What `delete_note` did.
 #[derive(Debug, Clone)]
 pub struct DeleteOutcome {
     /// Where the note now sits, vault-relative — or `None` when it was erased.
     pub trashed_to: Option<String>,
 }
 
-/// What `move-note` did. `relinked` names the notes whose links were updated to
+/// What `move_note` did. `relinked` names the notes whose links were updated to
 /// follow the moved note — empty when nothing pointed at it, or when the links
 /// still resolve on their own (a bare `[[Note]]` survives a folder move).
 #[derive(Debug, Clone)]
 pub struct MoveOutcome {
     pub path: PathBuf,
     pub relinked: Vec<String>,
+    pub link_failures: Vec<LinkUpdateFailure>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LinkUpdateFailure {
+    pub path: String,
+    pub reason: String,
+}
+
+pub(crate) struct TagRenamePreview {
+    pub(crate) affected: Vec<String>,
+    pub(crate) blocked: Vec<String>,
 }
 
 /// Which slice of the link graph the `wikilinks` tool should return.
@@ -347,6 +390,7 @@ fn page<T>(items: Vec<T>, limits: &LinkLimits) -> Vec<T> {
 #[derive(Debug)]
 pub struct VaultManager {
     vaults: HashMap<String, PathBuf>,
+    write_folders: Option<HashMap<String, Vec<WriteFolder>>>,
     /// Serialises every mutation within this process. See `write_guard`.
     write_lock: Mutex<()>,
     /// Serialises every mutation *between* processes. `None` disables it, which
@@ -355,6 +399,12 @@ pub struct VaultManager {
     /// Note contents, so a vault-wide read does not re-read an unchanged vault.
     /// Read-only operations only — see `cache`.
     cache: cache::ContentCache,
+}
+
+#[derive(Debug)]
+struct WriteFolder {
+    relative: PathBuf,
+    canonical: PathBuf,
 }
 
 /// Both halves of the write lock, released together when this is dropped.
@@ -417,9 +467,145 @@ impl VaultManager {
         }
         Self {
             vaults,
+            write_folders: None,
             write_lock: Mutex::new(()),
             lock_path,
             cache: cache::ContentCache::default(),
+        }
+    }
+
+    pub fn with_write_folders(mut self, rules: &[String]) -> Result<Self, VaultError> {
+        if rules.is_empty() {
+            return Ok(self);
+        }
+        let mut scopes: HashMap<String, Vec<WriteFolder>> = HashMap::new();
+        for rule in rules {
+            let (vault, root, folder) = self.resolve_write_folder_rule(rule)?;
+            if Path::new(folder)
+                .components()
+                .any(|part| part == std::path::Component::ParentDir)
+            {
+                return Err(VaultError::InvalidPath(folder.to_string()));
+            }
+            let relative = normalize_relative(Path::new(folder))?;
+            let path = safe_join(root, None, folder)?;
+            if path.exists() && !path.is_dir() {
+                return Err(VaultError::InvalidPath(format!(
+                    "'{folder}' is not a folder"
+                )));
+            }
+            scopes
+                .entry(vault.to_string())
+                .or_default()
+                .push(WriteFolder {
+                    relative,
+                    canonical: projected_path(&path)?,
+                });
+        }
+        self.write_folders = Some(scopes);
+        Ok(self)
+    }
+
+    pub fn pinned_write_folder_rules(&self, rules: &[String]) -> Result<Vec<String>, VaultError> {
+        rules
+            .iter()
+            .map(|rule| {
+                let (_, root, folder) = self.resolve_write_folder_rule(rule)?;
+                Ok(format!("{}={folder}", projected_path(root)?.display()))
+            })
+            .collect()
+    }
+
+    fn resolve_write_folder_rule<'a, 'b>(
+        &'a self,
+        rule: &'b str,
+    ) -> Result<(&'a str, &'a Path, &'b str), VaultError> {
+        let mut matches = Vec::new();
+        for (name, path) in &self.vaults {
+            let named = rule.strip_prefix(name).and_then(|s| s.strip_prefix('='));
+            let pinned = if Path::new(rule).is_absolute() {
+                fs::canonicalize(path).ok().and_then(|root| {
+                    rule.strip_prefix(root.to_str()?)
+                        .and_then(|s| s.strip_prefix('='))
+                })
+            } else {
+                None
+            };
+            if let Some(folder) = named.or(pinned) {
+                matches.push((name.as_str(), path.as_path(), folder));
+            }
+        }
+        match matches.as_slice() {
+            [(name, path, folder)] if !folder.is_empty() => {
+                if !Path::new(rule).is_absolute()
+                    && *name == basename(path)
+                    && self
+                        .vaults
+                        .values()
+                        .filter(|other| basename(other) == *name)
+                        .count()
+                        > 1
+                {
+                    return Err(VaultError::InvalidPath(format!(
+                        "Vault name '{name}' is ambiguous. Use the canonical vault path in --write-folder."
+                    )));
+                }
+                self.resolve_vault(name)?;
+                Ok((name, path, folder))
+            }
+            _ => Err(VaultError::MissingArgument(format!(
+                "Invalid write folder rule '{rule}'. Use --write-folder VAULT=FOLDER for a configured vault. Use '.' for the vault root.",
+            ))),
+        }
+    }
+
+    pub(crate) fn ensure_write_allowed(&self, vault: &str, path: &Path) -> Result<(), VaultError> {
+        let Some(scopes) = &self.write_folders else {
+            return Ok(());
+        };
+        let root = self.resolve_vault(vault)?;
+        let denied = || VaultError::WriteNotAllowed(vault.to_string(), rel_path(root, path));
+        let folders = scopes.get(vault).ok_or_else(denied)?;
+        let relative = path.strip_prefix(root).map_err(|_| denied())?;
+        if relative
+            .components()
+            .any(|part| part == std::path::Component::ParentDir)
+        {
+            return Err(denied());
+        }
+        let relative = normalize_relative(relative)?;
+        let canonical = projected_path(path)?;
+        if folders.iter().any(|scope| {
+            relative.starts_with(&scope.relative)
+                && canonical.starts_with(&scope.canonical)
+                && (scope.relative.as_os_str().is_empty()
+                    || root
+                        .join(&scope.relative)
+                        .parent()
+                        .is_some_and(Path::is_dir))
+        }) {
+            Ok(())
+        } else {
+            Err(denied())
+        }
+    }
+
+    fn prune_allowed_parent(&self, vault: &str, note: &Path, root: &Path) {
+        if let Some(parent) = note.parent()
+            && self.ensure_write_allowed(vault, parent).is_ok()
+            && !self
+                .write_folders
+                .as_ref()
+                .and_then(|scopes| scopes.get(vault))
+                .is_some_and(|folders| {
+                    let parent =
+                        normalize_relative(parent.strip_prefix(root).unwrap_or(parent)).ok();
+                    folders
+                        .iter()
+                        .any(|scope| Some(&scope.relative) == parent.as_ref())
+                })
+        {
+            prune_empty_parent(note, root);
         }
     }
 
@@ -529,11 +715,21 @@ impl VaultManager {
         window: &ReadWindow,
     ) -> Result<String, VaultError> {
         let content = self.note_content(vault, filename, folder)?;
-        Ok(match view {
-            // The outline is a handful of lines by construction, so the window
-            // has nothing to protect against and would only get in the way.
-            NoteView::Outline => patch::outline(&content),
-            NoteView::Content => clip(&content, window),
+        Ok(render_note(&content, view, window))
+    }
+
+    pub fn read_note_with_revision(
+        &self,
+        vault: &str,
+        filename: &str,
+        folder: Option<&str>,
+        view: &NoteView,
+        window: &ReadWindow,
+    ) -> Result<NoteRead, VaultError> {
+        let content = self.note_content(vault, filename, folder)?;
+        Ok(NoteRead {
+            revision: note_revision(content.as_bytes()),
+            content: render_note(&content, view, window),
         })
     }
 
@@ -564,6 +760,7 @@ impl VaultManager {
     ) -> Result<PathBuf, VaultError> {
         let _guard = self.write_guard();
         let path = self.note_path(vault, filename, folder)?;
+        self.ensure_write_allowed(vault, &path)?;
         if path.exists() {
             return Err(VaultError::NoteAlreadyExists(
                 path.display().to_string(),
@@ -574,7 +771,12 @@ impl VaultManager {
             fs::create_dir_all(parent)
                 .map_err(|e| VaultError::io(parent.display().to_string(), e))?;
         }
-        atomic_write(&path, content.as_bytes())?;
+        atomic_write_new(&path, content.as_bytes()).map_err(|err| match err {
+            VaultError::Io(_, source) if source.kind() == io::ErrorKind::AlreadyExists => {
+                VaultError::NoteAlreadyExists(path.display().to_string(), vault.to_string())
+            }
+            other => other,
+        })?;
         Ok(path)
     }
 
@@ -592,14 +794,29 @@ impl VaultManager {
         folder: Option<&str>,
         edit: &Edit<'_>,
     ) -> Result<(String, String), VaultError> {
+        self.edit_note_at_revision(vault, filename, folder, edit, None)
+    }
+
+    pub fn edit_note_at_revision(
+        &self,
+        vault: &str,
+        filename: &str,
+        folder: Option<&str>,
+        edit: &Edit<'_>,
+        expected_revision: Option<&str>,
+    ) -> Result<(String, String), VaultError> {
         let _guard = self.write_guard();
         let path = self.note_path(vault, filename, folder)?;
+        self.ensure_write_allowed(vault, &path)?;
         let old = self.note_content(vault, filename, folder)?;
+        if let Some(expected) = expected_revision {
+            check_note_revision(&path, old.as_bytes(), expected)?;
+        }
 
         let needle = || {
             edit.search.ok_or_else(|| {
                 VaultError::MissingArgument(
-                    "edit-note with operation=\"find_and_replace\" also needs a 'search' parameter — the text to look for."
+                    "edit_note with operation=\"find_and_replace\" also needs a 'search' parameter — the text to look for."
                         .to_string(),
                 )
             })
@@ -666,6 +883,9 @@ impl VaultManager {
         let _guard = self.write_guard();
         let root = self.resolve_vault(vault)?.to_path_buf();
         let path = self.note_path(vault, filename, folder)?;
+        if *action != FrontmatterAction::Get {
+            self.ensure_write_allowed(vault, &path)?;
+        }
         let content = self.note_content(vault, filename, folder)?;
         let rel = rel_path(&root, &path);
 
@@ -738,6 +958,7 @@ impl VaultManager {
         let _guard = self.write_guard();
         let root = self.resolve_vault(vault)?.to_path_buf();
         let path = self.note_path(vault, filename, folder)?;
+        self.ensure_write_allowed(vault, &path)?;
         if !path.exists() {
             return Err(VaultError::NoteNotFound(
                 path.display().to_string(),
@@ -746,23 +967,34 @@ impl VaultManager {
         }
 
         // Emptying the trash is the one delete that must actually erase.
-        let already_trashed = path.strip_prefix(&root).is_ok_and(|r| r.starts_with(TRASH));
+        let rel = normalize_relative(
+            path.strip_prefix(&root)
+                .map_err(|_| VaultError::InvalidPath(path.display().to_string()))?,
+        )?;
+        let already_trashed = rel.starts_with(TRASH);
         if permanent || already_trashed {
             fs::remove_file(&path).map_err(|e| VaultError::io(path.display().to_string(), e))?;
-            prune_empty_parent(&path, &root);
+            self.prune_allowed_parent(vault, &path, &root);
             return Ok(DeleteOutcome { trashed_to: None });
         }
 
         // Mirror the note's folder inside the trash, so `a/note.md` and
         // `b/note.md` don't land on top of each other.
-        let rel = path.strip_prefix(&root).unwrap_or(&path).to_path_buf();
-        let dest = free_path(&root.join(TRASH).join(&rel));
+        let trash_path = safe_join(&root, Some(TRASH), &rel.to_string_lossy())?;
+        let real_trash = projected_path(&root)?.join(TRASH);
+        if !projected_path(&trash_path)?.starts_with(&real_trash) {
+            return Err(VaultError::InvalidPath(
+                "The trash path is outside the vault's .trash folder".into(),
+            ));
+        }
+        let dest = free_path(&trash_path);
         if let Some(parent) = dest.parent() {
             fs::create_dir_all(parent)
                 .map_err(|e| VaultError::io(parent.display().to_string(), e))?;
         }
-        fs::rename(&path, &dest).map_err(|e| VaultError::io(path.display().to_string(), e))?;
-        prune_empty_parent(&path, &root);
+        rename_no_replace(&path, &dest)
+            .map_err(|e| VaultError::io(dest.display().to_string(), e))?;
+        self.prune_allowed_parent(vault, &path, &root);
 
         Ok(DeleteOutcome {
             trashed_to: Some(rel_path(&root, &dest)),
@@ -772,8 +1004,8 @@ impl VaultManager {
     /// Move or rename a note, updating every `[[wikilink]]` and markdown link
     /// that pointed at it.
     ///
-    /// Returns the new path and the notes whose links were rewritten. The move
-    /// itself is a single `fs::rename`, and each link rewrite is an
+    /// Returns the new path, the notes whose links were rewritten, and failures. The move
+    /// itself is a single rename, and each link rewrite is an
     /// `atomic_write` — but the operation *as a whole* is not atomic. A journal
     /// would be needed for that, which is a large bet for a local single-user
     /// tool; instead a failed rewrite is reported rather than swallowed.
@@ -788,57 +1020,146 @@ impl VaultManager {
         let _guard = self.write_guard();
         let root = self.resolve_vault(vault)?.to_path_buf();
         let src = self.note_path(vault, filename, folder)?;
+        self.ensure_write_allowed(vault, &src)?;
         if !src.exists() {
             return Err(VaultError::NoteNotFound(
                 src.display().to_string(),
                 vault.to_string(),
             ));
         }
-        let dest_filename = new_filename.unwrap_or(filename);
+        let source_name = src
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(filename);
+        let dest_filename = new_filename.unwrap_or(source_name);
         // An omitted `new_folder` means "leave the note where it is", not "move it
         // to the vault root". Reading it as the root silently turns a *rename*
         // into a relocation, and `prune_empty_parent` then deletes the folder the
         // note just left. An explicit `""` is how a caller asks for the root.
-        let dest_folder = new_folder.or(folder);
-        let dest = self.note_path(vault, dest_filename, dest_folder)?;
+        let source_folder = src
+            .parent()
+            .and_then(|parent| parent.strip_prefix(&root).ok())
+            .and_then(Path::to_str);
+        let dest = self.note_path(vault, dest_filename, new_folder.or(source_folder))?;
+        self.ensure_write_allowed(vault, &dest)?;
+        if src == dest {
+            return Ok(MoveOutcome {
+                path: dest,
+                relinked: Vec::new(),
+                link_failures: Vec::new(),
+            });
+        }
+        // Resolve links against the vault as it stands *before* the move —
+        // afterwards `src` no longer exists and nothing would resolve to it.
+        let files = md_files(&root);
+        let resolver = links::Resolver::new(&root, &files);
+        let dest_rel = rel_path(&root, &dest);
+        let canvas_updates = self.plan_canvas_note_moves(
+            &[canvas::CanvasMove {
+                source_vault: vault.into(),
+                source_path: rel_path(&root, &src),
+                destination_vault: vault.into(),
+                destination_path: dest_rel.clone(),
+            }],
+            false,
+        );
+        let mut blocked = Vec::new();
+        if self.write_folders.is_some() {
+            for path in &files {
+                if path == &src {
+                    continue;
+                }
+                match self.ensure_write_allowed(vault, path) {
+                    Ok(()) => continue,
+                    Err(VaultError::WriteNotAllowed(..)) => {}
+                    Err(e) => return Err(e),
+                }
+                let content = fs::read_to_string(path)
+                    .map_err(|e| VaultError::io(path.display().to_string(), e))?;
+                if links::rewrite_links(&content, path, &src, &dest_rel, &resolver).is_some() {
+                    blocked.push(rel_path(&root, path));
+                }
+            }
+        }
+        if !blocked.is_empty() {
+            blocked.sort();
+            let mut paths = blocked.join(", ");
+            if let Err(error) = canvas_updates {
+                paths.push_str(&format!("\n{error}"));
+            }
+            return Err(VaultError::WriteNotAllowed(vault.to_string(), paths));
+        }
+        let canvas_updates = canvas_updates?;
         if let Some(parent) = dest.parent() {
             fs::create_dir_all(parent)
                 .map_err(|e| VaultError::io(parent.display().to_string(), e))?;
         }
 
-        // Resolve links against the vault as it stands *before* the move —
-        // afterwards `src` no longer exists and nothing would resolve to it.
-        let files = md_files(&root);
-        let resolver = links::Resolver::new(&root, &files);
-
-        fs::rename(&src, &dest).map_err(|e| VaultError::io(src.display().to_string(), e))?;
-        prune_empty_parent(&src, &root);
-
-        let dest_rel = rel_path(&root, &dest);
+        rename_no_replace(&src, &dest).map_err(|e| match e.kind() {
+            io::ErrorKind::AlreadyExists => {
+                VaultError::NoteAlreadyExists(rel_path(&root, &dest), vault.to_string())
+            }
+            _ => VaultError::io(dest.display().to_string(), e),
+        })?;
+        self.prune_allowed_parent(vault, &src, &root);
 
         // The moved note can link to itself; it is already at its new path, so
         // rewrite it there rather than at the path it just left.
-        let mut relinked: Vec<String> = files
+        let updates: Vec<_> = files
             .par_iter()
             .filter_map(|path| {
                 let read_at = if path == &src { &dest } else { path };
-                let content = fs::read_to_string(read_at).ok()?;
-                let updated =
-                    links::rewrite_links(&content, path, &src, &dest_rel, &resolver)?;
-                match atomic_write(read_at, updated.as_bytes()) {
-                    Ok(()) => Some(rel_path(&root, read_at)),
+                let result = update_note_links(read_at, |content| {
+                    let Some(updated) =
+                        links::rewrite_links(content, path, &src, &dest_rel, &resolver)
+                    else {
+                        return Ok(false);
+                    };
+                    self.ensure_write_allowed(vault, read_at)?;
+                    atomic_write(read_at, updated.as_bytes())?;
+                    Ok(true)
+                });
+                match result {
+                    Ok(false) => None,
+                    Ok(true) => Some(Ok(rel_path(&root, read_at))),
                     Err(e) => {
                         tracing::warn!(note = %read_at.display(), error = %e, "failed to update links");
-                        None
+                        let reason = match e {
+                            VaultError::Io(_, source) => source.to_string(),
+                            other => other.to_string(),
+                        };
+                        Some(Err(LinkUpdateFailure {
+                            path: rel_path(&root, read_at),
+                            reason,
+                        }))
                     }
                 }
             })
             .collect();
+        let mut relinked = Vec::new();
+        let mut link_failures = Vec::new();
+        for result in updates {
+            match result {
+                Ok(path) => relinked.push(path),
+                Err(failure) => link_failures.push(failure),
+            }
+        }
+        for update in canvas_updates {
+            match self.apply_canvas_link_update(&update) {
+                Ok(()) => relinked.push(update.path),
+                Err(error) => link_failures.push(LinkUpdateFailure {
+                    path: update.path,
+                    reason: error.to_string(),
+                }),
+            }
+        }
         relinked.sort();
+        link_failures.sort_by(|a, b| a.path.cmp(&b.path));
 
         Ok(MoveOutcome {
             path: dest,
             relinked,
+            link_failures,
         })
     }
 
@@ -851,6 +1172,7 @@ impl VaultManager {
         let _guard = self.write_guard();
         let root = self.resolve_vault(vault)?;
         let dir = safe_join(root, None, path)?;
+        self.ensure_write_allowed(vault, &dir)?;
         if dir.exists() {
             return Err(VaultError::DirectoryAlreadyExists(
                 dir.display().to_string(),
@@ -879,8 +1201,8 @@ impl VaultManager {
         search::search(root, &search_root, query, limits, &self.cache)
     }
 
-    /// Query the vault's link graph. One parallel pass builds the whole graph,
-    /// so no index is kept and nothing can go stale.
+    /// Query the vault's link graph. Each call builds the graph in one parallel
+    /// pass. Cached content can be stale when its file stamp does not change.
     pub fn wikilinks(
         &self,
         vault: &str,
@@ -953,7 +1275,7 @@ impl VaultManager {
 
         // `broken` and `orphans` on a real vault are exactly the queries that
         // return thousands of rows, and this tool had no cap at all — the same
-        // hole `search-vault` was built to avoid. Page it the same way.
+        // hole `search_notes` was built to avoid. Page it the same way.
         let total = links.len() + notes.len();
         let truncated = total > limits.offset + limits.limit;
         Ok(LinkOutput {
@@ -1012,10 +1334,10 @@ impl VaultManager {
             self.create_note(vault, &resolved.filename, seed, folder)?;
         }
 
-        // Same cap `read-note` is under, for the same reason. A daily note is
+        // Same cap `read_note` is under, for the same reason. A daily note is
         // small, but a yearly one is a year of appends, and `periodic` was the
         // one remaining way to pull a whole note into the context unbounded.
-        // The marker `clip` appends names `read-note` and an offset — and we
+        // The marker `clip` appends names `read_note` and an offset — and we
         // hand back the `path` it needs, so the rest is one call away.
         let content = self.note_content(vault, &resolved.filename, folder)?;
         Ok(PeriodicOutput {
@@ -1113,8 +1435,8 @@ impl VaultManager {
     /// The tag tools used to skip the files they couldn't find, then report
     /// `Added tags ["x"] to 0 file(s):` with `isError: false` — which a model
     /// reads as success and moves on from. Nothing signalled that the work had
-    /// not happened. Checking first means a batch either applies or fails with
-    /// the names it couldn't find, and never half-applies.
+    /// not happened. Checking first prevents missing files from causing a partial
+    /// batch. A later read or write error can still leave a partial batch.
     fn resolve_batch(
         &self,
         root: &Path,
@@ -1125,6 +1447,7 @@ impl VaultManager {
         let mut missing = Vec::new();
         for file in files {
             let path = safe_join(root, None, file)?;
+            self.ensure_write_allowed(vault, &path)?;
             if path.exists() {
                 found.push((file.clone(), path));
             } else {
@@ -1148,27 +1471,126 @@ impl VaultManager {
     ) -> Result<Vec<String>, VaultError> {
         let _guard = self.write_guard();
         let root = self.resolve_vault(vault)?;
-
-        let mut modified: Vec<String> = md_files(root)
+        let files = md_files(root);
+        if self.write_folders.is_some() {
+            let preview = self.plan_tag_rename(vault, root, &files, old_tag, new_tag)?;
+            if !preview.blocked.is_empty() {
+                return Err(VaultError::WriteNotAllowed(
+                    vault.to_string(),
+                    preview.blocked.join(", "),
+                ));
+            }
+        }
+        let mut modified: Vec<String> = files
             .par_iter()
-            .map(|path| -> Result<Option<String>, VaultError> {
-                let content = fs::read_to_string(path)
-                    .map_err(|e| VaultError::io(path.display().to_string(), e))?;
-                if !content_has_tag(&content, old_tag) {
-                    return Ok(None);
-                }
-                let new_content = rename_tag_in_note(&content, old_tag, new_tag);
-                atomic_write(path, new_content.as_bytes())?;
-                Ok(Some(rel_path(root, path)))
+            .filter_map(|path| match tag_rewrite(path, old_tag, new_tag) {
+                Ok(Some(text)) => Some(
+                    self.ensure_write_allowed(vault, path)
+                        .and_then(|()| atomic_write(path, text.as_bytes()))
+                        .map(|()| rel_path(root, path)),
+                ),
+                Ok(None) => None,
+                Err(e) => Some(Err(e)),
             })
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .flatten()
-            .collect();
+            .collect::<Result<_, VaultError>>()?;
         modified.sort();
-
         Ok(modified)
     }
+
+    pub(crate) fn preview_rename_tag(
+        &self,
+        vault: &str,
+        old_tag: &str,
+        new_tag: &str,
+    ) -> Result<TagRenamePreview, VaultError> {
+        let root = self.resolve_vault(vault)?;
+        self.plan_tag_rename(vault, root, &md_files(root), old_tag, new_tag)
+    }
+
+    fn plan_tag_rename(
+        &self,
+        vault: &str,
+        root: &Path,
+        files: &[PathBuf],
+        old_tag: &str,
+        new_tag: &str,
+    ) -> Result<TagRenamePreview, VaultError> {
+        let paths: Vec<_> = files
+            .par_iter()
+            .filter_map(|path| match tag_rewrite(path, old_tag, new_tag) {
+                Ok(Some(_)) => Some(Ok(path)),
+                Ok(None) => None,
+                Err(e) => Some(Err(e)),
+            })
+            .collect::<Result<_, VaultError>>()?;
+        let mut affected = Vec::with_capacity(paths.len());
+        let mut blocked = Vec::new();
+        for path in paths {
+            let rel = rel_path(root, path);
+            match self.ensure_write_allowed(vault, path) {
+                Ok(()) => {}
+                Err(VaultError::WriteNotAllowed(..)) => blocked.push(rel.clone()),
+                Err(e) => return Err(e),
+            }
+            affected.push(rel);
+        }
+        affected.sort();
+        blocked.sort();
+        Ok(TagRenamePreview { affected, blocked })
+    }
+}
+
+fn tag_rewrite(path: &Path, old_tag: &str, new_tag: &str) -> Result<Option<String>, VaultError> {
+    let content =
+        fs::read_to_string(path).map_err(|e| VaultError::io(path.display().to_string(), e))?;
+    if !content_has_tag(&content, old_tag) {
+        return Ok(None);
+    }
+    let new_content = rename_tag_in_note(&content, old_tag, new_tag);
+    Ok((new_content != content).then_some(new_content))
+}
+
+fn render_note(content: &str, view: &NoteView, window: &ReadWindow) -> String {
+    match view {
+        NoteView::Outline => patch::outline(content),
+        NoteView::Content => clip(content, window),
+    }
+}
+
+fn update_note_links(
+    path: &Path,
+    mut rewrite: impl FnMut(&str) -> Result<bool, VaultError>,
+) -> Result<bool, VaultError> {
+    let mut attempt = || {
+        let content =
+            fs::read_to_string(path).map_err(|e| VaultError::io(path.display().to_string(), e))?;
+        rewrite(&content)
+    };
+    match attempt() {
+        Err(VaultError::Io(_, ref source)) if is_transient_link_error(source) => {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+            attempt()
+        }
+        result => result,
+    }
+}
+
+fn is_transient_link_error(error: &io::Error) -> bool {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::{ERROR_LOCK_VIOLATION, ERROR_SHARING_VIOLATION};
+
+        if error.raw_os_error().is_some_and(|code| {
+            code == ERROR_LOCK_VIOLATION as i32 || code == ERROR_SHARING_VIOLATION as i32
+        }) {
+            return true;
+        }
+    }
+
+    matches!(
+        error.kind(),
+        io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+    )
 }
 
 /// A free path at or beside `wanted`: `note.md`, then `note-2.md`, and so on.
@@ -1196,8 +1618,8 @@ fn free_path(wanted: &Path) -> PathBuf {
 /// A note's path as the vault refers to it: relative to the root, `/`-separated
 /// on every platform.
 ///
-/// **Every path that leaves this crate goes through here.** Ranked search and
-/// `rename-tag` each used to build their own with `Path::display()`, which on
+/// Use this for vault-relative paths returned to callers. Ranked search and
+/// `rename_vault_tag` each used to build their own with `Path::display()`, which on
 /// Windows emitted `sub\deep.md` while the link graph and the other search paths
 /// emitted `sub/deep.md` — so the same note had two names depending on which tool
 /// you asked, and only the CI Windows leg noticed.
@@ -1250,6 +1672,185 @@ mod tests {
             dir.path().join(".write.lock"),
         );
         (dir, manager)
+    }
+
+    #[test]
+    fn note_revision_covers_unreturned_bytes_and_prevents_stale_edits() {
+        let (dir, manager) = make_vault();
+        let vault = vault_name(&dir);
+        write_note(&dir, "note.md", "first\r\nsecond\r\n");
+        let read = manager
+            .read_note_with_revision(
+                &vault,
+                "note",
+                None,
+                &NoteView::Content,
+                &ReadWindow {
+                    offset: 1,
+                    limit: 1,
+                },
+            )
+            .unwrap();
+        assert!(read.content.starts_with("first\n"));
+        assert_eq!(read.revision, note_revision(b"first\r\nsecond\r\n"));
+        write_note(&dir, "note.md", "first\r\nchanged\r\n");
+        let edit = Edit {
+            operation: EditOperation::Replace,
+            content: "agent",
+            search: None,
+            target: None,
+        };
+        let err = manager
+            .edit_note_at_revision(&vault, "note", None, &edit, Some(&read.revision))
+            .unwrap_err();
+        assert!(matches!(err, VaultError::RevisionConflict(_)));
+        assert_eq!(
+            fs::read(dir.path().join("note.md")).unwrap(),
+            b"first\r\nchanged\r\n"
+        );
+        let expected = note_revision(b"first\r\nchanged\r\n");
+        manager
+            .edit_note_at_revision(&vault, "note", None, &edit, Some(&expected))
+            .unwrap();
+        assert_eq!(fs::read(dir.path().join("note.md")).unwrap(), b"agent");
+    }
+
+    #[test]
+    fn write_folders_apply_to_direct_writes_and_trash_only_allowed_sources() {
+        let (dir, manager) = make_vault();
+        let vault = vault_name(&dir);
+        write_note(&dir, "protected.md", "existing");
+        let manager = manager
+            .with_write_folders(&[format!("{vault}=Inbox")])
+            .unwrap();
+        let err = manager
+            .create_note(&vault, "bad", "", Some("Inbox-neighbor"))
+            .unwrap_err();
+        assert!(matches!(err, VaultError::WriteNotAllowed(..)));
+        let err = manager
+            .delete_note(&vault, "protected", None, false)
+            .unwrap_err();
+        assert!(matches!(err, VaultError::WriteNotAllowed(..)));
+        assert!(dir.path().join("protected.md").exists());
+        assert!(!dir.path().join(".trash").exists());
+        manager
+            .create_note(&vault, "good", "allowed", Some("Inbox"))
+            .unwrap();
+        let outcome = manager
+            .delete_note(&vault, "good", Some("Inbox"), false)
+            .unwrap();
+        assert_eq!(outcome.trashed_to.as_deref(), Some(".trash/Inbox/good.md"));
+        assert!(dir.path().join("Inbox").is_dir());
+    }
+
+    #[test]
+    fn write_folders_preflight_reports_all_protected_backlinks_and_tags() {
+        let (dir, manager) = make_vault();
+        let vault = vault_name(&dir);
+        fs::create_dir(dir.path().join("Inbox")).unwrap();
+        write_note(&dir, "Inbox/source.md", "#old");
+        write_note(&dir, "protected-a.md", "[[source]] #old");
+        write_note(&dir, "protected-b.md", "[[source]] #old");
+        let manager = manager
+            .with_write_folders(&[format!("{vault}=Inbox")])
+            .unwrap();
+        let preview = manager.preview_rename_tag(&vault, "old", "new").unwrap();
+        assert_eq!(preview.blocked, ["protected-a.md", "protected-b.md"]);
+        assert_eq!(
+            preview.affected,
+            ["Inbox/source.md", "protected-a.md", "protected-b.md"]
+        );
+        assert!(matches!(
+            manager.rename_tag(&vault, "old", "new"),
+            Err(VaultError::WriteNotAllowed(..))
+        ));
+        let err = manager
+            .move_note(
+                &vault,
+                "Inbox/source",
+                None,
+                Some("Inbox/new-folder"),
+                Some("new"),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(err, VaultError::WriteNotAllowed(_, paths) if paths == "protected-a.md, protected-b.md")
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join("Inbox/source.md")).unwrap(),
+            "#old"
+        );
+        assert!(!dir.path().join("Inbox/new-folder").exists());
+        assert_eq!(
+            fs::read_to_string(dir.path().join("protected-a.md")).unwrap(),
+            "[[source]] #old"
+        );
+    }
+
+    #[test]
+    fn write_folders_pin_qualified_names_to_the_configured_vault_path() {
+        let dir = TempDir::new().unwrap();
+        let west = dir.path().join("west/notes");
+        let east = dir.path().join("east/notes");
+        fs::create_dir_all(&west).unwrap();
+        fs::create_dir_all(&east).unwrap();
+        let manager = VaultManager::new(vec![west.clone(), east.clone()]);
+        assert!(
+            manager
+                .pinned_write_folder_rules(&["notes=.".into()])
+                .is_err()
+        );
+        let args = manager
+            .pinned_write_folder_rules(&["east/notes=.".into()])
+            .unwrap();
+        let reversed = VaultManager::new(vec![east.clone(), west.clone()])
+            .with_write_folders(&args)
+            .unwrap();
+        reversed
+            .ensure_write_allowed("notes", &east.join("yes.md"))
+            .unwrap();
+        assert!(matches!(
+            reversed.ensure_write_allowed("west/notes", &west.join("no.md")),
+            Err(VaultError::WriteNotAllowed(..))
+        ));
+        assert!(
+            VaultManager::new(vec![west])
+                .with_write_folders(&args)
+                .is_err()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_folders_deny_symlink_escape_and_symlinked_trash() {
+        let (dir, manager) = make_vault();
+        let vault = vault_name(&dir);
+        let root = dir.path();
+        fs::create_dir_all(root.join("Inbox")).unwrap();
+        fs::create_dir_all(root.join("Private")).unwrap();
+        std::os::unix::fs::symlink(root.join("Private"), root.join("Inbox/link")).unwrap();
+        std::os::unix::fs::symlink(root.join("Private"), root.join(".trash")).unwrap();
+        let manager = manager
+            .with_write_folders(&[format!("{vault}=Inbox")])
+            .unwrap();
+        assert!(matches!(
+            manager.create_note(&vault, "Inbox/link/x", "no", None),
+            Err(VaultError::WriteNotAllowed(..))
+        ));
+        manager
+            .create_note(&vault, "Inbox/allowed", "yes", None)
+            .unwrap();
+        assert!(
+            manager
+                .delete_note(&vault, "Inbox/allowed", None, false)
+                .is_err()
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("Inbox/allowed.md")).unwrap(),
+            "yes"
+        );
+        assert!(!root.join("Private/x.md").exists());
+        assert!(!root.join("Private/Inbox").exists());
     }
 
     /// The reason the file lock exists: a *second server process* must not be
@@ -2081,10 +2682,10 @@ mod tests {
 
     #[test]
     fn periodic_is_under_the_same_cap_as_read_note() {
-        // `read-note` was capped and `periodic` was not, so "open today's note"
+        // `read_note` was capped and `periodic` was not, so "open today's note"
         // could still put an unbounded note into the context — and a yearly note
         // is a year of appends. The cap is the same one, and the marker points at
-        // `read-note`, which is exactly the tool the returned `path` feeds.
+        // `read_note`, which is exactly the tool the returned `path` feeds.
         let (dir, vault) = make_vault();
         let name = vault_name(&dir);
         let long = "a line\n".repeat(DEFAULT_READ_LINES + 100);
@@ -2103,7 +2704,7 @@ mod tests {
             DEFAULT_READ_LINES
         );
         assert!(
-            content.contains("read-note again with offset=401"),
+            content.contains("read_note again with offset=401"),
             "the model has to be told how to get the rest: {content:?}"
         );
     }
@@ -2292,7 +2893,7 @@ mod tests {
         );
         assert!(!out.contains("line 401\n"), "and not exceeded");
         assert!(
-            out.contains("[showed lines 1-400 of 1000. Call read-note again with offset=401"),
+            out.contains("[showed lines 1-400 of 1000. Call read_note again with offset=401"),
             "the model must be told what it missed and how to ask for it, got: {out:?}"
         );
     }
@@ -2342,7 +2943,7 @@ mod tests {
     fn a_multibyte_character_is_never_split_in_half() {
         // Cutting mid-character would produce invalid UTF-8 — the slice would
         // panic before it ever reached the model.
-        let note = format!("{}\n", "ё".repeat(200_000));
+        let note = format!("{}\n", "é".repeat(200_000));
         let out = clip(&note, &ReadWindow::default());
         assert!(out.contains("was cut"));
         assert!(out.len() < MAX_READ_BYTES + 500);
@@ -2652,6 +3253,72 @@ mod tests {
     }
 
     #[test]
+    fn move_note_can_change_only_the_case() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(&dir, "original.md", "body");
+
+        vault
+            .move_note(&name, "original", None, None, Some("Original"))
+            .unwrap();
+
+        let names: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|entry| {
+                let entry = entry.unwrap();
+                (entry.path().extension().is_some_and(|ext| ext == "md")).then(|| entry.file_name())
+            })
+            .collect();
+        assert_eq!(names, ["Original.md"]);
+        assert_eq!(
+            fs::read_to_string(dir.path().join("Original.md")).unwrap(),
+            "body"
+        );
+    }
+
+    #[test]
+    fn move_note_retries_transient_link_failure_once_with_a_fresh_read() {
+        let (dir, _) = make_vault();
+        let path = dir.path().join("links.md");
+        fs::write(&path, "[[src]]\n").unwrap();
+        let mut attempts = 0;
+        let result = update_note_links(&path, |content| {
+            attempts += 1;
+            if attempts == 1 {
+                fs::write(&path, "[[src]]\nuser edit\n").unwrap();
+                return Err(VaultError::io("links.md", io::ErrorKind::WouldBlock.into()));
+            }
+            atomic_write(&path, content.replace("[[src]]", "[[dst]]").as_bytes())?;
+            Ok(true)
+        });
+
+        assert!(result.unwrap());
+        assert_eq!(attempts, 2);
+        assert_eq!(fs::read_to_string(path).unwrap(), "[[dst]]\nuser edit\n");
+    }
+
+    #[test]
+    fn move_note_stops_retrying_link_failures() {
+        let (dir, _) = make_vault();
+        let path = dir.path().join("links.md");
+        fs::write(&path, "[[src]]\n").unwrap();
+        for (kind, expected_attempts) in [
+            (io::ErrorKind::TimedOut, 2),
+            (io::ErrorKind::PermissionDenied, 1),
+        ] {
+            let mut attempts = 0;
+            assert!(
+                update_note_links(&path, |_| {
+                    attempts += 1;
+                    Err(VaultError::io("links.md", kind.into()))
+                })
+                .is_err()
+            );
+            assert_eq!(attempts, expected_attempts);
+        }
+    }
+
+    #[test]
     fn renaming_a_note_leaves_it_in_its_folder() {
         // A rename used to relocate the note to the vault root and then delete the
         // folder it came from: `new_folder: None` was read as "the root" rather
@@ -2949,7 +3616,7 @@ mod tests {
         assert!(vault.create_directory(&name, "existing", true).is_err());
     }
 
-    // ── search_vault ──────────────────────────────────────────────────────────
+    // ── search_notes ──────────────────────────────────────────────────────────
 
     #[test]
     fn search_content_finds_matching_lines() {
@@ -3083,7 +3750,7 @@ mod tests {
 
     #[test]
     fn every_tool_names_a_note_the_same_way() {
-        // Ranked search and rename-tag each built their own relative path with
+        // Ranked search and rename_vault_tag each built their own relative path with
         // `Path::display()`, so on Windows they said `sub\deep.md` while the link
         // graph and the other search paths said `sub/deep.md` — the same note with
         // two names, depending on which tool you asked. Only the Windows CI leg
@@ -3123,10 +3790,10 @@ mod tests {
     #[test]
     fn what_search_returns_is_what_read_note_accepts() {
         // The most common two-step there is — find a note, then read it — used to
-        // break on every note that lived in a folder. `search-vault` returned a
+        // break on every note that lived in a folder. `search_notes` returned a
         // `filename` field holding the bare stem (`inner`), the note tools' schema
         // said "do not include path separators", and so the model reached for the
-        // one field that could not work: `read-note` looked for `inner.md` in the
+        // one field that could not work: `read_note` looked for `inner.md` in the
         // vault root and reported the note missing.
         let (dir, vault) = make_vault();
         let name = vault_name(&dir);
@@ -3144,7 +3811,7 @@ mod tests {
         let path = &hit.results[0].path;
         assert_eq!(path, "sub/deep.md");
 
-        // The path search hands back is fed straight into read-note, unmodified.
+        // The path search hands back is fed straight into read_note, unmodified.
         let content = vault
             .read_note(
                 &name,
@@ -3173,7 +3840,7 @@ mod tests {
         assert!(results.results.is_empty());
     }
 
-    // ── add_tags ──────────────────────────────────────────────────────────────
+    // ── add_note_tags ──────────────────────────────────────────────────────────────
 
     #[test]
     fn add_tags_to_frontmatter_block_list() {
@@ -3398,7 +4065,7 @@ mod tests {
         assert!(content.contains("#top"));
     }
 
-    // ── remove_tags ───────────────────────────────────────────────────────────
+    // ── remove_note_tags ───────────────────────────────────────────────────────────
 
     #[test]
     fn remove_tags_from_frontmatter() {
@@ -3439,7 +4106,7 @@ mod tests {
         assert!(err.to_string().contains("ghost.md"), "{err}");
     }
 
-    // ── rename_tag ────────────────────────────────────────────────────────────
+    // ── rename_vault_tag ────────────────────────────────────────────────────────────
 
     #[test]
     fn rename_tag_in_frontmatter() {

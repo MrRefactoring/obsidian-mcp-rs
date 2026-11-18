@@ -37,8 +37,7 @@ impl Reply {
     }
 }
 
-/// What the fake feed saw. Shared by every connection, so a test can assert on
-/// "nothing was asked for at all" as well as on how many downloads happened.
+/// Record requests across connections so tests can check request counts.
 #[derive(Clone, Default)]
 struct Hits {
     requests: Arc<AtomicUsize>,
@@ -54,8 +53,7 @@ fn serve(routes: HashMap<String, Reply>) -> String {
     base
 }
 
-/// One accept loop for every fake feed, so the counters handed in here are the
-/// same objects every connection increments.
+/// Run the fake feed accept loop with counters shared by all connections.
 fn listen(listener: TcpListener, routes: HashMap<String, Reply>, hits: Hits) {
     std::thread::spawn(move || {
         for stream in listener.incoming() {
@@ -82,9 +80,8 @@ fn answer(mut stream: TcpStream, routes: &HashMap<String, Reply>, hits: &Hits) {
     if path == "/asset" {
         hits.downloads.fetch_add(1, Ordering::SeqCst);
         if hits.slow_asset {
-            // Hold the winner's download open long enough that the losers are
-            // certainly inside `apply`, so the update lock is what stops them
-            // rather than the race simply not happening.
+            // Hold the download open so the other calls reach `apply` while
+            // the winner holds the update lock.
             std::thread::sleep(Duration::from_millis(500));
         }
     }
@@ -225,8 +222,7 @@ fn cache_home(home: &Path) -> PathBuf {
     home.join("AppData").join("Local")
 }
 
-/// Nothing beside the installed copy: the staged download carries the pid of
-/// the run that made it, so a fixed-name check would pass whatever happened.
+/// Check for download files whose names begin with the installed executable name.
 #[cfg(all(unix, not(feature = "http")))]
 fn no_leftovers(exe: &Path) -> bool {
     let (Some(parent), Some(name)) = (exe.parent(), exe.file_name().and_then(|n| n.to_str()))
@@ -253,14 +249,11 @@ fn exe_name() -> &'static str {
     }
 }
 
-/// `spawn`, retried past ETXTBSY.
+/// Retry `spawn` after ETXTBSY.
 ///
-/// Linux refuses to exec a file any process still holds open for writing. These
-/// tests copy the server into a throwaway home and run it, in parallel, so one
-/// test's `fs::copy` can be in flight while another forks — and the forked
-/// child inherits that write descriptor for the instant before it execs. The
-/// window is tiny with a release binary and wide enough to hit reliably under
-/// `cargo llvm-cov`, where the instrumented binary is several times the size.
+/// Linux cannot execute a file that a process has open for writing. Parallel
+/// tests can inherit a write descriptor during `fs::copy` until they exec.
+/// The larger binary from `cargo llvm-cov` makes this race more likely.
 fn spawn_once_free(cmd: &mut Command) -> std::io::Result<Child> {
     for _ in 0..50 {
         match cmd.spawn() {
@@ -495,9 +488,7 @@ fn a_running_server_replaces_itself_without_being_asked() {
         "the server did not update itself in the background"
     );
 
-    // stdout carries the MCP JSON-RPC stream and nothing else. This is the only
-    // test where the update path runs to completion, so it is the only place a
-    // stray `println!` in `apply` or `smoke_test` would ever be caught.
+    // stdout must contain only MCP JSON-RPC data, including during an update.
     assert!(
         out.stdout.is_empty(),
         "the update path wrote to stdout: {:?}",
@@ -529,9 +520,8 @@ fn a_server_that_was_opted_out_leaves_itself_alone() {
     let vault = tempfile::tempdir().unwrap();
 
     let server = spawn_server(&it, &base, vault.path());
-    // Wait on the same budget the positive test gets, and measure the thing the
-    // name promises: a request that never happened, not a file that is not there
-    // yet because a loaded runner was slow.
+    // Wait as long as the positive test, then check for requests. A missing
+    // file alone could mean that a slow runner has not finished yet.
     let looked = wait_until(Duration::from_secs(20), || {
         hits.requests.load(Ordering::SeqCst) > 0
     });
@@ -649,8 +639,7 @@ fn racing_processes_download_the_release_exactly_once() {
         1,
         "the lock did not stop the losers from downloading too"
     );
-    // All three reached the decision, so the single download is the lock's doing
-    // and not three runs that happened to be sequential.
+    // All three reached the decision. The lock limited them to one download.
     assert_eq!(
         hits.requests.load(Ordering::SeqCst),
         5,

@@ -1,27 +1,27 @@
-name: Предложение
-description: Предложить изменение или новую возможность.
+name: Feature request
+description: Suggest a change or new feature.
 title: "[Feature]: "
 labels: [enhancement]
 body:
   - type: textarea
     id: problem
     attributes:
-      label: Какую задачу нужно решить
-      description: Опишите конкретный сценарий и то, что мешает сейчас.
+      label: Problem to solve
+      description: Describe the specific scenario and what currently prevents it.
     validations:
       required: true
   - type: textarea
     id: proposal
     attributes:
-      label: Предлагаемое поведение
+      label: Proposed behavior
     validations:
       required: true
   - type: textarea
     id: alternatives
     attributes:
-      label: Какие варианты уже пробовали
+      label: Alternatives tried
   - type: textarea
     id: context
     attributes:
-      label: Дополнительный контекст
-      description: MCP-клиент, ОС и примеры с тестовыми заметками, если они важны для задачи.
+      label: Additional context
+      description: MCP client, OS, and examples with test notes, if relevant.

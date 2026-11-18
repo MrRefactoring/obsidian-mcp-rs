@@ -8,7 +8,7 @@
 //! trace, the user's change is simply gone. `atomic_write` does not help; it
 //! makes a single write atomic, never the read-modify-write *pair*.
 //!
-//! So the mutex is backed by an advisory file lock, taken for the same span.
+//! An advisory file lock protects the same operation as the mutex.
 //!
 //! # One lock, not one per vault
 //!
@@ -65,7 +65,7 @@ pub(crate) fn lock_exclusive(path: &Path) -> Option<File> {
     // Spelled out rather than `file.lock()`: `std::fs::File` grew an inherent
     // `lock` of its own in 1.89, which would silently win the method lookup on a
     // new enough toolchain and leave the crate importing something it no longer
-    // uses. Our MSRV is 1.88, so the crate is still what makes this compile.
+    // uses. Keep using the crate explicitly for consistent locking behavior.
     fs4::FileExt::lock(&file).ok()?;
     Some(file)
 }

@@ -1,8 +1,8 @@
 [package]
 name = "obsidian-mcp-rs"
-version = "0.8.1"
+version = "0.9.0"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.89"
 authors = ["Vladislav Tupikin"]
 description = "A fast, Rust-based MCP server for Obsidian vaults"
 license = "MIT"
@@ -14,7 +14,7 @@ categories = ["command-line-utilities", "filesystem"]
 exclude = ["/npm", "/assets", "/scripts", "/.github"]
 
 [dependencies]
-rmcp = { version = "3.7", features = ["server", "transport-io", "macros"] }
+rmcp = { version = "3.11", features = ["server", "transport-io", "macros"] }
 axum = { version = "0.8", optional = true }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std"] }
 serde = { version = "1", features = ["derive"] }
@@ -33,7 +33,7 @@ toml_edit = "0.25"
 fs4 = "1.1"
 ignore = "0.4"
 rayon = "1"
-noyalib = { version = "0.0.57", default-features = false, features = ["std", "lossless-u64"] }
+noyalib = { version = "0.0.62", default-features = false, features = ["std", "lossless-u64"] }
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 regex = "1.13.1"
 jsonc-parser = { version = "0.34", default-features = false, features = ["cst", "serde_json"] }
@@ -47,6 +47,7 @@ libc = "0.2"
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
+    "Win32_Storage_FileSystem",
     "Win32_System_Threading",
     "Win32_System_Diagnostics_ToolHelp",
 ] }

@@ -1,15 +1,15 @@
-## Что изменилось
+## What changed
 
-Опишите проблему и итоговое поведение.
+Describe the problem and the resulting behavior.
 
-## Проверка
+## Verification
 
-Укажите выполненные команды и их результаты. Для исправления ошибки опишите,
-какой тест воспроизводит её до изменения.
+List the commands run and their results. For a bug fix, describe the test that
+reproduces it before the change.
 
-## Чек-лист
+## Checklist
 
-- [ ] Изменения поведения отражены в `CHANGELOG.md`, если это требуется.
-- [ ] Проверки из `CONTRIBUTING.md` пройдены; невыполненные проверки указаны выше.
-- [ ] Сохранена совместимость с Rust 1.88 и Node.js 22.
-- [ ] Пользовательские файлы и конфигурации сохраняют несвязанные данные и форматирование.
+- [ ] Behavior changes are documented in `CHANGELOG.md` when required.
+- [ ] Checks in `CONTRIBUTING.md` passed; any omitted checks are listed above.
+- [ ] Compatibility with Rust 1.89 and Node.js 22 is preserved.
+- [ ] User files and configurations retain unrelated data and formatting.

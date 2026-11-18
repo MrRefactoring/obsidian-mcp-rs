@@ -1,14 +1,14 @@
-# Участие в разработке
+# Contributing
 
-Небольшие исправления можно сразу присылать через pull request. Для новой функции
-сначала опишите задачу в issue, чтобы согласовать ожидаемое поведение и объём изменений.
-Правила общения находятся в [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md), способ сообщить
-об уязвимости — в [SECURITY.md](SECURITY.md).
+Small fixes can be submitted directly as pull requests. For a new feature, first
+open an issue to agree on the expected behavior and scope. See
+[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for community standards and
+[SECURITY.md](SECURITY.md) for vulnerability reporting.
 
-## Подготовка окружения
+## Development setup
 
-Нужны Rust stable с `rustfmt` и `clippy`, Git и Node.js 22 или новее.
-Минимальная поддерживаемая версия Rust — 1.88; проверка этой версии выполняется в CI.
+Install stable Rust with `rustfmt` and `clippy`, Git, and Node.js 22 or later.
+The minimum supported Rust version is 1.89; CI checks this version.
 
 ```bash
 git clone https://github.com/MrRefactoring/obsidian-mcp-rs.git
@@ -18,7 +18,7 @@ cargo build
 cargo test
 ```
 
-Для обёртки npm:
+For the npm wrapper:
 
 ```bash
 cd npm/obsidian-mcp-rs
@@ -27,12 +27,12 @@ npm run build
 npm test
 ```
 
-Разрабатывайте на отдельном тестовом vault. Сервер запускается командой
-`cargo run -- /path/to/test-vault`; для проверки чтения можно добавить `--no-edit`.
+Develop against a separate test vault. Start the server with
+`cargo run -- /path/to/test-vault`; add `--no-edit` to test read-only access.
 
-## Проверки перед pull request
+## Checks before a pull request
 
-Из корня репозитория выполните:
+From the repository root, run:
 
 ```bash
 cargo fmt --check
@@ -41,46 +41,42 @@ cargo clippy --features http --all-targets -- -D warnings
 cargo test
 cargo test --features http
 cargo bench --no-run
-cargo +1.88.0 check --all-targets --locked
+cargo +1.89.0 check --all-targets --locked
 cargo audit
 ```
 
-Для `cargo audit` нужен установленный `cargo-audit`.
-Если менялась обёртка npm, также выполните её сборку и тесты под Node.js 22.
-CI проверяет Linux, macOS, Windows и семь релизных таргетов; локально достаточно
-проверить доступную платформу и дождаться полной матрицы CI.
+`cargo audit` requires `cargo-audit`. If the npm wrapper changed, also build and test
+it under Node.js 22. CI checks Linux, macOS, Windows, and all seven release targets;
+locally, check the available platform and wait for the full CI matrix.
 
-## Что сохранять при изменениях
+## Invariants to preserve
 
-- В stdio-режиме stdout содержит только MCP JSON-RPC. Диагностика идёт в stderr
-  или журнал; содержимое ответов с заметками не должно попадать в лог.
-- Пользовательские пути проходят через `vault::safe_join`. Новый параметр пути
-  должен иметь тест выхода за границы vault.
-- Изменяющие инструменты вызывают `check_write()`, а изменяющие методы `VaultManager`
-  держат `write_guard()` на всём чтении и записи. Для изменения заметок читается диск,
-  а не кэш поиска.
-- Изменение одного поля frontmatter или одной записи конфигурации сохраняет
-  остальные комментарии, порядок ключей и форматирование.
-  Если CST не поддерживает форму правки, операция должна вернуть ошибку без записи;
-  переход к полной сериализации пользовательского файла недопустим.
-- Описания параметров с `JsonSchema` входят в MCP-схему. При её изменении проверьте
-  итоговый `tools/list` и стоимость описаний для клиента.
-- Сохраняйте Rust 1.88 и Node.js 22. Не меняйте версии пакетов и не создавайте тег
-  в обычном PR: подготовка релиза выполняется отдельно через
-  `scripts/prepare-release.sh`.
-  Порядок выпуска и настройки npm OIDC описаны в [RELEASING.md](RELEASING.md).
+- In stdio mode, stdout contains only MCP JSON-RPC. Diagnostics go to stderr or the
+  log; responses containing note contents must not be logged.
+- User-supplied paths go through `vault::safe_join`. A new path parameter needs a
+  test for escaping the vault.
+- Mutating tools call `check_write()`, and mutating `VaultManager` methods hold
+  `write_guard()` throughout reading and writing. Note edits read from disk, not the
+  search cache.
+- Changing one frontmatter field or config entry preserves other comments, key order,
+  and formatting. If the CST cannot support an edit, return an error without writing;
+  full serialization of the user file is not acceptable.
+- `JsonSchema` parameter descriptions are included in the MCP schema. When changing
+  them, check the resulting `tools/list` and description cost to the client.
+- Preserve Rust 1.89 and Node.js 22. Do not change package versions or create a tag
+  in a regular PR: release preparation runs separately through
+  `scripts/prepare-release.sh`. Release and npm OIDC setup instructions are in
+  [RELEASING.md](RELEASING.md).
 
-## Оформление изменений
+## Submitting changes
 
-Перемещайте отслеживаемые файлы через `git mv`. Для исправления поведения добавьте
-тест, который воспроизводит исходную проблему. Не добавляйте тесты, проверяющие
-только наличие текста документации.
+Move tracked files with `git mv`. For a behavior fix, add a test that reproduces the
+original problem. Do not add tests that only check for documentation text.
 
-Опишите в PR проблему, итоговое поведение и выполненные проверки. Изменения,
-которые увидит пользователь, должны быть отражены в `CHANGELOG.md`; для будущего
-выпуска согласуйте раздел с сопровождающим. Изменения пользовательской документации
-нужно отразить в обеих версиях README, если они затрагивают общий текст.
+Describe the problem, resulting behavior, and checks in the PR. User-visible changes
+belong in `CHANGELOG.md`; coordinate the section for a future release with a
+maintainer. Update both README versions when changing shared user documentation.
 
-Сообщения коммитов пишите по-английски, например
-`fix: preserve frontmatter when updating tags`. Не добавляйте служебные подписи
-или атрибуцию генератору в коммиты, PR и исходники.
+Write commit messages in English, for example
+`fix: preserve frontmatter when updating tags`. Do not add sign-offs or generator
+attribution to commits, PRs, or source files.

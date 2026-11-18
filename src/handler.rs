@@ -13,17 +13,35 @@ use crate::vault::SearchType;
 use crate::{
     error::VaultError,
     tools::{
-        add_tags::AddTagsParams, create_directory::CreateDirectoryParams,
-        create_note::CreateNoteParams, delete_note::DeleteNoteParams, edit_note::EditNoteParams,
-        frontmatter::FrontmatterParams, list_vaults::ListVaultsParams, move_note::MoveNoteParams,
-        periodic::PeriodicParams, read_note::ReadNoteParams, remove_tags::RemoveTagsParams,
-        rename_tag::RenameTagParams, search_vault::SearchVaultParams, vault_info::VaultInfoParams,
+        add_tags::AddTagsParams,
+        batch_move::BatchMoveParams,
+        canvas::{CreateCanvasParams, EditCanvasParams, ReadCanvasParams},
+        create_directory::CreateDirectoryParams,
+        create_note::CreateNoteParams,
+        delete_note::DeleteNoteParams,
+        edit_note::EditNoteParams,
+        frontmatter::FrontmatterParams,
+        list_vaults::ListVaultsParams,
+        move_note::MoveNoteParams,
+        periodic::PeriodicParams,
+        read_note::ReadNoteParams,
+        remove_tags::RemoveTagsParams,
+        rename_tag::RenameTagParams,
+        search_vault::SearchVaultParams,
+        tasks::{
+            ApplyTaskBatchParams, CreateTaskParams, ListTasksParams, PreviewTaskBatchParams,
+            UpdateTaskParams,
+        },
+        vault_info::VaultInfoParams,
         wikilinks::WikilinksParams,
+        writing_guide::{self, WritingGuideParams},
     },
     vault::{
-        DEFAULT_RECENT, DeleteOutcome, Edit, FrontmatterAction, FrontmatterOutput, InfoOutput,
-        LinkOutput, PeriodicAction, PeriodicOutput, PeriodicRequest, SearchOutput, SearchQuery,
-        Target, VaultManager,
+        BatchMoveResult, DEFAULT_RECENT, DeleteOutcome, Edit, FrontmatterAction, FrontmatterOutput,
+        InfoOutput, LinkOutput, PeriodicAction, PeriodicOutput, PeriodicRequest, SearchOutput,
+        SearchQuery, Target, VaultManager,
+        canvas::CanvasResult,
+        tasks::{ListTasksOutput, TaskBatchOutput, TaskBatchPreview, TaskWriteOutput},
     },
 };
 
@@ -43,16 +61,21 @@ const DEFAULT_PERIODIC_LIST: usize = 10;
 /// Tools that only ever write. Under `--no-edit` these are removed from the
 /// router, so they are absent from `tools/list` *and* unreachable via
 /// `tools/call` — `check_write` then stays as the second layer, and is what gates
-/// `frontmatter` and `periodic`, the two tools that both read and write.
-const WRITE_TOOLS: [&str; 8] = [
-    "create-note",
-    "edit-note",
-    "delete-note",
-    "move-note",
-    "create-directory",
-    "add-tags",
-    "remove-tags",
-    "rename-tag",
+/// `note_properties` and `periodic_notes`, the two tools that both read and write.
+const WRITE_TOOLS: [&str; 13] = [
+    "create_note",
+    "edit_note",
+    "delete_note",
+    "move_note",
+    "create_folder",
+    "add_note_tags",
+    "remove_note_tags",
+    "rename_vault_tag",
+    "create_task",
+    "update_task",
+    "apply_task_batch",
+    "create_canvas",
+    "edit_canvas",
 ];
 
 fn ok(text: impl Into<String>) -> Result<CallToolResult, McpError> {
@@ -125,8 +148,8 @@ impl ObsidianHandler {
             // Don't advertise what we will only refuse. A tool the model can see
             // is a tool it will try, and a rejection it has to spend a turn
             // recovering from; removing the routes means `tools/list` describes a
-            // read-only server honestly. `frontmatter` stays, because `get` is a
-            // read — `check_write` gates it per action.
+            // read-only server honestly. `note_properties` and `periodic_notes`
+            // remain available for reads; `check_write` gates each write action.
             for name in WRITE_TOOLS {
                 tool_router.remove_route(name);
             }
@@ -149,11 +172,9 @@ impl ObsidianHandler {
         }
     }
 
-    /// Read a note. `view: "outline"` returns just its headings, block
-    /// references and frontmatter keys — what `edit-note` can be aimed at —
-    /// instead of the whole text.
+    /// Read a note. Use `view: "outline"` to list headings, block references, and frontmatter keys.
     #[tool(
-        name = "read-note",
+        name = "read_note",
         annotations(title = "Read note", read_only_hint = true, open_world_hint = false)
     )]
     fn read_note(
@@ -162,23 +183,26 @@ impl ObsidianHandler {
             ReadNoteParams,
         >,
     ) -> Result<CallToolResult, McpError> {
-        tracing::debug!(tool = "read-note", vault = %params.vault, filename = %params.filename, view = ?params.view);
+        tracing::debug!(tool = "read_note", vault = %params.vault, filename = %params.filename, view = ?params.view);
         let window = params.window();
-        match self.vault.read_note(
+        match self.vault.read_note_with_revision(
             &params.vault,
             &params.filename,
             params.folder.as_deref(),
             &params.view.clone().unwrap_or_default(),
             &window,
         ) {
-            Ok(content) => ok(content),
+            Ok(note) => Ok(CallToolResult::success(vec![
+                ContentBlock::text(note.content),
+                ContentBlock::text(format!("Note revision: {}", note.revision)),
+            ])),
             Err(e) => tool_error(e),
         }
     }
 
     /// Create a new note in the specified vault with Markdown content.
     #[tool(
-        name = "create-note",
+        name = "create_note",
         annotations(
             title = "Create note",
             destructive_hint = false,
@@ -195,7 +219,7 @@ impl ObsidianHandler {
             folder,
         }): rmcp::handler::server::wrapper::Parameters<CreateNoteParams>,
     ) -> Result<CallToolResult, McpError> {
-        tracing::debug!(tool = "create-note", %vault, %filename);
+        tracing::debug!(tool = "create_note", %vault, %filename);
         self.check_write()?;
         match self
             .vault
@@ -206,11 +230,9 @@ impl ObsidianHandler {
         }
     }
 
-    /// Edit a note: append, prepend, replace, or find_and_replace. Set
-    /// `targetType`/`target` to edit one heading's section or one `^block-id`
-    /// instead of the whole note — the rest of the file is then left untouched.
+    /// Edit a note or a section. Set `targetType` and `target` to select a heading or block.
     #[tool(
-        name = "edit-note",
+        name = "edit_note",
         annotations(
             title = "Edit note",
             destructive_hint = true,
@@ -229,9 +251,10 @@ impl ObsidianHandler {
             search,
             target_type,
             target,
+            expected_revision,
         }): rmcp::handler::server::wrapper::Parameters<EditNoteParams>,
     ) -> Result<CallToolResult, McpError> {
-        tracing::debug!(tool = "edit-note", %vault, %filename, ?operation, ?target);
+        tracing::debug!(tool = "edit_note", %vault, %filename, ?operation, ?target);
         self.check_write()?;
 
         // Half a target is a mistake we must not guess our way through: editing
@@ -253,10 +276,13 @@ impl ObsidianHandler {
             search: search.as_deref(),
             target,
         };
-        let (old, new) = match self
-            .vault
-            .edit_note(&vault, &filename, folder.as_deref(), &edit)
-        {
+        let (old, new) = match self.vault.edit_note_at_revision(
+            &vault,
+            &filename,
+            folder.as_deref(),
+            &edit,
+            expected_revision.as_deref(),
+        ) {
             Ok(v) => v,
             Err(e) => return tool_error(e),
         };
@@ -273,15 +299,12 @@ impl ObsidianHandler {
         ))
     }
 
-    /// Read or write a note's YAML frontmatter. "get" returns the whole
-    /// frontmatter (or one `key`); "set" writes `key` = `value`; "remove"
-    /// deletes `key`. Writes touch only that key — every other line, comment and
-    /// key order in the note is preserved.
+    /// Read, set, or remove YAML frontmatter keys. Omit `key` to read all keys. A write preserves the other lines.
     #[tool(
-        name = "frontmatter",
+        name = "note_properties",
         output_schema = output_schema::<FrontmatterOutput>(),
         annotations(
-            title = "Read or write frontmatter",
+            title = "Read or write note properties",
             destructive_hint = true,
             idempotent_hint = true,
             open_world_hint = false
@@ -298,7 +321,7 @@ impl ObsidianHandler {
             folder,
         }): rmcp::handler::server::wrapper::Parameters<FrontmatterParams>,
     ) -> Result<CallToolResult, McpError> {
-        tracing::debug!(tool = "frontmatter", %vault, %filename, ?action, ?key);
+        tracing::debug!(tool = "note_properties", %vault, %filename, ?action, ?key);
         if action != FrontmatterAction::Get {
             self.check_write()?;
         }
@@ -312,12 +335,9 @@ impl ObsidianHandler {
         ))
     }
 
-    /// Delete a note. By default it moves to the vault's `.trash/`, where the
-    /// user can recover it; pass `permanent: true` to erase it instead. If this
-    /// empties its containing folder, that folder is removed too (the vault root
-    /// is never deleted).
+    /// Move a note to `.trash/` by default. Set `permanent: true` to delete it permanently. The server removes the note's folder if it becomes empty. The vault root stays in place.
     #[tool(
-        name = "delete-note",
+        name = "delete_note",
         annotations(
             title = "Delete note",
             destructive_hint = true,
@@ -334,7 +354,7 @@ impl ObsidianHandler {
             permanent,
         }): rmcp::handler::server::wrapper::Parameters<DeleteNoteParams>,
     ) -> Result<CallToolResult, McpError> {
-        tracing::debug!(tool = "delete-note", %vault, %filename, ?permanent);
+        tracing::debug!(tool = "delete_note", %vault, %filename, ?permanent);
         self.check_write()?;
         match self.vault.delete_note(
             &vault,
@@ -355,9 +375,9 @@ impl ObsidianHandler {
         }
     }
 
-    /// Move or rename a note within the vault.
+    /// Move or rename a note. The server updates links when necessary. It removes an empty source folder, except the vault root.
     #[tool(
-        name = "move-note",
+        name = "move_note",
         annotations(
             title = "Move or rename note",
             destructive_hint = true,
@@ -375,7 +395,7 @@ impl ObsidianHandler {
             new_filename,
         }): rmcp::handler::server::wrapper::Parameters<MoveNoteParams>,
     ) -> Result<CallToolResult, McpError> {
-        tracing::debug!(tool = "move-note", %vault, %filename);
+        tracing::debug!(tool = "move_note", %vault, %filename);
         self.check_write()?;
 
         // A move that names neither a new folder nor a new name carries nothing.
@@ -383,7 +403,7 @@ impl ObsidianHandler {
         // destructive, so say what's missing instead.
         if new_folder.is_none() && new_filename.is_none() {
             return Err(McpError::invalid_params(
-                "move-note needs 'newFolder' or 'newFilename' (or both). \
+                "move_note needs 'newFolder' or 'newFilename' (or both). \
                  Omit 'newFolder' to rename the note where it is; pass newFolder=\"\" to move it to the vault root.",
                 None,
             ));
@@ -405,20 +425,24 @@ impl ObsidianHandler {
                         outcome.relinked.join(", ")
                     ));
                 }
+                if !outcome.link_failures.is_empty() {
+                    msg.push_str("\n\nCould not check or update links in these notes:");
+                    for failure in outcome.link_failures {
+                        msg.push_str(&format!("\n- {}: {}", failure.path, failure.reason));
+                    }
+                }
                 ok(msg)
             }
             Err(e) => tool_error(e),
         }
     }
 
-    /// Explore the vault's link graph: which notes link here (backlinks), what
-    /// this note links to (outgoing), links pointing nowhere (broken), or notes
-    /// nothing links to (orphans).
+    /// List backlinks, outgoing links, broken links, or notes without incoming links.
     #[tool(
-        name = "wikilinks",
+        name = "vault_links",
         output_schema = output_schema::<LinkOutput>(),
         annotations(
-            title = "Explore links",
+            title = "Inspect vault links",
             read_only_hint = true,
             open_world_hint = false
         )
@@ -429,7 +453,7 @@ impl ObsidianHandler {
             WikilinksParams,
         >,
     ) -> Result<CallToolResult, McpError> {
-        tracing::debug!(tool = "wikilinks", vault = %params.vault, query = ?params.query);
+        tracing::debug!(tool = "vault_links", vault = %params.vault, query = ?params.query);
         let limits = params.limits();
         structured(self.vault.wikilinks(
             &params.vault,
@@ -440,11 +464,11 @@ impl ObsidianHandler {
         ))
     }
 
-    /// Create a new directory in the vault.
+    /// Create a folder in the vault. Create parent folders by default.
     #[tool(
-        name = "create-directory",
+        name = "create_folder",
         annotations(
-            title = "Create directory",
+            title = "Create folder",
             destructive_hint = false,
             idempotent_hint = false,
             open_world_hint = false
@@ -458,7 +482,7 @@ impl ObsidianHandler {
             recursive,
         }): rmcp::handler::server::wrapper::Parameters<CreateDirectoryParams>,
     ) -> Result<CallToolResult, McpError> {
-        tracing::debug!(tool = "create-directory", %vault, %path);
+        tracing::debug!(tool = "create_folder", %vault, %path);
         self.check_write()?;
         match self
             .vault
@@ -469,12 +493,11 @@ impl ObsidianHandler {
         }
     }
 
-    /// Search notes by content, filename, or tag ("tag:" prefix). Results are
-    /// ranked best-first and capped — read `total` to see how many matched.
+    /// Search notes by content, filename, or tag. Filter by frontmatter fields. The server sorts and limits the matches. Use `total` for the match count.
     #[tool(
-        name = "search-vault",
+        name = "search_notes",
         output_schema = output_schema::<SearchOutput>(),
-        annotations(title = "Search vault", read_only_hint = true, open_world_hint = false)
+        annotations(title = "Search notes", read_only_hint = true, open_world_hint = false)
     )]
     fn search_vault(
         &self,
@@ -482,7 +505,7 @@ impl ObsidianHandler {
             SearchVaultParams,
         >,
     ) -> Result<CallToolResult, McpError> {
-        tracing::debug!(tool = "search-vault", vault = %params.vault, query = %params.query);
+        tracing::debug!(tool = "search_notes", vault = %params.vault, query = %params.query);
         let limits = params.limits();
         let search_type = params.search_type.unwrap_or_default();
         let frontmatter = params.frontmatter.unwrap_or_default();
@@ -503,9 +526,9 @@ impl ObsidianHandler {
 
     /// Add tags to notes in frontmatter and/or content.
     #[tool(
-        name = "add-tags",
+        name = "add_note_tags",
         annotations(
-            title = "Add tags",
+            title = "Add note tags",
             destructive_hint = false,
             idempotent_hint = true,
             open_world_hint = false
@@ -522,7 +545,7 @@ impl ObsidianHandler {
             position,
         }): rmcp::handler::server::wrapper::Parameters<AddTagsParams>,
     ) -> Result<CallToolResult, McpError> {
-        tracing::debug!(tool = "add-tags", %vault, ?tags);
+        tracing::debug!(tool = "add_note_tags", %vault, ?tags);
         self.check_write()?;
         match self.vault.add_tags(
             &vault,
@@ -544,9 +567,9 @@ impl ObsidianHandler {
 
     /// Remove tags from notes in frontmatter and content.
     #[tool(
-        name = "remove-tags",
+        name = "remove_note_tags",
         annotations(
-            title = "Remove tags",
+            title = "Remove note tags",
             destructive_hint = true,
             idempotent_hint = true,
             open_world_hint = false
@@ -556,7 +579,7 @@ impl ObsidianHandler {
         &self,
         rmcp::handler::server::wrapper::Parameters(RemoveTagsParams { vault, files, tags }): rmcp::handler::server::wrapper::Parameters<RemoveTagsParams>,
     ) -> Result<CallToolResult, McpError> {
-        tracing::debug!(tool = "remove-tags", %vault, ?tags);
+        tracing::debug!(tool = "remove_note_tags", %vault, ?tags);
         self.check_write()?;
         match self.vault.remove_tags(&vault, &files, &tags) {
             Ok(modified) => ok(format!(
@@ -569,11 +592,11 @@ impl ObsidianHandler {
         }
     }
 
-    /// Rename a tag across all notes in the vault.
+    /// Rename a tag across the vault or list the notes that would change.
     #[tool(
-        name = "rename-tag",
+        name = "rename_vault_tag",
         annotations(
-            title = "Rename tag",
+            title = "Rename vault tag",
             destructive_hint = true,
             idempotent_hint = false,
             open_world_hint = false
@@ -585,10 +608,32 @@ impl ObsidianHandler {
             vault,
             old_tag,
             new_tag,
+            dry_run,
         }): rmcp::handler::server::wrapper::Parameters<RenameTagParams>,
     ) -> Result<CallToolResult, McpError> {
-        tracing::debug!(tool = "rename-tag", %vault, %old_tag, %new_tag);
+        tracing::debug!(tool = "rename_vault_tag", %vault, %old_tag, %new_tag, dry_run);
         self.check_write()?;
+        if dry_run {
+            return match self.vault.preview_rename_tag(&vault, &old_tag, &new_tag) {
+                Ok(preview) => {
+                    let mut message = format!(
+                        "Dry run. No notes changed. Would rename tag '{}' to '{}' in {} file(s): {}",
+                        old_tag,
+                        new_tag,
+                        preview.affected.len(),
+                        preview.affected.join(", ")
+                    );
+                    if !preview.blocked.is_empty() {
+                        message.push_str(&format!(
+                            "\nRename would be blocked. Write access is not allowed for: {}",
+                            preview.blocked.join(", ")
+                        ));
+                    }
+                    ok(message)
+                }
+                Err(e) => tool_error(e),
+            };
+        }
         match self.vault.rename_tag(&vault, &old_tag, &new_tag) {
             Ok(modified) => ok(format!(
                 "Renamed tag '{}' to '{}' in {} file(s): {}",
@@ -601,17 +646,12 @@ impl ObsidianHandler {
         }
     }
 
-    /// Today's daily note, and its weekly/monthly/quarterly/yearly siblings.
-    /// `action: "create"` is the one to use for "add this to today's note" — it
-    /// returns the note, creating it first if it isn't there yet. The note's name
-    /// and folder come from the vault's own Obsidian settings, so this writes to
-    /// the note the user actually keeps. To add to it, call this, then `edit-note`
-    /// with the path it returns.
+    /// Read, create, or list periodic notes using Obsidian settings. To add text, create the note, then call `edit_note` with its path.
     #[tool(
-        name = "periodic",
+        name = "periodic_notes",
         output_schema = output_schema::<PeriodicOutput>(),
         annotations(
-            title = "Periodic note",
+            title = "Manage periodic notes",
             destructive_hint = false,
             idempotent_hint = true,
             open_world_hint = false
@@ -628,7 +668,7 @@ impl ObsidianHandler {
             limit,
         }): rmcp::handler::server::wrapper::Parameters<PeriodicParams>,
     ) -> Result<CallToolResult, McpError> {
-        tracing::debug!(tool = "periodic", %vault, ?period, ?action, ?date);
+        tracing::debug!(tool = "periodic_notes", %vault, ?period, ?action, ?date);
         if action != PeriodicAction::Get && action != PeriodicAction::List {
             self.check_write()?;
         }
@@ -644,15 +684,12 @@ impl ObsidianHandler {
         ))
     }
 
-    /// Describe a vault before searching it: `query: "tags"` lists every tag
-    /// with how many notes carry it, `"recent"` lists the notes touched most
-    /// recently, and `"stats"` gives its size and shape (notes, folders, links,
-    /// broken links).
+    /// List vault tags, recent notes, or vault statistics.
     #[tool(
-        name = "vault-info",
+        name = "vault_info",
         output_schema = output_schema::<InfoOutput>(),
         annotations(
-            title = "Describe vault",
+            title = "Get vault information",
             read_only_hint = true,
             open_world_hint = false
         )
@@ -665,23 +702,166 @@ impl ObsidianHandler {
             limit,
         }): rmcp::handler::server::wrapper::Parameters<VaultInfoParams>,
     ) -> Result<CallToolResult, McpError> {
-        tracing::debug!(tool = "vault-info", %vault, ?query);
+        tracing::debug!(tool = "vault_info", %vault, ?query);
         structured(
             self.vault
                 .vault_info(&vault, &query, limit.unwrap_or(DEFAULT_RECENT)),
         )
     }
 
+    #[doc = "Find Markdown tasks by status, date, or scope."]
+    #[tool(
+        name = "list_tasks",
+        annotations(title = "List tasks", read_only_hint = true, open_world_hint = false),
+        output_schema = output_schema::<ListTasksOutput>()
+    )]
+    fn list_tasks(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<ListTasksParams>,
+    ) -> Result<CallToolResult, McpError> {
+        structured(self.vault.list_tasks(&params))
+    }
+
+    #[doc = "Add a Markdown task to a note or heading."]
+    #[tool(
+        name = "create_task",
+        annotations(title = "Create task", destructive_hint = false, open_world_hint = false),
+        output_schema = output_schema::<TaskWriteOutput>()
+    )]
+    fn create_task(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<CreateTaskParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.check_write()?;
+        structured(self.vault.create_task(&params))
+    }
+
+    #[doc = "Change a task from list_tasks. Pass its revision to reject stale changes."]
+    #[tool(
+        name = "update_task",
+        annotations(title = "Update task", destructive_hint = true, open_world_hint = false),
+        output_schema = output_schema::<TaskWriteOutput>()
+    )]
+    fn update_task(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<UpdateTaskParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.check_write()?;
+        structured(self.vault.update_task(&params))
+    }
+
+    #[doc = "Preview task changes and get a plan ID."]
+    #[tool(
+        name = "preview_task_batch",
+        annotations(title = "Preview task changes", read_only_hint = true, open_world_hint = false),
+        output_schema = output_schema::<TaskBatchPreview>()
+    )]
+    fn preview_task_batch(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<PreviewTaskBatchParams>,
+    ) -> Result<CallToolResult, McpError> {
+        structured(self.vault.preview_task_batch(&params))
+    }
+
+    #[doc = "Apply the task changes from a confirmed preview."]
+    #[tool(
+        name = "apply_task_batch",
+        annotations(title = "Apply task changes", destructive_hint = true, open_world_hint = false),
+        output_schema = output_schema::<TaskBatchOutput>()
+    )]
+    fn apply_task_batch(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<ApplyTaskBatchParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.check_write()?;
+        structured(self.vault.apply_task_batch(&params))
+    }
+
+    #[doc = "Read the nodes and edges in one JSON Canvas file."]
+    #[tool(
+        name = "read_canvas",
+        annotations(title = "Read Canvas", read_only_hint = true, open_world_hint = false),
+        output_schema = output_schema::<CanvasResult>()
+    )]
+    fn read_canvas(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<ReadCanvasParams>,
+    ) -> Result<CallToolResult, McpError> {
+        structured(self.vault.read_canvas(&params))
+    }
+
+    #[doc = "Create a JSON Canvas file with nodes and edges."]
+    #[tool(
+        name = "create_canvas",
+        annotations(title = "Create Canvas", destructive_hint = false, open_world_hint = false),
+        output_schema = output_schema::<CanvasResult>()
+    )]
+    fn create_canvas(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<CreateCanvasParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.check_write()?;
+        structured(self.vault.create_canvas(&params))
+    }
+
+    #[doc = "Apply targeted node and edge changes to a Canvas revision."]
+    #[tool(
+        name = "edit_canvas",
+        annotations(title = "Edit Canvas", destructive_hint = true, open_world_hint = false),
+        output_schema = output_schema::<CanvasResult>()
+    )]
+    fn edit_canvas(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<EditCanvasParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.check_write()?;
+        structured(self.vault.edit_canvas(&params))
+    }
+
+    #[doc = "Preview note moves and link changes. Apply only with a confirmed preview ID."]
+    #[tool(
+        name = "batch_move_notes",
+        annotations(title = "Preview or apply note moves", destructive_hint = true, open_world_hint = false),
+        output_schema = output_schema::<BatchMoveResult>()
+    )]
+    fn batch_move_notes(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<BatchMoveParams>,
+    ) -> Result<CallToolResult, McpError> {
+        if params.preview_id.is_some() {
+            self.check_write()?;
+        }
+        structured(self.vault.batch_move_notes(&params))
+    }
+
+    #[doc = "Get examples of Obsidian Markdown or note templates. Omit topics for the index."]
+    #[tool(
+        name = "get_writing_guide",
+        annotations(
+            title = "Get Obsidian writing guide",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    fn get_writing_guide(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(WritingGuideParams { topics }): rmcp::handler::server::wrapper::Parameters<WritingGuideParams>,
+    ) -> Result<CallToolResult, McpError> {
+        ok(writing_guide::render(&topics)?)
+    }
+
     /// List all available vaults configured for this server.
     #[tool(
-        name = "list-available-vaults",
+        name = "list_vaults",
         annotations(title = "List vaults", read_only_hint = true, open_world_hint = false)
     )]
     fn list_available_vaults(
         &self,
         rmcp::handler::server::wrapper::Parameters(ListVaultsParams {}): rmcp::handler::server::wrapper::Parameters<ListVaultsParams>,
     ) -> Result<CallToolResult, McpError> {
-        tracing::debug!(tool = "list-available-vaults");
+        tracing::debug!(tool = "list_vaults");
         let vaults = self.vault.list_vaults();
         if vaults.is_empty() {
             return ok("No vaults configured.");
@@ -731,7 +911,7 @@ impl ObsidianHandler {
     /// What the client is told about this server, once, at connect time.
     ///
     /// The vault names are **named here**. Telling the model to "call
-    /// `list-available-vaults` to discover vault names" cost a guaranteed
+    /// `list_vaults` to discover vault names" cost a guaranteed
     /// round-trip at the start of every single conversation, to learn something
     /// the server already knew when it started. It can now open with the work.
     fn instructions(&self) -> String {
@@ -741,23 +921,23 @@ impl ObsidianHandler {
         let opening = match names.len() {
             0 => "No vaults are configured on this server.".to_string(),
             1 => format!(
-                "Notes live in one vault, named {}. Pass that as `vault` to every tool.",
+                "Notes live in one vault, named {}. Pass that name as `vault` when a tool requires it.",
                 names[0]
             ),
             _ => format!(
                 "Notes live in {} named vaults: {}. Pass one of those names as `vault` to \
-                 every tool; ask the user which they mean if it isn't clear.",
+                 a tool that requires it. Ask the user which vault to use if necessary.",
                 names.len(),
                 names.join(", ")
             ),
         };
 
         format!(
-            "{opening} `filename` is a path relative to the vault root — `search-vault` returns \
-             exactly such a path in its `path` field, and it can be passed straight back in. The \
-             `.md` extension is optional. Tag search uses a `tag:` prefix in `search-vault`; \
-             `regex: true` matches a pattern instead of words. To edit part of a note, read it \
-             with `view: \"outline\"` first — that lists the targets `edit-note` can aim at."
+            "{opening} For note tools, `filename` is relative to the vault root and may omit `.md`. \
+             Use the `path` from `search_notes` as `filename`. Use `tag:` to search for a tag. \
+             Set `regex: true` to search for a pattern. Use `view: \"outline\"` to find targets for `edit_note`. \
+             For Obsidian syntax, use the official `obsidian-markdown` skill if installed or call `get_writing_guide`. \
+             With terminal access, use `import-markdown` to preview a local Markdown import. Use `open-importer` only when the user asks to open Obsidian Importer. See https://github.com/MrRefactoring/obsidian-mcp-rs/blob/master/docs/import.md."
         )
     }
 }
@@ -828,7 +1008,7 @@ mod tests {
         assert_eq!(res.is_error, Some(true), "expected isError result");
     }
 
-    // ── read-note ─────────────────────────────────────────────────────────────
+    // ── read_note ─────────────────────────────────────────────────────────────
 
     #[test]
     fn read_note_ok() {
@@ -874,7 +1054,7 @@ mod tests {
         assert!(r.is_err());
     }
 
-    // ── create-note ───────────────────────────────────────────────────────────
+    // ── create_note ───────────────────────────────────────────────────────────
 
     #[test]
     fn create_note_ok() {
@@ -902,7 +1082,7 @@ mod tests {
         assert_is_error(r);
     }
 
-    // ── edit-note ─────────────────────────────────────────────────────────────
+    // ── edit_note ─────────────────────────────────────────────────────────────
 
     #[test]
     fn edit_note_append_ok() {
@@ -917,6 +1097,7 @@ mod tests {
             search: None,
             target_type: None,
             target: None,
+            expected_revision: None,
         }));
         assert!(r.is_ok());
     }
@@ -933,6 +1114,7 @@ mod tests {
             search: None,
             target_type: None,
             target: None,
+            expected_revision: None,
         }));
         assert_is_error(r);
     }
@@ -950,11 +1132,12 @@ mod tests {
             search: Some("missing".into()),
             target_type: None,
             target: None,
+            expected_revision: None,
         }));
         assert_is_error(r);
     }
 
-    // ── edit-note: patch targets ──────────────────────────────────────────────
+    // ── edit_note: patch targets ──────────────────────────────────────────────
 
     const SECTIONED: &str = "# Top\n\nintro\n\n## Log\n\nfirst\n";
 
@@ -971,6 +1154,7 @@ mod tests {
             search: None,
             target_type: Some(TargetKind::Heading),
             target: Some("## Log".into()),
+            expected_revision: None,
         }));
         assert!(r.is_ok());
         let out = fs::read_to_string(dir.path().join("e.md")).unwrap();
@@ -990,6 +1174,7 @@ mod tests {
             search: None,
             target_type: Some(TargetKind::Heading),
             target: Some("Ghost".into()),
+            expected_revision: None,
         }));
         assert_is_error(r);
         assert_eq!(
@@ -1013,6 +1198,7 @@ mod tests {
             search: None,
             target_type: Some(TargetKind::Heading),
             target: None,
+            expected_revision: None,
         }));
         assert!(r.is_err());
         assert_eq!(
@@ -1021,7 +1207,7 @@ mod tests {
         );
     }
 
-    // ── read-note: outline ────────────────────────────────────────────────────
+    // ── read_note: outline ────────────────────────────────────────────────────
 
     #[test]
     fn read_note_outline_returns_targets_not_prose() {
@@ -1078,7 +1264,7 @@ mod tests {
         );
     }
 
-    // ── delete-note ───────────────────────────────────────────────────────────
+    // ── delete_note ───────────────────────────────────────────────────────────
 
     #[test]
     fn delete_note_ok() {
@@ -1105,7 +1291,7 @@ mod tests {
         assert_is_error(r);
     }
 
-    // ── move-note ─────────────────────────────────────────────────────────────
+    // ── move_note ─────────────────────────────────────────────────────────────
 
     #[test]
     fn move_note_ok() {
@@ -1135,6 +1321,69 @@ mod tests {
     }
 
     #[test]
+    fn move_note_collision_keeps_both_notes_and_their_links() {
+        let (dir, h, vault) = setup();
+        write(&dir, "src.md", "source");
+        write(&dir, "dst.md", "destination");
+        write(&dir, "link.md", "[[src]]");
+
+        let message = error_text(h.move_note(Parameters(MoveNoteParams {
+            vault,
+            filename: "src".into(),
+            folder: None,
+            new_folder: None,
+            new_filename: Some("dst".into()),
+        })));
+
+        assert!(message.contains("dst.md") && message.contains("already exists"));
+        assert_eq!(
+            fs::read_to_string(dir.path().join("src.md")).unwrap(),
+            "source"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join("dst.md")).unwrap(),
+            "destination"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join("link.md")).unwrap(),
+            "[[src]]"
+        );
+    }
+
+    #[test]
+    fn move_note_reports_a_partial_link_update() {
+        let (dir, h, vault) = setup();
+        write(&dir, "src.md", "source");
+        write(&dir, "link.md", "[[src]]");
+        fs::write(dir.path().join("unreadable.md"), b"[[src]]\xff").unwrap();
+
+        let result = h
+            .move_note(Parameters(MoveNoteParams {
+                vault,
+                filename: "src".into(),
+                folder: None,
+                new_folder: None,
+                new_filename: Some("dst".into()),
+            }))
+            .unwrap();
+
+        assert_ne!(result.is_error, Some(true));
+        let message = &result.content[0].as_text().unwrap().text;
+        assert!(message.contains("Moved note to"));
+        assert!(message.contains("Updated links in 1 note(s): link.md"));
+        assert!(message.contains("unreadable.md") && message.contains("UTF-8"));
+        assert!(!dir.path().join("src.md").exists());
+        assert_eq!(
+            fs::read_to_string(dir.path().join("dst.md")).unwrap(),
+            "source"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join("link.md")).unwrap(),
+            "[[dst]]"
+        );
+    }
+
+    #[test]
     fn a_move_that_moves_nothing_is_rejected() {
         // Neither a new folder nor a new name: guessing what was meant is exactly
         // what used to turn a rename into a relocation.
@@ -1153,7 +1402,7 @@ mod tests {
         assert!(e.message.contains("newFilename"), "{}", e.message);
     }
 
-    // ── create-directory ──────────────────────────────────────────────────────
+    // ── create_folder ──────────────────────────────────────────────────────
 
     #[test]
     fn create_directory_ok() {
@@ -1179,7 +1428,7 @@ mod tests {
         assert!(dir.path().join("a/b").is_dir());
     }
 
-    // ── search-vault ──────────────────────────────────────────────────────────
+    // ── search_notes ──────────────────────────────────────────────────────────
 
     #[test]
     fn search_vault_finds_result() {
@@ -1298,7 +1547,7 @@ mod tests {
         assert!(r.is_ok());
     }
 
-    // ── add-tags ──────────────────────────────────────────────────────────────
+    // ── add_note_tags ──────────────────────────────────────────────────────────────
 
     #[test]
     fn add_tags_ok() {
@@ -1315,7 +1564,7 @@ mod tests {
         assert!(r.is_ok());
     }
 
-    // ── remove-tags ───────────────────────────────────────────────────────────
+    // ── remove_note_tags ───────────────────────────────────────────────────────────
 
     #[test]
     fn remove_tags_ok() {
@@ -1329,21 +1578,64 @@ mod tests {
         assert!(r.is_ok());
     }
 
-    // ── rename-tag ────────────────────────────────────────────────────────────
+    // ── rename_vault_tag ────────────────────────────────────────────────────────────
 
     #[test]
     fn rename_tag_ok() {
         let (dir, h, vault) = setup();
         write(&dir, "t.md", "---\ntags:\n  - alpha\n---\n");
-        let r = h.rename_tag(Parameters(RenameTagParams {
-            vault,
-            old_tag: "alpha".into(),
-            new_tag: "beta".into(),
-        }));
+        let arguments = serde_json::json!({"vault": vault, "oldTag": "alpha", "newTag": "beta"});
+        let r = h.rename_tag(Parameters(serde_json::from_value(arguments).unwrap()));
         assert!(r.is_ok());
+        assert_eq!(
+            fs::read_to_string(dir.path().join("t.md")).unwrap(),
+            "---\ntags:\n  - beta\n---\n"
+        );
     }
 
-    // ── list-available-vaults ─────────────────────────────────────────────────
+    #[test]
+    fn rename_tag_dry_run_lists_only_notes_that_apply_changes() {
+        let (dir, h, vault) = setup();
+        let notes = [
+            ("z.md", "A #old tag."),
+            ("a.md", "---\ntags:\n  - old\n---\n"),
+            ("only-child.md", "#old/child"),
+            ("longer-tag.md", "#old-tag"),
+        ];
+        for (path, content) in notes {
+            write(&dir, path, content);
+        }
+        let rename = |dry_run| {
+            let arguments = serde_json::json!({"vault": vault, "oldTag": "old", "newTag": "new", "dryRun": dry_run});
+            let result = h
+                .rename_tag(Parameters(serde_json::from_value(arguments).unwrap()))
+                .unwrap();
+            assert_ne!(result.is_error, Some(true));
+            result.content[0].as_text().unwrap().text.clone()
+        };
+
+        assert_eq!(
+            rename(true),
+            "Dry run. No notes changed. Would rename tag 'old' to 'new' in 2 file(s): a.md, z.md"
+        );
+        for (path, content) in notes {
+            assert_eq!(fs::read_to_string(dir.path().join(path)).unwrap(), content);
+        }
+        assert_eq!(
+            rename(false),
+            "Renamed tag 'old' to 'new' in 2 file(s): a.md, z.md"
+        );
+        for (path, content) in [
+            ("a.md", "---\ntags:\n  - new\n---\n"),
+            ("z.md", "A #new tag."),
+            notes[2],
+            notes[3],
+        ] {
+            assert_eq!(fs::read_to_string(dir.path().join(path)).unwrap(), content);
+        }
+    }
+
+    // ── list_vaults ─────────────────────────────────────────────────
 
     #[test]
     fn list_available_vaults_returns_list() {
@@ -1406,6 +1698,7 @@ mod tests {
             search: None,
             target_type: None,
             target: None,
+            expected_revision: None,
         }));
         assert!(r.is_err());
         assert!(r.unwrap_err().message.contains("--no-edit"));
@@ -1485,13 +1778,16 @@ mod tests {
     fn no_edit_blocks_rename_tag() {
         let (dir, h, vault) = setup_readonly();
         write(&dir, "t.md", "---\ntags:\n  - alpha\n---\n");
-        let r = h.rename_tag(Parameters(RenameTagParams {
-            vault,
-            old_tag: "alpha".into(),
-            new_tag: "beta".into(),
-        }));
-        assert!(r.is_err());
-        assert!(r.unwrap_err().message.contains("--no-edit"));
+        for dry_run in [false, true] {
+            let r = h.rename_tag(Parameters(RenameTagParams {
+                vault: vault.clone(),
+                old_tag: "alpha".into(),
+                new_tag: "beta".into(),
+                dry_run,
+            }));
+            assert!(r.is_err());
+            assert!(r.unwrap_err().message.contains("--no-edit"));
+        }
     }
 
     #[test]
@@ -1518,15 +1814,16 @@ mod tests {
             );
         }
         for read_tool in [
-            "read-note",
-            "search-vault",
-            "wikilinks",
-            "list-available-vaults",
+            "read_note",
+            "search_notes",
+            "vault_links",
+            "list_vaults",
+            "get_writing_guide",
         ] {
             assert!(listed.iter().any(|n| n == read_tool), "missing {read_tool}");
         }
         assert!(
-            listed.iter().any(|n| n == "frontmatter"),
+            listed.iter().any(|n| n == "note_properties"),
             "frontmatter reads as well as writes, so it stays — gated per action"
         );
     }
@@ -1534,7 +1831,7 @@ mod tests {
     #[test]
     fn every_tool_is_listed_when_writes_are_allowed() {
         let (_dir, h, _) = setup();
-        assert_eq!(h.tool_router.list_all().len(), 15);
+        assert_eq!(h.tool_router.list_all().len(), 25);
     }
 
     #[test]
@@ -1598,8 +1895,8 @@ mod tests {
 
     #[test]
     fn no_edit_allows_frontmatter_get() {
-        // `frontmatter` is the one tool that both reads and writes, so the gate
-        // is per-action: reading must still work in a read-only server.
+        // `note_properties` reads and writes, so the gate is per action.
+        // Reading must still work in a read-only server.
         let (dir, h, vault) = setup_readonly();
         write(&dir, "n.md", "---\ntitle: T\n---\n");
         let out = payload(h.frontmatter(Parameters(fm(vault, "n", FrontmatterAction::Get))));

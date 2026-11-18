@@ -22,8 +22,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --check
       - run: cargo clippy -- -D warnings
-      # The `http` feature is off by default, so nothing else in CI compiles it —
-      # without this it would rot unnoticed.
+      # Check the optional `http` feature with Clippy as well as in tests.
       - run: cargo clippy --features http --all-targets -- -D warnings
 
   test:
@@ -46,9 +45,7 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: cargo bench --no-run
 
-  # Aggregate gate: a single "Test" status check that summarizes the per-OS
-  # matrix, so branch protection can require one stable context ("Test")
-  # instead of every matrix leg by name.
+  # Use one "Test" status check for all operating systems in branch protection.
   test-gate:
     name: Test
     runs-on: ubuntu-latest
@@ -186,16 +183,16 @@ jobs:
         working-directory: npm/obsidian-mcp-rs
 
   msrv:
-    name: MSRV (1.88)
+    name: MSRV (1.89)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.88.0
+      - uses: dtolnay/rust-toolchain@1.89.0
       - uses: Swatinem/rust-cache@v2
         with:
           key: msrv
-      # Build against the committed lockfile so a newer transitive dependency
-      # can't silently raise the minimum supported Rust version.
+      # Use the committed lockfile to prevent a dependency update from silently
+      # raising the minimum supported Rust version.
       - run: cargo check --all-targets --locked
 
   audit:

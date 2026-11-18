@@ -1,19 +1,45 @@
 # Changelog
 
+## [0.9.0] - 2026-11-18
+
+### Changed
+
+- **Breaking: MCP tool names have changed, with no aliases for the previous names.** Update clients and workflows that call tools by name: `read-note` → `read_note`, `create-note` → `create_note`, `edit-note` → `edit_note`, `delete-note` → `delete_note`, `move-note` → `move_note`, `create-directory` → `create_folder`, `add-tags` → `add_note_tags`, `remove-tags` → `remove_note_tags`, `rename-tag` → `rename_vault_tag`, `frontmatter` → `note_properties`, `wikilinks` → `vault_links`, `search-vault` → `search_notes`, `periodic` → `periodic_notes`, `vault-info` → `vault_info`, and `list-available-vaults` → `list_vaults`.
+- **The minimum supported Rust version is now 1.89.** Updated `rmcp` to 3.11 and `noyalib` to 0.0.62, along with the lockfile dependencies.
+- Refreshed tool descriptions and project documentation, including a dedicated `INSTALL.md` and revised installation, contribution, security, and release guidance.
+
+### Added
+
+- The installation guide includes a first request to confirm the connected vault and list recent notes.
+- Set `dryRun: true` in `rename_vault_tag` to list the notes that would change without writing to them.
+- Added `get_writing_guide` with offline Obsidian Markdown examples and note recipes. It works in read-only mode.
+- Added `--write-folder VAULT=FOLDER` to allow writes only in selected vault folders. The installer records the canonical vault path for each rule.
+- `read_note` returns the revision of the complete note. Pass it as `expectedRevision` to `edit_note` to reject the edit if the note changed.
+- Find, create, update, and reschedule Markdown tasks through MCP. Task results include source revisions, due dates, priorities, and blockers. Confirm a preview before applying changes across files. Supported Obsidian Tasks recurrences create a new occurrence when completed.
+- Read, create, and edit JSON Canvas boards through MCP. New cards support automatic placement. Board edits check the revision and preserve untouched fields.
+- Preview and apply moves within or across vaults with `batch_move_notes`. Plans report protected paths, occupied destinations, link updates, and requested attachment copies or embed and Canvas card conversions.
+- Preview local Markdown exports with `import-markdown` and apply a confirmed plan under the existing MCP connection's permissions. Use `open-importer` to open the official Obsidian Importer. Source selection and import confirmation are in Obsidian.
+
+### Fixed
+
+- `move_note` rejects an occupied destination. If link updates fail, it reports the files and reasons after the move. It retries Markdown link updates once per file on a temporary I/O error.
+- A move with an omitted destination folder keeps the source folder when the caller passes a vault-relative source path.
+
+
 ## [0.8.1] - 2026-10-24
 
 ### Changed
 
-- **YAML больше не зависит от неподдерживаемого `unsafe-libyaml`.** Вместо `serde_yaml_ng` используется написанный на Rust `noyalib 0.0.57`, совместимый с Rust 1.88. Общая конфигурация сохраняет разрешение скаляров прежнего парсера, точность больших целых и отказ при дублирующихся ключах. Изменение одного поля frontmatter по-прежнему сохраняет остальные строки заметки.
-- **Публикация npm использует Trusted Publishing через OIDC.** Release workflow получает краткоживущие учётные данные для своего репозитория и больше не зависит от срока действия `NPM_TOKEN`. Для публикации устанавливается npm CLI 11 под Node.js 22; настройки восьми доверенных пакетов и порядок проверки описаны в `RELEASING.md`.
+- **YAML no longer depends on the unmaintained `unsafe-libyaml`.** Rust-based `noyalib 0.0.57`, compatible with Rust 1.88, replaces `serde_yaml_ng`. Shared configuration preserves the previous parser’s scalar resolution, large integer precision, and rejection of duplicate keys. Changing one frontmatter field still preserves the other lines in the note.
+- **npm publishing uses Trusted Publishing through OIDC.** The release workflow receives short-lived credentials for its repository and no longer depends on the lifetime of `NPM_TOKEN`. Publishing installs npm CLI 11 under Node.js 22; configuration for the eight trusted packages and verification steps are documented in `RELEASING.md`.
 
 ### Fixed
 
-- **Установка и удаление записи Goose больше не переписывают весь YAML-конфиг.** Правка через CST сохраняет комментарии, кавычки, окончания строк и другие расширения. `install --force` обновляет запись на месте и удаляет её дубликаты. Некорректный YAML и формы, которые CST не может изменить с сохранением исходного текста, отклоняются без записи, включая `--dry-run`; это касается многострочных flow-последовательностей и разделяемых YAML anchors.
+- **Installing or removing a Goose entry no longer rewrites the entire YAML config.** CST editing preserves comments, quotes, line endings, and other extensions. `install --force` updates the entry in place and removes duplicates. Invalid YAML and forms the CST cannot edit while preserving the source are rejected without writing, including during `--dry-run`; this applies to multiline flow sequences and shared YAML anchors.
 
 ### Added
 
-- Добавлены `SECURITY.md` с приватным контактом и границами защиты, `CONTRIBUTING.md`, Contributor Covenant 2.1 на русском, формы bug report и feature request и шаблон pull request. Обе версии README ссылаются на эти документы.
+- Added `SECURITY.md` with a private contact and security boundaries, `CONTRIBUTING.md`, Contributor Covenant 2.1 in Russian, bug report and feature request forms, and a pull request template. Both README versions link to these documents.
 
 
 ## [0.8.0] - 2026-10-23
@@ -64,11 +90,11 @@ The server used to sit at whatever version you last ran `install` from, and noth
 
   Worth recording, because it is not what it looks like: `initialize` *cannot* agree on 2026-07-28. That revision replaced the handshake with per-request metadata, so the SDK answers a client naming it with the newest revision that still has one. Advertising it from `get_info` compiles, does nothing, and is silently overwritten during negotiation — the working path is `server/discover`, and it needed no code at all. Four tests now hold all of this down. No MSRV bump: rmcp 3 declares the same 1.88 this crate does.
 
-- **Обновлены прямые и транзитивные зависимости Rust и npm.** Перед выпуском включены `jsonc-parser 0.34`, `tokio 1.54.1`, `ureq 3.5`, `schemars 1.2.3`, `sha2 0.11.1`, Vitest и его coverage provider `5.0.5`, TypeScript `7.0.2`. Устаревший псевдоним `ServerInfo` заменён на `ServerConfig`, как требует новый SDK. Минимальные версии Rust 1.88 и Node.js 22 сохранены; `@types/node` обновлён до `22.20.5`, соответствующей поддерживаемому runtime. `dirs` обновлён с 6 до 7; используемый для установки бинаря `data_local_dir` не изменился.
+- **Updated direct and transitive Rust and npm dependencies.** The release included `jsonc-parser 0.34`, `tokio 1.54.1`, `ureq 3.5`, `schemars 1.2.3`, `sha2 0.11.1`, Vitest and its coverage provider `5.0.5`, and TypeScript `7.0.2`. The deprecated `ServerInfo` alias was replaced with `ServerConfig`, as required by the new SDK. Minimum versions Rust 1.88 and Node.js 22 were retained; `@types/node` was updated to `22.20.5`, matching the supported runtime. `dirs` was updated from 6 to 7; `data_local_dir`, used to install the binary, did not change.
 
 ### Fixed
 
-- **Устранены шесть замечаний безопасности TLS и проблема I/O safety в Tokio.** В lockfile включены `rustls 0.23.46`, `rustls-webpki 0.103.16`, `webpki-roots 1.0.11` и `tokio 1.54.1`. Также удалена отозванная версия `chacha20`, попадавшая в дерево через rmcp.
+- **Fixed six TLS security advisories and an I/O safety issue in Tokio.** The lockfile includes `rustls 0.23.46`, `rustls-webpki 0.103.16`, `webpki-roots 1.0.11`, and `tokio 1.54.1`. A yanked version of `chacha20`, pulled in through rmcp, was also removed.
 
 - **Both READMEs claimed the parent-liveness watch did not cover Windows.** It has since it was written: the Unix side polls `getppid`, the Windows side waits on a handle to the parent process object.
 
@@ -159,7 +185,7 @@ to use than it needed to be.
 ### Fixed
 - **The five tools that answer with structured content could not report an error the model would see.** `frontmatter`, `wikilinks`, `search-vault`, `periodic` and `vault-info` returned rmcp's `Json<T>`, which has a success shape and nothing else — so "that note does not exist" left the server as a **JSON-RPC protocol error**, the shape the spec reserves for a request the server could not process at all, and one a client is entitled to handle itself rather than hand to the model. The model got nothing back to correct, on precisely the errors it is best placed to correct. These tools now build their own `CallToolResult`, which carries `structuredContent` *and* `isError`: a successful call is byte for byte what it was, and `output_schema` on the `#[tool]` attribute keeps the `outputSchema` the return type used to derive. Proven over the wire, not against a struct field — `the_structured_tools_keep_their_output_schema_and_can_report_is_error`.
 - **`periodic` could still pull an unbounded note into the model's context.** `read-note` was capped and `periodic` was not, so "open today's note" was left as a way around the cap — and while a daily note is small, a yearly one is a year of appends. It is now under the same cap, and since it hands back the note's `path`, the marker naming `read-note` and an offset is all the model needs to page on. Test: `periodic_is_under_the_same_cap_as_read_note`.
-- **The README had two install sections.** `## Setup` (the recommended `npx` path) and a leftover `## Installation` that sat between *Performance* and *Configuration*, said less, and led with `npm install -g` — the one path the page otherwise never recommends. In the Russian README the two were literally both titled `## Установка`. Removed; `## Setup` was always the better of the two.
+- **The README had two install sections.** `## Setup` (the recommended `npx` path) and a leftover `## Installation` that sat between *Performance* and *Configuration*, said less, and led with `npm install -g` — the one path the page otherwise never recommends. In the Russian README the two had the same title. Removed; `## Setup` was always the better of the two.
 
 - **`search-vault` returned an identifier no note tool would accept.** Each hit carried a `filename` field holding the bare stem — `deep`, with the folder and the extension thrown away — alongside the usable `path`. The note tools' schema then said *"do not include path separators"*, so the model reached for the one field that could not work: `read-note` looked for `deep.md` in the vault root and reported the note missing. **Find-then-read is the most common two-step there is, and it broke on every note in a folder.** The constraint was also false — `safe_join` accepts a relative path perfectly well. `filename` is gone from the results, `path` is the only identifier, and the schema now says so. Test: `what_search_returns_is_what_read_note_accepts`.
 - **A patch target copied out of the outline did not resolve.** `read-note view="outline"` exists to tell the patcher what it can aim at, and both `edit-note` and the `TargetNotFound` error point the model at it. But it printed `## Log (line 9)`, and a model that copied that line faithfully got `TargetNotFound` — the ` (line 9)` came with it. Targets are now quoted, with nothing but the target inside the quotes. The old test passed throughout because it checked the *parsed* headings rather than the bytes we actually emit; the new one asserts on the rendered outline. Test: `a_target_copied_verbatim_out_of_the_rendered_outline_resolves`.
@@ -375,7 +401,7 @@ to use than it needed to be.
 
 - README: added **Quick setup** section near the top with wizard and direct install examples
 - README: added **Troubleshooting** section with log file locations, `--verbose`, `--log-file` usage, and bug-report instructions
-- README: added language switcher (`English | Русский`) below the header
+- README: added language switcher (English and Russian) below the header
 - CI: workflow branch target changed from `main` to `master`; all action versions updated to latest
 - CI: added `coverage` job — `cargo llvm-cov --lcov` for Rust and `vitest --coverage` for TypeScript, both uploaded to Codecov with separate flags
 - `bin.ts` refactored into a thin launcher (`spawnSync`); all detection logic moved to `platform.ts`

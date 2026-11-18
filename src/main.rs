@@ -11,6 +11,8 @@ use obsidian_mcp_rs::update;
 use obsidian_mcp_rs::vault::VaultManager;
 use rmcp::ServiceExt;
 
+mod import_cli;
+
 #[derive(Parser, Debug)]
 #[command(
     name = "obsidian-mcp-rs",
@@ -27,11 +29,14 @@ struct Cli {
     #[arg(value_name = "VAULT_PATH")]
     vaults: Vec<PathBuf>,
 
-    /// Disable all write tools. The read tools remain; the write tools are
-    /// removed from tools/list entirely, so the server describes itself as
-    /// read-only rather than advertising tools it will refuse.
+    /// Disable writes. Remove write-only tools from tools/list. Tools with both
+    /// read and write actions still accept read actions.
     #[arg(long, default_value_t = false)]
     no_edit: bool,
+
+    #[doc = "Allow writes in VAULT=FOLDER. Repeat for more folders. Use VAULT=. for the vault root."]
+    #[arg(long = "write-folder", value_name = "VAULT=FOLDER")]
+    write_folders: Vec<String>,
 
     /// Serve MCP over Streamable HTTP instead of stdio. The endpoint is
     /// http://<host>:<port>/mcp.
@@ -79,6 +84,12 @@ enum Commands {
 
     /// Update the installed server to the latest release.
     Update(update::UpdateArgs),
+
+    #[doc = "Preview or apply a local Markdown import using a client's vault settings."]
+    ImportMarkdown(import_cli::ImportArgs),
+
+    #[doc = "Open the official Obsidian Importer in a specified vault."]
+    OpenImporter(import_cli::OpenImporterArgs),
 
     /// Show the log file location and its most recent entries.
     /// Use this when reporting a bug.
@@ -315,6 +326,8 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Uninstall(args)) => install::run_uninstall(args)?,
         Some(Commands::List) => install::run_list()?,
         Some(Commands::Update(args)) => update::run(args)?,
+        Some(Commands::ImportMarkdown(args)) => import_cli::import_markdown(args)?,
+        Some(Commands::OpenImporter(args)) => import_cli::open_importer(args)?,
         Some(Commands::Logs { log_file }) => run_logs(log_file)?,
         None => {
             if cli.vaults.is_empty() {
@@ -328,10 +341,17 @@ async fn main() -> anyhow::Result<()> {
                 );
                 std::process::exit(1);
             }
+            register_vaults(&cli.vaults);
+            let manager = VaultManager::new(cli.vaults).with_write_folders(&cli.write_folders)?;
+            if !cli.no_edit {
+                for message in manager.recover_batch_moves() {
+                    tracing::warn!("{message}");
+                }
+            }
             if cli.http {
-                run_http(cli.vaults, cli.no_edit, &cli.host, cli.port).await?;
+                run_http(manager, cli.no_edit, &cli.host, cli.port).await?;
             } else {
-                run_server(cli.vaults, cli.no_edit).await?;
+                run_server(manager, cli.no_edit).await?;
             }
         }
     }
@@ -344,7 +364,7 @@ async fn main() -> anyhow::Result<()> {
 /// weight everyone should carry.
 #[cfg(feature = "http")]
 async fn run_http(
-    vaults: Vec<PathBuf>,
+    manager: VaultManager,
     no_edit: bool,
     host: &str,
     port: u16,
@@ -363,13 +383,11 @@ async fn run_http(
         %addr,
         "obsidian-mcp-rs starting (http)"
     );
-    register_vaults(&vaults);
-
-    obsidian_mcp_rs::http::serve(VaultManager::new(vaults), no_edit, addr).await
+    obsidian_mcp_rs::http::serve(manager, no_edit, addr).await
 }
 
 #[cfg(not(feature = "http"))]
-async fn run_http(_: Vec<PathBuf>, _: bool, _: &str, _: u16) -> anyhow::Result<()> {
+async fn run_http(_: VaultManager, _: bool, _: &str, _: u16) -> anyhow::Result<()> {
     anyhow::bail!(
         "this build has no HTTP transport. Rebuild with `cargo install obsidian-mcp-rs --features http`, \
          or drop --http to use stdio."
@@ -390,15 +408,13 @@ fn register_vaults(vaults: &[PathBuf]) {
     }
 }
 
-async fn run_server(vaults: Vec<PathBuf>, no_edit: bool) -> anyhow::Result<()> {
+async fn run_server(manager: VaultManager, no_edit: bool) -> anyhow::Result<()> {
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
         pid = std::process::id(),
         no_edit,
         "obsidian-mcp-rs starting"
     );
-
-    register_vaults(&vaults);
 
     // Only in server mode: the subcommands are short-lived and their parent is a
     // shell that may legitimately exit first.
@@ -407,7 +423,6 @@ async fn run_server(vaults: Vec<PathBuf>, no_edit: bool) -> anyhow::Result<()> {
         std::process::exit(0);
     });
 
-    let manager = VaultManager::new(vaults);
     let handler = ObsidianHandler::with_options(manager, no_edit);
 
     update::announce_installation();

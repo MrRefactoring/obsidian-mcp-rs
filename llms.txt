@@ -1,53 +1,83 @@
 # obsidian-mcp-rs
 
-> Rust-based MCP (Model Context Protocol) server for Obsidian vaults. Lets AI assistants (Claude, Cursor, etc.) read, write, search, and manage notes inside Obsidian vaults over stdio transport.
+> A Rust Model Context Protocol (MCP) server for Obsidian vaults. AI assistants can read, write, search, and manage notes through stdio.
 
 ## What it does
 
-- Exposes 15 MCP tools for full note lifecycle management: create, read, edit, delete, move, search, tag, frontmatter, links, daily notes
-- Supports multiple vaults simultaneously via CLI arguments
-- Ships as a single static binary — no runtime required
-- stdio by default; Streamable HTTP (`--http`) available via the optional `http` cargo feature
-- Distributed as an npm package (`obsidian-mcp-rs`) with platform-specific binaries via optional dependencies, and on crates.io
-- Installs itself into 16 AI-client configs and keeps itself updated from GitHub Releases
+- Provides 25 MCP tools for notes, tags, properties, links, periodic notes, tasks, Canvas, and Obsidian Markdown guidance.
+- Uses CLI arguments to select one or more vaults.
+- The npm package provides platform-specific binaries. Cargo builds the crate from source.
+- Uses stdio by default. The optional `http` Cargo feature enables Streamable HTTP with `--http`.
+- Installs the server into 16 AI client configurations. The installed server can update from GitHub Releases.
+- Supports read-only operation with `--no-edit`.
+- Use `--write-folder VAULT=FOLDER` to allow writes only in selected folders. Repeat the flag for multiple folders. `--no-edit` still disables all writes.
 
 ## Tools
 
-- `read-note` — read a note; `view: "outline"` returns just its headings, block refs and frontmatter keys. Capped at 400 lines by default; page on with `offset`/`limit`
-- `create-note` — create a new markdown note with content
-- `edit-note` — append, prepend, replace, or find-and-replace — over the whole note, or scoped to one heading's section or one `^block-id`
-- `delete-note` — move a note to the vault's `.trash/` (recoverable); `permanent: true` erases it
-- `move-note` — move or rename a note, rewriting inbound `[[wikilinks]]` so they follow it. Omit `newFolder` to rename in place; pass `""` to move to the vault root
-- `create-directory` — create a directory inside a vault
-- `search-vault` — BM25-ranked search by content, filename, or tag (`tag:` prefix); paged via `limit`/`offset`. `regex: true` matches a pattern instead of words; `frontmatter: {"status": "active"}` keeps only notes carrying those fields (a list field matches when it contains the value), and works alone with an empty query
-- `list-available-vaults` — list all configured vaults
-- `wikilinks` — link graph: `backlinks`, `outgoing`, `broken`, `orphans`; paged via `limit`/`offset`
-- `frontmatter` — read or write any YAML frontmatter key (`get`/`set`/`remove`), preserving the rest of the block
-- `vault-info` — what's in the vault: `tags` (with counts), `recent`, `stats`; capped by `limit`
-- `periodic` — daily/weekly/monthly/quarterly/yearly notes (`get`/`create`/`list`), using Obsidian's own name, folder and template settings
-- `add-tags` — add tags to frontmatter and/or content (`location`, `position`). Every file must exist, or nothing is changed
-- `remove-tags` — remove tags from a note
-- `rename-tag` — rename a tag across all notes in a vault
+- `read_note` — Read a note and its revision. Use `view: "outline"` to list headings, block references, and frontmatter keys. The default limit is 400 lines. Use `offset` and `limit` to read more.
+- `create_note` — Create a Markdown note with content.
+- `edit_note` — Append, prepend, replace, or find and replace text. Use `expectedRevision` from the note read to reject edits to a changed note. Apply the edit to the note, a heading section, or a `^block-id`.
+- `delete_note` — Move a note to the vault's `.trash/`. Set `permanent: true` to delete it permanently.
+- `move_note` — Move or rename a note. The server updates inbound links and Canvas cards. It rejects an occupied destination. Omit `newFolder` to keep the current folder. Use `newFolder: ""` to move the note to the vault root.
+- `create_folder` — Create a folder in a vault.
+- `search_notes` — Search content, filenames, or tags. Use the `tag:` prefix to search for a tag. Use `limit` and `offset` to page through results. Set `regex: true` to search for a pattern. Use `frontmatter: {"status": "active"}` to filter by frontmatter fields. A list field matches when it contains the value. An empty query permits a frontmatter-only filter. The server ranks text matches with BM25.
+- `list_vaults` — List the configured vaults.
+- `vault_links` — List `backlinks`, `outgoing` links, `broken` links, or `orphans`. Use `limit` and `offset` to page through results.
+- `note_properties` — Read, set, or remove a YAML frontmatter key. The server preserves the other lines in the frontmatter block.
+- `vault_info` — List `tags` with counts, `recent` notes, or vault `stats`. Use `limit` to control the number of recent notes.
+- `periodic_notes` — Read, create, or list daily, weekly, monthly, quarterly, or yearly notes. The server uses the name, folder, and template settings from Obsidian.
+- `add_note_tags` — Add tags to frontmatter, content, or both. Use `location` and `position` to control where tags go. All files must exist before the server makes changes.
+- `remove_note_tags` — Remove tags from notes.
+- `rename_vault_tag` — Rename a tag across the vault. Set `dryRun: true` to list the notes that would change.
+- `get_writing_guide` — Get offline Obsidian Markdown rules, examples, and note recipes. Omit `topics` for the index. Select up to four different topics per call.
+- `list_tasks` — Find Markdown tasks by scope, status, date, priority, tag, or blocker. Use the reference with its revision for edits.
+- `create_task` — Add a task to a note or daily note. Choose a heading when needed.
+- `update_task` — Change task text, status, dates, or priority. Use the task reference from `list_tasks`.
+- `preview_task_batch` — Preview task moves or date changes. Show the changes to the user.
+- `apply_task_batch` — Apply the same operations with the confirmed `plan_id`. Check the result for each file.
+- `read_canvas` — Read a JSON Canvas board's nodes, edges, and revision.
+- `create_canvas` — Create a board at an unused path. Omit both node coordinates for automatic placement.
+- `edit_canvas` — Add, update, or remove nodes and edges. Pass the board's `expectedRevision`.
+- `batch_move_notes` — Preview note moves and link changes within or across vaults. Show blockers and the plan to the user. Apply the same moves and options with the confirmed `previewId`. Get separate consent for copying attachments or converting embeds and Canvas cards into links.
 
 ## Usage
+
+Install with npm and Node.js 22 or newer:
 
 ```bash
 npx -y obsidian-mcp-rs install claude-code /path/to/vault
 ```
 
-`install` copies the server to a fixed per-user path and writes that absolute path into the client config. Node is not in the runtime path afterwards, and the configured path never changes. The installed copy keeps itself up to date: it checks for a new release at most once a day and replaces itself 48 hours after one ships. `install <client> <vault> --no-auto-update` turns that off — the flag is recorded during an install, so a client has to be named. Running the installed copy (the absolute path `list` prints) with `update` takes a release immediately; `npx obsidian-mcp-rs update` does not, because `update` acts on the binary running it and the npm cache copy is not the one in your configs.
+Or build with Rust and Cargo. Add the Cargo bin directory to `PATH`:
 
-Configs are written for you rather than by hand — an entry that runs `npx` starts three processes per client, of which a client terminating "the server" kills only the first.
+```bash
+cargo install --locked obsidian-mcp-rs
+obsidian-mcp-rs install claude-code /path/to/vault
+```
+
+With [cargo-binstall](https://github.com/cargo-bins/cargo-binstall), run `cargo binstall obsidian-mcp-rs` to install a prebuilt binary. Then run `obsidian-mcp-rs install <client> <vault>`.
+
+The `install` command copies the server to a fixed per-user path. It writes that absolute path into the client configuration. Node is not needed to run the installed server. The fixed path lets updates replace the installed binary without changing the configuration.
+
+The installed server checks for releases at most once a day. Automatic updates wait at least 48 hours after a release. To disable automatic updates, run `install <client> <vault> --no-auto-update`.
+
+Run `update` on the installed binary to update it. Add `--force` to bypass the 48-hour wait. The `list` command shows the installed binary path. The `npx obsidian-mcp-rs update` command runs a cached binary. It does not update the installed copy.
+
+## Import from the terminal
+
+Run `obsidian-mcp-rs import-markdown --client CLIENT --vault VAULT --source DIR` to preview a local Markdown export. Use `--global` for a global client config and `--folder DIR` for a destination folder. Repeat `--exclude PATH` for paths to skip. Use `--allow-missing-attachments` only if the user accepts the unresolved attachments. Apply with the same arguments and `--apply PLAN_ID` after the user confirms.
+
+Run `obsidian-mcp-rs open-importer --vault VAULT` only when the user asks to open the official Obsidian Importer. The user selects the source and confirms the import in Obsidian. [Import guide](docs/import.md)
 
 ## Tech stack
 
 - Language: Rust (stable)
-- MCP library: rmcp 3.7 (stdio transport)
+- MCP library: rmcp 3.11
 - CLI: clap
-- Distributed via npm optional dependencies pattern
+- npm distribution: platform-specific optional dependencies
 
 ## Links
 
-- npm: https://www.npmjs.com/package/obsidian-mcp-rs
-- GitHub: https://github.com/MrRefactoring/obsidian-mcp-rs
-- Issues: https://github.com/MrRefactoring/obsidian-mcp-rs/issues
+- [npm package](https://www.npmjs.com/package/obsidian-mcp-rs)
+- [GitHub repository](https://github.com/MrRefactoring/obsidian-mcp-rs)
+- [Issues](https://github.com/MrRefactoring/obsidian-mcp-rs/issues)

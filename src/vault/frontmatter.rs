@@ -40,7 +40,7 @@ pub(crate) fn content_has_tag(content: &str, tag: &str) -> bool {
         return true;
     }
     // Same boundary rule the rewrites use, so search can't report a note that
-    // `rename-tag` would then decline to touch. `nested` matches Obsidian: a
+    // `rename_vault_tag` would then decline to touch. `nested` matches Obsidian: a
     // search for `parent` finds `#parent/child`.
     super::tags::contains_inline_tag(content, tag, true)
 }
@@ -189,8 +189,7 @@ fn inline_bounds(line: &str) -> Option<(usize, usize)> {
     Some((open, close))
 }
 
-/// Read an inline sequence's items. Tags never contain commas, so a plain split
-/// is sufficient.
+/// Read the items of an inline sequence. The tag editor splits items at commas.
 pub(crate) fn inline_items(line: &str) -> Vec<String> {
     let Some((open, close)) = inline_bounds(line) else {
         return Vec::new();

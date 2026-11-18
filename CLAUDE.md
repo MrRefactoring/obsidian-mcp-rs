@@ -35,7 +35,7 @@ cargo check --target <triple>
 npm install && npm run build && npm test   # TS build + vitest
 ```
 
-Toolchain is pinned to **stable** (`rust-toolchain.toml`); MSRV is **1.88**. `rustfmt`: 100-col, 4-space, edition 2024. `clippy.toml` sets `msrv = "1.88.0"`.
+Toolchain is pinned to **stable** (`rust-toolchain.toml`); MSRV is **1.89**. `rustfmt`: 100-col, 4-space, edition 2024. `clippy.toml` sets `msrv = "1.89.0"`.
 
 ## Architecture
 
@@ -54,7 +54,7 @@ The server uses `(stdin, stdout)` for the MCP JSON-RPC stream (`main.rs::run_ser
 - **`initialize` can never agree on 2026-07-28 or later.** That revision replaced the handshake with per-request metadata, so `rmcp`'s `negotiate_protocol_version` answers any client naming it with the newest revision that *does* have a handshake — 2025-11-25 today. Setting `ServerInfo::with_protocol_version(V_2026_07_28)` therefore changes nothing on the wire; it is silently overwritten. Worse, a server that narrowed `supported_protocol_versions` to non-handshake revisions only would refuse `initialize` outright.
 - **2026-07-28 works anyway, through `server/discover`.** A client that drives the new lifecycle gets `supportedVersions`, our capabilities, our instructions and our `serverInfo` from the `ServerHandler::discover` default, which derives them from `get_info()`. Tools list and run normally over it. None of this needed code — which is exactly why it needs tests, and `tests/mcp_stdio.rs` has four: one per handshake revision, one for the fallback, one full new-lifecycle session, and one pinning that a *refused* handshake still puts nothing but protocol on stdout.
 
-`tools/list` is 26,255 bytes over the handshake and 26,311 over the new lifecycle — measure it after any change to the param structs, don't guess.
+`tools/list` is 48,627 bytes over the handshake and 48,683 over the new lifecycle, excluding the trailing newline. Measure the response after changes to the tool schemas.
 
 ### Process lifetime (do not break)
 
@@ -70,10 +70,12 @@ Two traps that already bit this code once, both pinned by tests:
 | Module       | Role                                                                                                                 |
 |--------------|----------------------------------------------------------------------------------------------------------------------|
 | `lib.rs`     | crate root — re-exports `error`/`handler`/`install`/`tools`/`update`/`vault` as the public library surface                    |
-| `main.rs`    | thin bin over the lib: clap CLI, log setup, dispatches to `install`/`uninstall`/`list`/`update`/`logs` subcommands or starts the MCP server |
-| `handler.rs` | `ObsidianHandler` with `#[tool_router]` macro — 15 MCP tools, thin wrappers over `vault`                             |
+| `main.rs`    | Thin CLI over the library. Sets up logging and dispatches management and import subcommands or starts the MCP server. |
+| `handler.rs` | `ObsidianHandler` with `#[tool_router]` routes 25 MCP tools, including Markdown tasks, Canvas, batch moves, and the offline writing guide. |
 | `parent.rs`  | parent-liveness watch — exits when the client that spawned us dies without closing stdin (`getppid` poll on Unix, parent-handle wait on Windows) |
 | `vault/`     | `VaultManager` (`mod.rs`) + submodules: `path` (**`safe_join` sandbox**), `frontmatter` (parse + line-surgery edits), `tags`, `patch` (heading/block targets + outline), `links`, `search`, `info` (tags/recent/stats), `periodic` (Obsidian's daily-note settings), `walk` (`md_files` via `ignore`). Vault walks run in parallel with `rayon` |
+| `vault/{tasks,canvas,batch_move,import}` | Task operations, JSON Canvas edits, note move plans and recovery, and local Markdown import plans. |
+| `import_cli.rs` | Uses an existing client connection for offline Markdown import and opens the official Obsidian Importer on request. |
 | `tools/*.rs` | `serde` + `schemars::JsonSchema` param structs only — one per tool                                                   |
 | `install/`   | Writes/removes MCP-server entries in 16 AI-client configs (JSON / TOML for Codex / YAML for Goose). `binary` places the server itself; `writer::Launch` is the one description of what an entry runs |
 | `update/`    | Self-update: `version` (semver), `target` (this build's triple → asset name), `source` (release feed + downloads), `consent` (the opt-out marker), `state` (the once-a-day stamp). `mod.rs` decides and applies |
@@ -85,7 +87,11 @@ Tools are wired via the `#[tool_router]` / `#[tool_handler]` rmcp macros — add
 
 All paths that touch the filesystem **must** route through `vault::safe_join(root, folder, filename)`. It canonicalises the deepest existing ancestor and rejects anything that escapes the canonicalised vault root. This covers `..` traversal, absolute paths, and symlink escapes. There is a dedicated test block in `vault.rs` (`rejects_parent_traversal_*`, `rejects_symlink_escape`, `*_blocks_traversal`) — when adding any tool that accepts a user-supplied path component, add a matching block-traversal test.
 
-The `--no-edit` flag is a gate enforced in `ObsidianHandler::check_write()`, called by every mutating tool. Read tools (`read-note`, `search-vault`, `list-available-vaults`) skip this gate. Adding a new write tool means calling `check_write()?` first. (`frontmatter` both reads and writes, so it gates per-action: `get` is allowed, `set`/`remove` are not.)
+The `--no-edit` flag is enforced by `ObsidianHandler::check_write()`. Write-only tools are hidden. Tools that can read or write check the action before writing. For example, `batch_move_notes` can preview in read-only mode and checks write access when it receives a preview ID.
+
+When a launch defines `--write-folder` rules, `VaultManager::ensure_write_allowed` checks both the vault-relative path and its canonical location before every write. A vault without a rule is read-only. The installer pins each rule to a canonical vault path. Multi-file moves and tag renames check indirect changes before making any writes. The delete path can use the vault's own `.trash` for an allowed source.
+
+Note and Canvas revisions are based on the complete file. Compare the current bytes against the expected revision while holding the write guard. Batch and import plans also recheck the source state and write policy when applying a preview.
 
 **Every mutating `VaultManager` method must take `self.write_guard()` as its first statement, and hold it for the whole read-modify-write.** The MCP server answers requests concurrently; `atomic_write` makes a single write atomic but not the read→edit→write *pair*, so without the guard two concurrent calls on one note both read the old text and the second write silently discards the first one's edit. Reads intentionally don't take the lock — `atomic_write` renames into place, so a reader sees the old note or the new one, never a torn one.
 
@@ -126,7 +132,7 @@ The background check is a detached thread started *before* the MCP handshake (a 
 
 ### Multi-vault model
 
-`VaultManager` keys each vault by its directory basename. Basename collisions are disambiguated as `<name>-2`, `<name>-3`, ... with a `tracing::warn!`. The MCP client refers to vaults by these names via the `vault` parameter on every tool.
+`VaultManager` uses each vault's directory basename. On a collision it prefixes a later name with the parent folder, and adds a numeric suffix if that name is also taken. Use the names returned by `list_vaults` for the MCP `vault` parameter.
 
 ### npm wrapper
 
@@ -139,17 +145,17 @@ The background check is a detached thread started *before* the MCP handshake (a 
 ## Conventions worth knowing
 
 - Use `git mv` to rename/move files — preserves history.
-- YAML читается через `noyalib 0.0.57`, последний совместимый с Rust 1.88 выпуск; 0.0.58 требует Rust 1.89. В `src/yaml.rs` общая конфигурация сохраняет правила разрешения скаляров serde-yaml и запрещает дублирующиеся ключи. `frontmatter::extract_tags` читает только `tags:`; некорректный YAML даёт пустой список, без построчного восстановления. `find_closing_fm` отдельно находит границы блока. Старые `serde_yaml_ng` и `unsafe-libyaml` удалены из дерева зависимостей.
+- YAML is parsed with `noyalib 0.0.62`. The shared configuration in `src/yaml.rs` preserves serde-yaml scalar resolution and rejects duplicate keys. `frontmatter::extract_tags` reads only `tags:`; invalid YAML returns an empty list without line-by-line recovery. `find_closing_fm` independently finds the block boundaries. `serde_yaml_ng` and `unsafe-libyaml` are absent from the dependency tree.
 - The closing-frontmatter marker is detected by `find_closing_fm`, which requires `---` to stand alone on a line. Use this helper anywhere you previously would have written `s.find("\n---")`.
-- **A `///` on anything that derives `JsonSchema` is shipped to the model.** `schemars` promotes rustdoc straight into the tool's `inputSchema`/`outputSchema`, and every conversation pays for it in context before any work happens (`tools/list` is ~26 KB today — measure it, don't guess). So: doc comments on `tools/*.rs` param structs and on the domain types they expose are **model-facing UI**. Keep them one line and actionable. Maintainer rationale — why the type is shaped this way, what bug it prevents — goes in a plain `//` comment above the `///`, where it stays in the repo instead of being re-read by a model on every conversation.
+- **A `///` on anything that derives `JsonSchema` is shipped to the model.** `schemars` promotes rustdoc into the tool's `inputSchema` or `outputSchema`. Keep model-facing descriptions short and actionable. Measure `tools/list` after schema changes.
 - **Never round-trip a file you were only asked to change one key in.** This applies to *user files of every kind*, not just notes:
   - **frontmatter** → line surgery via `frontmatter::edit_frontmatter` (below).
-  - **AI-client configs** (`install/`) → a CST edit, not a parse-and-reserialize. JSON goes through `jsonc-parser`'s CST (comments are legal in VS Code's `mcp.json` and must survive), TOML through `toml_edit`, YAML Goose через `noyalib::cst::Document`. `serde_json::Value` is a `BTreeMap` and `to_string_pretty` reflows everything, so a round-trip used to re-sort the user's keys and explode their formatting — the same sin, committed against their config instead of their notes.
+  - **AI-client configs** (`install/`) → a CST edit, not a parse-and-reserialize. JSON goes through `jsonc-parser`'s CST (comments are legal in VS Code's `mcp.json` and must survive), TOML through `toml_edit`, Goose YAML through `noyalib::cst::Document`. `serde_json::Value` is a `BTreeMap` and `to_string_pretty` reflows everything, so a round-trip used to re-sort the user's keys and explode their formatting — the same sin, committed against their config instead of their notes.
 - **Never round-trip the frontmatter through `noyalib` to write it.** Every rewrite is line surgery on the one key being changed, via `frontmatter::edit_frontmatter` (the single split/reassemble point — hand-rolled reassembly is what previously glued the closing `---` onto the last tag line) plus `find_field`. A full YAML round-trip is less code but reformats the user's whole block: comments dropped, key order normalised, quoting churned. `frontmatter::set_field` does let serde *render* the one `key: value` it is writing, so quoting and escaping stay serde's problem.
 - Inline-tag rewrites must go through `replace_inline_tag` (right-boundary check), so `#foo` does not match inside `#foobar`/`#foo-extra`.
-- Heading and block-reference scanning lives in `vault::patch` and skips code fences (via `links::code_spans`) and the frontmatter. `read-note view=outline` and the `edit-note` patcher share those scanners on purpose: every target the outline offers must be one the patcher can actually find.
+- Heading and block-reference scanning lives in `vault::patch` and skips code fences (via `links::code_spans`) and the frontmatter. `read_note view=outline` and the `edit_note` patcher share those scanners on purpose: every target the outline offers must be one the patcher can actually find.
 - Vault-wide walks (`search`, `rename_tag`) go through `walk::md_files` (the `ignore` crate, so `.gitignore` and hidden files are respected) and process files in parallel via `rayon`. `follow_links(false)` keeps the walk inside the vault.
-- **`vault::cache::ContentCache` serves read-only vault-wide reads, and only those.** Search, `vault-info` and the link graph read through it; every mutating method reads from disk. That split is load-bearing, not stylistic: a stale entry served to `search-vault` is a wrong snippet, while the same entry served to the read half of a read-modify-write would be edited and written back, silently destroying another writer's change. `an_edit_never_builds_on_a_cached_read` pins it, and is mutation-checked. Validity is `(mtime, len)` per file, so a walk + `stat` still happens on every call — that is how a write by Obsidian, another agent or an arriving sync gets noticed — and only changed files are re-read. Measured on 5,000 notes: walk ~5 ms, stat-all ~4 ms, read-all ~50 ms, which is why the read is what gets cached and the walk is not.
+- **`vault::cache::ContentCache` serves read-only vault-wide reads, and only those.** Search, `vault_info` and the link graph read through it; every mutating method reads from disk. That split is load-bearing, not stylistic: a stale entry served to `search_notes` is a wrong snippet, while the same entry served to the read half of a read-modify-write would be edited and written back, silently destroying another writer's change. `an_edit_never_builds_on_a_cached_read` pins it, and is mutation-checked. Validity is `(mtime, len)` per file, so a walk + `stat` still happens on every call — that is how a write by Obsidian, another agent or an arriving sync gets noticed — and only changed files are re-read. Measured on 5,000 notes: walk ~5 ms, stat-all ~4 ms, read-all ~50 ms, which is why the read is what gets cached and the walk is not.
 
 ## Engineering Principles
 

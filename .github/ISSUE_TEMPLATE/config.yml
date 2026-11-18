@@ -1,5 +1,5 @@
 blank_issues_enabled: false
 contact_links:
-  - name: Сообщить об уязвимости
+  - name: Report a vulnerability
     url: https://github.com/MrRefactoring/obsidian-mcp-rs/security/policy
-    about: Используйте приватный канал из SECURITY.md вместо публичного issue.
+    about: Use the private channel in SECURITY.md instead of a public issue.
