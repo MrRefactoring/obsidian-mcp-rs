@@ -27,7 +27,10 @@ use super::{
     path::{projected_path, safe_join},
     rel_path,
     walk::md_files,
-    write::{atomic_write, atomic_write_new, copy_verified, rename_no_replace, stream_revision},
+    write::{
+        atomic_write, atomic_write_durable, atomic_write_new, copy_verified, rename_no_replace,
+        stream_revision,
+    },
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -897,21 +900,7 @@ struct JournalEntry {
 
 fn write_journal(path: &Path, journal: &Journal, new: bool) -> Result<(), VaultError> {
     let bytes = serde_json::to_vec(journal).map_err(|e| invalid(e.to_string()))?;
-    if new {
-        atomic_write_new(path, &bytes)?;
-    } else {
-        atomic_write(path, &bytes)?;
-    }
-    fs::File::open(path)
-        .and_then(|file| file.sync_all())
-        .map_err(|e| VaultError::io(path.display().to_string(), e))?;
-    #[cfg(unix)]
-    if let Some(parent) = path.parent() {
-        fs::File::open(parent)
-            .and_then(|dir| dir.sync_all())
-            .map_err(|e| VaultError::io(parent.display().to_string(), e))?;
-    }
-    Ok(())
+    atomic_write_durable(path, &bytes, new)
 }
 
 fn recover_exchange(

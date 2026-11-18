@@ -37,6 +37,11 @@ pub(crate) fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
 
 #[cfg(windows)]
 pub(crate) fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
+    rename_windows(from, to, 0)
+}
+
+#[cfg(windows)]
+fn rename_windows(from: &Path, to: &Path, flags: u32) -> io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
 
@@ -57,7 +62,7 @@ pub(crate) fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
 
     let from = wide_path(from)?;
     let to = wide_path(to)?;
-    if unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), 0) } != 0 {
+    if unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), flags) } != 0 {
         Ok(())
     } else {
         Err(io::Error::last_os_error())
@@ -88,6 +93,47 @@ pub(crate) fn atomic_write(path: &Path, contents: &[u8]) -> Result<(), VaultErro
 
 pub(crate) fn atomic_write_new(path: &Path, contents: &[u8]) -> Result<(), VaultError> {
     stage_write(path, contents, rename_no_replace)
+}
+
+pub(crate) fn atomic_write_durable(
+    path: &Path,
+    contents: &[u8],
+    new: bool,
+) -> Result<(), VaultError> {
+    stage_write_using(
+        path,
+        |file| file.write_all(contents).and_then(|()| file.sync_all()),
+        |from, to| durable_rename(from, to, new),
+    )?;
+    #[cfg(unix)]
+    if let Some(parent) = path.parent() {
+        fs::File::open(parent)
+            .and_then(|dir| dir.sync_all())
+            .map_err(|e| VaultError::io(parent.display().to_string(), e))?;
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn durable_rename(from: &Path, to: &Path, new: bool) -> io::Result<()> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    let mut flags = MOVEFILE_WRITE_THROUGH;
+    if !new {
+        flags |= MOVEFILE_REPLACE_EXISTING;
+    }
+    rename_windows(from, to, flags)
+}
+
+#[cfg(not(windows))]
+fn durable_rename(from: &Path, to: &Path, new: bool) -> io::Result<()> {
+    if new {
+        rename_no_replace(from, to)
+    } else {
+        fs::rename(from, to)
+    }
 }
 
 pub(crate) fn atomic_write_new_using(

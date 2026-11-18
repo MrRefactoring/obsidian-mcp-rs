@@ -212,22 +212,28 @@ fn required_section(document: &'static str, name: &str) -> Result<&'static str, 
 }
 
 fn section<'a>(document: &'a str, name: &str) -> Option<&'a str> {
-    let heading = format!("\n## {name}\n");
-    let (_, body) = document.split_once(&heading)?;
+    let heading = format!("## {name}");
+    let mut start = None;
     let mut fence = 0;
     let mut end = 0;
-    for line in body.split_inclusive('\n') {
-        let ticks = line.trim_start().bytes().take_while(|&b| b == b'`').count();
+    for line in document.split_inclusive('\n') {
+        let text = line.trim_end_matches(['\r', '\n']);
+        let ticks = text.trim_start().bytes().take_while(|&b| b == b'`').count();
         if fence == 0 && ticks >= 3 {
             fence = ticks;
         } else if fence != 0 && ticks >= fence {
             fence = 0;
-        } else if fence == 0 && line.starts_with("## ") {
-            break;
+        } else if fence == 0 && text.starts_with("## ") {
+            if start.is_some() {
+                break;
+            }
+            if text == heading {
+                start = Some(end + line.len());
+            }
         }
         end += line.len();
     }
-    Some(body[..end].trim())
+    start.map(|start| document[start..end].trim())
 }
 
 #[cfg(test)]
@@ -273,6 +279,20 @@ mod tests {
         assert!(text.contains("## Open questions"));
         assert!(text.contains("## links\n"));
         assert!(!text.contains("## decision\n"));
+    }
+
+    #[test]
+    fn writing_guide_extracts_crlf_sections_outside_fences() {
+        let guide = GUIDE.replace("\r\n", "\n");
+        let windows = guide.replace('\n', "\r\n");
+        let meeting = section(&windows, "meeting").unwrap();
+        assert_eq!(
+            meeting.replace("\r\n", "\n"),
+            section(&guide, "meeting").unwrap()
+        );
+        assert!(meeting.contains("## Decisions\r\n"));
+        assert!(meeting.contains("## Actions\r\n"));
+        assert!(!meeting.contains("## decision\r\n"));
     }
 
     #[test]
